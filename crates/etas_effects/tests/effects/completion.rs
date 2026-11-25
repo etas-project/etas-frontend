@@ -31,7 +31,7 @@ flow complete() -> unit {
     let mut pending = vec![&summary.action_trace];
     let mut events = Vec::new();
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Empty => {}
             ActionTraceDomain::Event(event) => events.push(event.action.clone()),
             ActionTraceDomain::Seq(parts) => pending.extend(parts.iter().rev()),
@@ -108,7 +108,7 @@ fn immutable_handler_bindings_preserve_total_resumption_evidence() {
     let exits = summary.exits.as_ref().unwrap();
     assert!(exits.gaps.is_empty(), "{exits:?}");
     assert!(
-        matches!(summary.action_trace, ActionTraceDomain::Seq(ref events) if events.len() == 2)
+        matches!(summary.action_trace.structure(), ActionTraceDomain::Seq(events) if events.len() == 2)
     );
 }
 
@@ -281,12 +281,58 @@ flow limits() -> unit {
 }
 
 #[test]
-fn checked_bounded_for_preserves_complete_pure_loop_outcomes() {
+fn looped_forwarded_callbacks_keep_regular_completion_prefixes() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"
 module app;
-flow looped(values: Array<bool>) -> unit {
-    for value in values limit Iterations(8) { let copy = value; }
+flow invoke(f: () -> unit ![Console.stdout_write]) -> unit ![Console.stdout_write] { f(); return; }
+flow repeated(n: i32, f: () -> unit ![Console.stdout_write]) -> unit ![Console.stdout_write] {
+    var i = 0;
+    while i < n { var j = 0; while j < n { invoke(f); j = j + 1; } i = i + 1; }
+    return;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let exits = output.facts.item_effects[&flow_item(&hir, "repeated")]
+        .exits
+        .as_ref()
+        .unwrap();
+    assert!(!exits.parameter_exits.is_empty());
+    let mut prefixes = exits
+        .parameter_exits
+        .iter()
+        .map(|exit| &exit.prefix)
+        .collect::<Vec<_>>();
+    let mut repeated = false;
+    while let Some(trace) = prefixes.pop() {
+        match trace.structure() {
+            ActionTraceDomain::Repeat(_) => repeated = true,
+            ActionTraceDomain::Choice(parts) | ActionTraceDomain::Seq(parts) => {
+                prefixes.extend(parts)
+            }
+            ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => {
+                panic!("callback prefix lost its order")
+            }
+            _ => {}
+        }
+    }
+    assert!(repeated);
+}
+
+#[test]
+fn checked_literal_for_preserves_complete_pure_loop_outcomes() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module app;
+flow looped() -> unit {
+    for value in [true, false] { let copy = value; }
     return;
 }
 "#,
@@ -319,7 +365,7 @@ fn checked_bounded_for_does_not_hide_unproved_body_operations() {
         r#"
 module app;
 flow looped(values: Array<i32>) -> unit {
-    for value in values limit Iterations(3) { let next = value + 1; }
+    for value in values { let next = value + 1; }
     return;
 }
 "#,
@@ -349,7 +395,7 @@ fn checked_bounded_for_keeps_break_outcomes_unproven() {
         r#"
 module app;
 flow looped(values: Array<bool>) -> unit {
-    for value in values limit Iterations(3) { if value { break; } }
+    for value in values { if value { break; } }
     return;
 }
 "#,
@@ -376,7 +422,7 @@ flow looped(values: Array<bool>) -> unit {
 #[test]
 fn generic_iteration_element_does_not_prove_callable_absence() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
-        "module app; flow looped<T>(values: Array<T>) -> unit { for value in values limit Iterations(3) { let copy = value; } return; }",
+        "module app; flow looped<T>(values: Array<T>) -> unit { for value in values { let copy = value; } return; }",
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let hir = lower_program(&parsed.value);
@@ -400,7 +446,7 @@ fn generic_iteration_element_does_not_prove_callable_absence() {
 #[test]
 fn while_condition_action_is_not_misrepresented_as_a_single_request() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
-        "module app; effect Gate { action ask() -> bool; } flow looped() -> unit ![Gate.ask] { while perform Gate.ask() limit Iterations(2) { } return; }",
+        "module app; effect Gate { action ask() -> bool; } flow looped() -> unit ![Gate.ask] { while perform Gate.ask() { } return; }",
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let hir = lower_program(&parsed.value);
@@ -410,11 +456,21 @@ fn while_condition_action_is_not_misrepresented_as_a_single_request() {
     let output = check_program(&hir, &types);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let summary = &output.facts.item_effects[&flow_item(&hir, "looped")];
-    assert!(
-        matches!(summary.action_trace, ActionTraceDomain::Widened { .. }),
-        "{:?}",
-        summary.action_trace
-    );
+    let mut traces = vec![&summary.action_trace];
+    let mut repeated = false;
+    while let Some(trace) = traces.pop() {
+        match trace.structure() {
+            ActionTraceDomain::Repeat(_) => repeated = true,
+            ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
+                traces.extend(parts)
+            }
+            ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => {
+                panic!("loop condition lost its ordering")
+            }
+            _ => {}
+        }
+    }
+    assert!(repeated, "{:?}", summary.action_trace);
     assert!(!summary.action_trace.action_set().is_empty());
     assert!(
         summary

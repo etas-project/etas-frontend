@@ -147,7 +147,7 @@ impl LowerCtx {
         item_id
     }
 
-    fn lower_annotations(
+    pub(super) fn lower_annotations(
         &mut self,
         annotations: &[ast::Annotation],
         scope: ScopeId,
@@ -217,7 +217,7 @@ impl LowerCtx {
         let body = match &decl.body {
             ast::TypeDeclBody::Bodyless => HirTypeDeclBody::Bodyless,
             ast::TypeDeclBody::Representation(ty) => {
-                HirTypeDeclBody::Representation(self.lower_type(ty, scope, item_id))
+                HirTypeDeclBody::Representation(self.lower_stored_type(ty, scope, item_id))
             }
             ast::TypeDeclBody::Sequence {
                 element,
@@ -322,8 +322,9 @@ impl LowerCtx {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
-        let mut type_params = self.lower_type_params(&decl.type_params, scope, item_id);
-        type_params.extend(self.lower_impl_type_params(&decl.target, scope, item_id));
+        // Bind the whole owner pattern before checking bounds, including bounds
+        // that refer to a later inferred owner parameter.
+        let type_params = self.lower_impl_type_params(decl, scope, item_id);
         let target = match &decl.target {
             ast::ImplTarget::Agent { target, specs, .. } => {
                 return self.lower_agent_impl(decl, target, specs, item_id, parent_scope, scope);
@@ -402,6 +403,29 @@ impl LowerCtx {
                     *self.hir.items.get_mut(body).expect("reserved method body") =
                         HirItem::Flow(callable);
                     self.map_item(body, flow.span);
+                    HirImplItem::Callable { item: body }
+                }
+                (_, ImplItem::Tool(tool)) => {
+                    let owner = receiver_type.and_then(|ty| match self.hir.types.get(ty)? {
+                        HirType::Path {
+                            path:
+                                ResolvedPath {
+                                    resolution: ResolveResult::Resolved(owner),
+                                    ..
+                                },
+                            ..
+                        } => Some(*owner),
+                        _ => None,
+                    });
+                    let symbol = self.predeclare_member_tool(tool, owner);
+                    let body = self.hir.items.alloc(HirItem::Error { span: tool.span });
+                    let callable =
+                        self.lower_tool_with_symbol(tool, body, scope, symbol, receiver_type);
+                    *self
+                        .hir
+                        .items
+                        .get_mut(body)
+                        .expect("reserved member tool body") = HirItem::Tool(callable);
                     HirImplItem::Callable { item: body }
                 }
                 (item_index, ImplItem::Action(action)) => {
@@ -731,11 +755,26 @@ impl LowerCtx {
         parent_scope: ScopeId,
     ) -> HirToolDecl {
         let symbol = self.item_symbol_at(item_id, decl.span);
+        self.lower_tool_with_symbol(decl, item_id, parent_scope, symbol, None)
+    }
+
+    fn lower_tool_with_symbol(
+        &mut self,
+        decl: &ast::ToolDecl,
+        item_id: HirItemId,
+        parent_scope: ScopeId,
+        symbol: SymbolId,
+        receiver_type: Option<HirTypeId>,
+    ) -> HirToolDecl {
+        let annotations = self.lower_annotations(&decl.annotations, parent_scope, item_id);
+        if !annotations.is_empty() {
+            self.hir.item_annotations.insert(item_id, annotations);
+        }
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
         let type_params = self.lower_type_params(&decl.type_params, scope, item_id);
-        let params = self.lower_params(&decl.params, scope, item_id);
+        let params = self.lower_params_with_receiver(&decl.params, scope, item_id, receiver_type);
         let return_type = self.lower_type(&decl.return_type, scope, item_id);
         let effects = decl
             .effects
@@ -784,6 +823,11 @@ impl LowerCtx {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
+        let type_params = self.lower_type_params(&decl.type_params, scope, item_id);
+        let state = decl
+            .state
+            .as_ref()
+            .map(|state| self.lower_stored_type(state, scope, item_id));
         let params = self.lower_params(&decl.params, scope, item_id);
         let output_type = decl
             .output_type
@@ -821,6 +865,8 @@ impl LowerCtx {
         }
         HirAgentDecl {
             symbol,
+            type_params,
+            state,
             params,
             output_type,
             effects,

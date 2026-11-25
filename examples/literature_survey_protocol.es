@@ -39,7 +39,7 @@ flow WriteSurvey(req: SurveyRequest) -> Message[Survey] ~ SurveyReview
   var survey = claims ~> Synthesizer;
   var critique = survey ~> Critic;
 
-  while !critique.body.accepted limit Iterations(2) {
+  while !critique.body.accepted {
     survey = claims ~> Synthesizer;
     critique = survey ~> Critic;
   }

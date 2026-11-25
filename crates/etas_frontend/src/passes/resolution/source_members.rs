@@ -306,6 +306,15 @@ pub(super) struct ResolvedMembers {
     pub actions: Vec<etas_core::Span>,
 }
 
+fn resolve_flow_overload(hir: &HirProgram, resolution: ResolveResult) -> ResolveResult {
+    let ResolveResult::Ambiguous(candidates) = resolution else {
+        return resolution;
+    };
+    hir.flow_overload_root(&candidates)
+        .map(ResolveResult::Resolved)
+        .unwrap_or(ResolveResult::Ambiguous(candidates))
+}
+
 pub(super) fn resolve_members(hir: &mut HirProgram) -> ResolvedMembers {
     let mut resolved = Vec::new();
     let mut resolved_actions = Vec::new();
@@ -326,9 +335,12 @@ pub(super) fn resolve_members(hir: &mut HirProgram) -> ResolvedMembers {
                 }
             }
             HirExpr::Path(path) => {
-                if resolve_value_path(path, &hir.symbols, &hir.scopes, &hir.source_map) {
+                let changed = resolve_value_path(path, &hir.symbols, &hir.scopes, &hir.source_map);
+                let resolution = resolve_flow_overload(hir, path.resolution.clone());
+                if changed || resolution != path.resolution {
                     resolved.push(path.span);
                 }
+                path.resolution = resolution;
             }
             HirExpr::Perform { action, .. } => {
                 if resolve_path(
@@ -363,7 +375,8 @@ pub(super) fn resolve_members(hir: &mut HirProgram) -> ResolvedMembers {
                 if let Some(HirExpr::Path(path)) = hir.exprs.get(*receiver)
                     && let ResolveResult::Resolved(owner) = path.resolution
                 {
-                    let resolution = hir.symbols.resolve_member(owner, method);
+                    let resolution =
+                        resolve_flow_overload(hir, hir.symbols.resolve_member(owner, method));
                     if !matches!(resolution, ResolveResult::Unresolved) {
                         let mut path = path.clone();
                         path.segments.push(PathSegment {

@@ -398,6 +398,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             ],
         }],
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
+            constructor_contracts: Vec::new(),
             scoped_callbacks: Vec::new(),
             package: ExternalPackageId(0),
             types: vec![ProjectExternalNamedSignatureInput {
@@ -440,6 +441,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                callable_body: None,
                 definition: None,
                 residual_checks: vec![],
                 behavior: None,
@@ -490,12 +492,42 @@ fn environment_fingerprint_changes_for_external_types_rows_and_traces() {
     changed = baseline.clone();
     changed.external_public_metadata[0].effect_summaries[0].behavior =
         Some(etas_package_metadata::CallableValueBehavior {
+            suspension: None,
             determinism: etas_package_metadata::CallableValueDeterminism::Deterministic,
             independent_determinism: None,
             host_requirements: vec![],
             interpreter_features: vec![],
         });
     assert_ne!(fingerprint, changed.canonical_environment_fingerprint());
+    changed = baseline.clone();
+    let public = &mut changed.external_public_metadata[0];
+    public.flows[0].params[0] = ProjectExternalTypeInput::Function {
+        input: Vec::new(),
+        output: Box::new(ProjectExternalTypeInput::Primitive("unit".into())),
+        effects: Some(ProjectExternalEffectRowInput {
+            effects: Vec::new(),
+            tail: None,
+        }),
+    };
+    public
+        .scoped_callbacks
+        .push(etas_package_metadata::ScopedCallbackContract {
+            target: etas_package_metadata::CallableContractTarget::Item(
+                public.flows[0].path.clone(),
+            ),
+            parameters: vec![0],
+            resource_boundaries: Vec::new(),
+        });
+    let task_scope = changed.canonical_environment_fingerprint();
+    let task_dependency = changed.canonical_dependency_metadata_fingerprints();
+    changed.external_public_metadata[0].scoped_callbacks[0]
+        .resource_boundaries
+        .push(0);
+    assert_ne!(task_scope, changed.canonical_environment_fingerprint());
+    assert_ne!(
+        task_dependency,
+        changed.canonical_dependency_metadata_fingerprints()
+    );
     changed = baseline;
     changed.external_public_metadata[0].effect_summaries[0].returned_callables =
         Some(etas_package_metadata::CallableValueGraph::default());
@@ -4985,6 +5017,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             }],
         }],
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
+            constructor_contracts: Vec::new(),
             scoped_callbacks: Vec::new(),
             package: ExternalPackageId(0),
             types: Vec::new(),
@@ -5014,6 +5047,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                callable_body: None,
                 definition: None,
                 residual_checks: vec![],
                 behavior: None,
@@ -5595,6 +5629,7 @@ fn empty_external_public_metadata(
     package: ExternalPackageId,
 ) -> ProjectExternalPublicMetadataInput {
     ProjectExternalPublicMetadataInput {
+        constructor_contracts: Vec::new(),
         scoped_callbacks: Vec::new(),
         package,
         types: Vec::new(),
@@ -5636,6 +5671,7 @@ fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
 
 fn empty_external_summary(path: &[&str]) -> ProjectExternalEffectSummaryInput {
     ProjectExternalEffectSummaryInput {
+        callable_body: None,
         definition: None,
         residual_checks: vec![],
         behavior: None,
@@ -6457,7 +6493,7 @@ fn frontend_check_rejects_limit_budget_dimension_type_mismatch() {
 module app.main;
 
 flow main(flag: bool) -> unit {
-  while flag limit Cost(3), WallTime(3) {
+  while flag {
     break;
   }
   return;
@@ -8765,6 +8801,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -8924,6 +8961,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -9253,6 +9291,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -9424,6 +9463,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -9563,6 +9603,7 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -9666,6 +9707,10 @@ flow main() -> unit ![Console.stdout_write] {
     );
     fn count_stdout(trace: &etas_effects::ActionTraceDomain, stdout: &Effect) -> usize {
         match trace {
+            etas_effects::ActionTraceDomain::Shared(shared) => count_stdout(&shared.body, stdout),
+            etas_effects::ActionTraceDomain::Recursive { body, .. } => {
+                body.as_deref().map_or(0, |body| count_stdout(body, stdout))
+            }
             etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
             etas_effects::ActionTraceDomain::Seq(children)
             | etas_effects::ActionTraceDomain::Choice(children)
@@ -9777,6 +9822,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -9914,6 +9960,7 @@ fn frontend_check_project_does_not_realize_an_unused_external_function_argument(
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -10035,6 +10082,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -10157,6 +10205,7 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -10295,6 +10344,7 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -10434,6 +10484,7 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -10571,6 +10622,7 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,

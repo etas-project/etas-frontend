@@ -258,6 +258,7 @@ pub struct TypeStore {
 
 /// Program-local lookup only. Hash collisions are resolved by full Type equality.
 /// The index borrows no mutable interner and does not copy aggregate type nodes.
+#[derive(Debug)]
 pub struct TypeLookupIndex {
     base: Option<SharedTypeBase>,
     first: HashMap<u64, TypeId>,
@@ -434,6 +435,30 @@ impl TypeStore {
             .chain(self.types.iter())
             .enumerate()
             .map(|(index, ty)| (TypeId(index as u32), ty))
+    }
+
+    /// Solve local lambda row variables without changing their type graph IDs.
+    /// Every enclosing function result and generic argument shares those IDs.
+    pub(crate) fn resolve_lambda_effect_rows(
+        &mut self,
+        rows: &HashMap<String, super::EffectRowRef>,
+    ) -> bool {
+        let mut changed = false;
+        for ty in &mut self.types {
+            let Type::Function(flow) = ty else {
+                continue;
+            };
+            let Some(row) = &mut flow.effects else {
+                continue;
+            };
+            if row.is_inferred_lambda() {
+                if let Some(solved) = row.tail.as_ref().and_then(|name| rows.get(name)) {
+                    *row = solved.clone();
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     pub fn local_types(&self) -> &[Type] {
@@ -642,6 +667,43 @@ impl TypeInterner {
 
     /// Reserves a distinct local representation for a canonical declaration.
     /// Possession of a key does not establish that it came from checked code.
+    /// Complete a reserved imported declaration in place. The caller retains
+    /// the checked package-origin proof separately from this descriptive key.
+    pub fn bind_canonical_nominal(
+        &mut self,
+        id: TypeId,
+        identity: etas_code::DefinitionKey,
+    ) -> Result<(), &'static str> {
+        let ty = self
+            .store
+            .get(id)
+            .ok_or("canonical nominal has no reserved declaration")?
+            .clone();
+        if !identity_matches_type(&identity, &ty) {
+            return Err("canonical nominal identity has an incompatible declaration kind");
+        }
+        if let Some(existing) = self.store.nominal_identity(id) {
+            return if *existing == identity {
+                Ok(())
+            } else {
+                Err("canonical nominal has conflicting declaration identities")
+            };
+        }
+        if self
+            .canonical_nominals
+            .get(&identity)
+            .is_some_and(|existing| *existing != id)
+        {
+            return Err("canonical nominal identity has a different reserved declaration");
+        }
+        if self.types.get(&ty) == Some(&id) {
+            self.types.remove(&ty);
+        }
+        self.store.nominal_identities.insert(id, identity.clone());
+        self.canonical_nominals.insert(identity, id);
+        Ok(())
+    }
+
     pub fn intern_canonical_nominal(
         &mut self,
         identity: etas_code::DefinitionKey,

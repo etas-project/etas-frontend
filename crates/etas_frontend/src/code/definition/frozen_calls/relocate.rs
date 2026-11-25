@@ -46,6 +46,19 @@ fn relocate_handler_scopes(
 }
 
 pub(super) struct Relocation<'a> {
+    projection_ids: std::cell::RefCell<BTreeMap<CodeFingerprint, CodeFingerprint>>,
+    input_ids: std::cell::RefCell<BTreeMap<u32, u32>>,
+    next_input: std::cell::Cell<u32>,
+    input_environments: std::cell::RefCell<Vec<etas_effects::facts::CallableEnvironmentId>>,
+    input_method_environments:
+        std::cell::RefCell<std::collections::BTreeSet<etas_effects::facts::CallableEnvironmentId>>,
+    input_metadata_environments: std::cell::RefCell<
+        HashMap<
+            etas_effects::facts::CallableEnvironmentId,
+            (CodeFingerprint, etas_effects::facts::CallableEnvironmentId),
+        >,
+    >,
+
     pub external_parameter_projections: std::cell::RefCell<
         BTreeMap<CodeFingerprint, etas_effects::facts::ExternalParameterProjection>,
     >,
@@ -86,6 +99,7 @@ impl<'a> Relocation<'a> {
         from: &'a Projection,
         to: &'a Projection,
         overlay: &crate::code::draft::DefaultBodyOverlay,
+        next_input: u32,
     ) -> Result<Self, ProjectionError> {
         let mut target_types = BTreeMap::<(GenericOwner, CodeFingerprint), TypeId>::new();
         for origin in &to.native.type_origins {
@@ -155,14 +169,10 @@ impl<'a> Relocation<'a> {
             }
         }
         let mut actions = BTreeMap::new();
-        for action in target.effect_registry.action_signatures() {
-            let owner = to.identities.effect_tag(action.owner)?.clone();
-            let reference = ActionRef {
-                tag: action.owner,
-                action: action.id,
-            };
+        for (reference, name) in target.effect_registry.action_identities() {
+            let owner = to.identities.effect_tag(reference.tag)?.clone();
             if actions
-                .insert((owner, action.name.clone()), reference.clone())
+                .insert((owner, name.to_owned()), reference.clone())
                 .is_some_and(|previous| previous != reference)
             {
                 return Err(invalid(
@@ -182,17 +192,17 @@ impl<'a> Relocation<'a> {
             }
         }
         for (name, action) in original.effect_registry.named_actions() {
-            let signature = original
+            let action_name = original
                 .effect_registry
-                .action_signature(action)
-                .ok_or_else(|| invalid("frozen source action has no descriptor"))?;
-            let owner = from.identities.effect_tag(signature.owner)?;
-            if let Some(target_action) = actions.get(&(owner.clone(), signature.name.clone())) {
+                .action_name(action.tag, action.action)
+                .ok_or_else(|| invalid("frozen source action has no checked identity"))?;
+            let owner = from.identities.effect_tag(action.tag)?;
+            if let Some(target_action) = actions.get(&(owner.clone(), action_name.to_owned())) {
                 let owner = target
                     .effect_registry
                     .tag_name(target_action.tag)
                     .ok_or_else(|| invalid("frozen target action has no canonical owner"))?;
-                effect_names.insert(name.into(), format!("{owner}.{}", signature.name));
+                effect_names.insert(name.into(), format!("{owner}.{action_name}"));
             }
         }
         let mut returned_items: HashMap<_, _> = from
@@ -280,6 +290,12 @@ impl<'a> Relocation<'a> {
             }
         }
         Ok(Self {
+            projection_ids: Default::default(),
+            input_ids: Default::default(),
+            next_input: std::cell::Cell::new(next_input),
+            input_environments: Default::default(),
+            input_method_environments: Default::default(),
+            input_metadata_environments: Default::default(),
             external_parameter_projections: Default::default(),
             parameter_projections: Default::default(),
             native_exprs: captured::expression_bindings(original, target, &returned_items, overlay),
@@ -334,14 +350,14 @@ impl<'a> Relocation<'a> {
     }
 
     fn action(&self, action: &ActionRef) -> Result<ActionRef, ProjectionError> {
-        let signature = self
+        let name = self
             .original
             .effect_registry
-            .action_signature(action)
-            .ok_or_else(|| invalid("frozen action has no checked descriptor"))?;
-        let owner = self.from.identities.effect_tag(signature.owner)?.clone();
+            .action_name(action.tag, action.action)
+            .ok_or_else(|| invalid("frozen action has no checked identity"))?;
+        let owner = self.from.identities.effect_tag(action.tag)?.clone();
         self.actions
-            .get(&(owner, signature.name.clone()))
+            .get(&(owner, name.to_owned()))
             .cloned()
             .ok_or_else(|| invalid("frozen action has no canonical target binding"))
     }
@@ -495,18 +511,24 @@ impl<'a> Relocation<'a> {
     ) -> Result<ActionTraceDomain, ProjectionError> {
         enum Work<'t> {
             Visit(&'t ActionTraceDomain),
+            Shared(&'t ActionTraceDomain),
             Seq(usize),
             Choice(usize),
             Parallel(usize),
             TaskStart(etas_hir::HirExprId),
             DefaultHandler(etas_effects::EffectSet),
             Repeat,
+            Recursive(etas_code::CodeFingerprint),
         }
         let mut work = vec![Work::Visit(root)];
         let mut values = Vec::new();
         while let Some(task) = work.pop() {
             match task {
                 Work::Visit(trace) => match trace {
+                    ActionTraceDomain::Shared(body) => {
+                        work.push(Work::Shared(trace));
+                        work.push(Work::Visit(&body.body));
+                    }
                     ActionTraceDomain::DefaultHandler { guards, body } => {
                         work.push(Work::DefaultHandler(
                             guards
@@ -553,6 +575,14 @@ impl<'a> Relocation<'a> {
                             task_site: *task_site,
                         })
                     }
+                    ActionTraceDomain::Recursive { id, body } => {
+                        if let Some(body) = body {
+                            work.push(Work::Recursive(*id));
+                            work.push(Work::Visit(body));
+                        } else {
+                            values.push(trace.clone());
+                        }
+                    }
                     ActionTraceDomain::Repeat(inner) => {
                         work.push(Work::Repeat);
                         work.push(Work::Visit(inner));
@@ -596,6 +626,28 @@ impl<'a> Relocation<'a> {
                         Work::Choice(_) => ActionTraceDomain::Choice(parts),
                         Work::Parallel(_) => ActionTraceDomain::Parallel(parts),
                         _ => unreachable!("matched compound trace"),
+                    });
+                }
+                Work::Shared(original) => {
+                    let body = values
+                        .pop()
+                        .ok_or_else(|| invalid("shared trace body is missing"))?;
+                    let ActionTraceDomain::Shared(shared) = original else {
+                        unreachable!()
+                    };
+                    values.push(if body == shared.body {
+                        original.clone()
+                    } else {
+                        body
+                    });
+                }
+                Work::Recursive(id) => {
+                    let body = values
+                        .pop()
+                        .ok_or_else(|| invalid("recursive trace body is missing"))?;
+                    values.push(ActionTraceDomain::Recursive {
+                        id,
+                        body: Some(Box::new(body)),
                     });
                 }
                 Work::Repeat => {
@@ -758,6 +810,9 @@ impl<'a> Relocation<'a> {
             .map(|fact| {
                 Ok(match fact {
                     RequirementFact::Limit(limit) => RequirementFact::Limit(limit.clone()),
+                    RequirementFact::HostAuthority(action) => {
+                        RequirementFact::HostAuthority(self.effect(action, scope)?)
+                    }
                     RequirementFact::TraceSpec(clause) => {
                         RequirementFact::TraceSpec(match clause {
                             TraceSpecClauseFact::Allow { pattern, label } => {
@@ -806,6 +861,9 @@ impl<'a> Relocation<'a> {
         &self,
         id: CodeFingerprint,
     ) -> Result<CodeFingerprint, ProjectionError> {
+        if let Some(target) = self.projection_ids.borrow().get(&id) {
+            return Ok(*target);
+        }
         let source = self
             .original
             .effects
@@ -830,23 +888,80 @@ impl<'a> Relocation<'a> {
                 "frozen value projection target has no checked type",
             ));
         };
+        let mut path = source.path.clone();
+        etas_code::descriptor::ValueProjectionStep::map_call_inputs(&mut path, &mut |id| {
+            if let Some(id) = self.input_ids.borrow().get(&id) {
+                return Ok(*id);
+            }
+            let next = self.next_input.get();
+            self.next_input.set(
+                next.checked_add(1)
+                    .ok_or_else(|| invalid("frozen callback input index exceeds u32"))?,
+            );
+            self.input_ids.borrow_mut().insert(id, next);
+            Ok::<_, ProjectionError>(next)
+        })?;
         let ty = etas_types::value_projection::project(
             self.target.type_store,
             self.target.types,
             *ty,
-            &source.path,
+            &path,
         )
         .map_err(|_| invalid("frozen value projection cannot be rebound to the target type"))?
         .ok_or_else(|| invalid("frozen value projection is absent from the target type"))?;
-        let projection = etas_effects::facts::NativeParameterProjection {
+        let mut projection = etas_effects::facts::NativeParameterProjection {
             owner: *owner,
             parameter,
-            path: source.path.clone(),
+            path,
             ty,
+            call_inputs: Default::default(),
         };
         let target = projection
             .identity()
             .map_err(|_| invalid("frozen value projection identity could not be encoded"))?;
+        self.projection_ids.borrow_mut().insert(id, target);
+        let mut pending = Vec::new();
+        let mut methods = std::collections::BTreeSet::new();
+        let mut metadata = HashMap::new();
+        for (id, inputs) in &source.call_inputs {
+            let target_id = *self
+                .input_ids
+                .borrow()
+                .get(id)
+                .ok_or_else(|| invalid("frozen callback input has no target index"))?;
+            let mut inputs = (**inputs).clone();
+            inputs.call = self.captured_expr(inputs.call)?;
+            inputs.scope = inputs
+                .scope
+                .map(|unit| self.captured_unit(unit))
+                .transpose()?;
+            for argument in &mut inputs.arguments {
+                argument.sources = argument
+                    .sources
+                    .iter()
+                    .map(|origin| {
+                        self.value_origin(*origin, &mut pending, &mut methods, &mut metadata)
+                    })
+                    .collect::<Result<_, _>>()?;
+                for projection in &mut argument.projections {
+                    projection.sources = projection
+                        .sources
+                        .iter()
+                        .map(|origin| {
+                            self.value_origin(*origin, &mut pending, &mut methods, &mut metadata)
+                        })
+                        .collect::<Result<_, _>>()?;
+                }
+            }
+            projection
+                .call_inputs
+                .insert(target_id, std::sync::Arc::new(inputs));
+        }
+        self.input_environments.borrow_mut().extend(pending);
+        self.input_method_environments.borrow_mut().extend(methods);
+        self.input_metadata_environments
+            .borrow_mut()
+            .extend(metadata);
         self.parameter_projections
             .borrow_mut()
             .insert(target, projection);
@@ -954,6 +1069,7 @@ impl<'a> Relocation<'a> {
             .as_ref()
             .map(|exits| {
                 Ok::<_, ProjectionError>(CallableExitSummary {
+                    receiver_projections: Default::default(),
                     value_projections: exits.value_projections.iter().map(|(path, sources)| {
                         let sources = match sources {
                             ProjectedReturnSources::Known(sources) => ProjectedReturnSources::Known(sources.iter().map(|source| self.returned_source(source, scope)).collect::<Result<_, ProjectionError>>()?),

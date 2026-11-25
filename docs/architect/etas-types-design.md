@@ -394,6 +394,27 @@ looking at representation. Representation is used for checked construction,
 destruction, schema derivation, host-value encoding, and explicit conversion;
 it is not used for implicit unification with the nominal type.
 
+The standard `Eq`, `StorageData` and `StorageKey` marker declarations have
+structural evidence supplied by the compiler. The schema analysis summarizes
+component demands on generic declarations and substitutes those demands at
+applications, retaining nominal identities and handling recursive schemas with
+a finite worklist. Conformance queries share the existing active-obligation
+set and cache schema summaries for their checked type store. Opaque imported
+data still requires published conformance when its representation is absent.
+
+Storage data admits primitive float encodings; storage keys additionally need
+Eq. Source trust wrappers retain their labels and require data admission for
+the payload. Secrets, execution capabilities and persistent resource bindings
+are excluded, including through explicit impls. A descriptive record layout
+does not turn a Store or MemoryRegion into ordinary data. Marker evidence is
+separate from codec derivation and callback behavior evidence; Store dispatch
+must resolve those contracts as well.
+
+Generic bound checks wait for inference variables anywhere in an argument's
+shape, including nominal type arguments. Final conformance queries apply the
+full inference substitution in a scratch type interner. Scoped declaration
+parameters retain their identities; scratch TypeIds never enter program facts.
+
 Collection types must match the PL SPEC:
 
 - `[a, b, c]` has type `Array[T]`.

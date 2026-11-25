@@ -40,7 +40,8 @@ impl EffectSemantics<'_> {
         };
         if let Some(metadata) = metadata {
             match self.external_call_summary_from_metadata(&metadata, &site, &mut state, None) {
-                Ok(Some(summary)) => {
+                Ok(Some(mut summary)) => {
+                    self.specialize_filesystem_open_call(&site, &mut summary);
                     if summary.exits.is_some() {
                         state
                             .exits

@@ -178,6 +178,7 @@ pub enum ResourceKind {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub enum SyntheticSymbolReason {
+    ConstructorTypeParameter,
     ImportAlias,
     QualifiedEffectAction,
     ExternalEffectAction,

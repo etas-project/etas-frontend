@@ -94,6 +94,11 @@ impl SummarySolver {
         for component in components {
             checkpoint()?;
             let component_set = component.iter().copied().collect::<BTreeSet<_>>();
+            let cyclic = component.len() > 1
+                || component
+                    .iter()
+                    .any(|unit| call_graph.successors(unit).contains(unit));
+            semantics.begin_component(&component, cyclic);
             let result = self.engine.try_solve_worklist(
                 summaries,
                 component.clone(),
@@ -125,6 +130,8 @@ impl SummarySolver {
                     },
                 );
             }
+            let mut result = result;
+            semantics.end_component(&component, &mut result.value);
             convergence.push(ComponentConvergence {
                 units: component,
                 status: result.status,

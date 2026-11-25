@@ -126,7 +126,7 @@ fn message_layout(types: &TypeOutput, ty: TypeId, payload: TypeId) -> bool {
 
 fn time(types: &TypeOutput, ty: TypeId) -> bool {
     named(types, ty, "std.runtime.time.Time") && fields(types, ty).is_some_and(|record|
-        matches!(record.fields.as_slice(), [field] if field.name == "unix_millis" && primitive(types, field.ty, P::U128)))
+        matches!(record.fields.as_slice(), [field] if field.name == "unix_millis" && primitive(types, field.ty, P::I128)))
 }
 
 fn fields(types: &TypeOutput, ty: TypeId) -> Option<etas_types::RecordType> {

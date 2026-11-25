@@ -27,13 +27,13 @@ pub fn collect_effect_actions(
                     },
                 );
                 for action in effect.body.actions() {
-                    collect_action(ctx, state, action);
+                    collect_action(ctx, state, &effect.type_params, action);
                 }
             }
             HirItem::Impl(impl_decl) => {
                 for item in impl_decl.items {
                     if let HirImplItem::Action(action) = item {
-                        collect_action(ctx, state, &action);
+                        collect_action(ctx, state, &[], &action);
                     }
                 }
             }
@@ -45,6 +45,7 @@ pub fn collect_effect_actions(
 fn collect_action(
     ctx: &mut TypePipelineContext<'_>,
     state: &mut SignaturePipelineState,
+    owner_params: &[etas_hir::SymbolId],
     action: &HirEffectActionDecl,
 ) {
     let params = action
@@ -65,9 +66,26 @@ fn collect_action(
         ctx.interner.store().get(output),
         Some(Type::Primitive(PrimitiveType::Never))
     );
-    let (effect_args, selector_param_names, selector_defaults) =
+    let (mut effect_args, mut selector_param_names, mut selector_defaults) =
         action_effect_selector_signature(ctx, action);
-    let generic_params = super::callables::callable_generic_params(ctx, state, &action.type_params);
+    let mut generic_params = Vec::new();
+    // With no action-local selectors, the effect's type parameters select the
+    // request. Existing action-local selector contracts retain their ABI.
+    if action.selector_params.is_empty() {
+        generic_params = super::callables::callable_generic_params(ctx, state, owner_params);
+        for parameter in &generic_params {
+            if parameter.kind == crate::CallableGenericParamKind::Type {
+                effect_args.push(EffectActionArgKind::Type);
+                selector_param_names.push(parameter.name.clone());
+                selector_defaults.push(None);
+            }
+        }
+    }
+    generic_params.extend(super::callables::callable_generic_params(
+        ctx,
+        state,
+        &action.type_params,
+    ));
     let default_handler_effects = action
         .default_handler_effects
         .as_ref()

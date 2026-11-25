@@ -35,6 +35,7 @@ pub fn prepare(
     let bindings = external::prepare_external_signature_input(&mut ctx, &input)
         .ok_or("cannot prepare imported declarations")?;
     external::apply_external_spec_facts(&mut ctx, &input);
+    bind_standard_identities(&mut ctx, package);
     super::reflection::apply(&mut ctx, &reflection);
     if let Some(error) = ctx
         .diagnostics
@@ -87,5 +88,40 @@ impl PreparedExternalSignatures {
             .std_callable_signatures
             .extend(self.facts.std_callable_signatures.clone());
         external::bind_external_signature_input(ctx, input, &self.bindings);
+    }
+}
+
+pub(crate) fn bind_standard_identities(
+    ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
+    package: ExternalPackageKey,
+) {
+    // The installing compiler can prepare signatures with only bootstrap
+    // contracts. The consuming SDK registry owns the ordinary std identities.
+    let declarations = ctx
+        .signature_facts
+        .external_specs
+        .signatures
+        .keys()
+        .filter(|identity| identity.package == package.0)
+        .cloned()
+        .collect::<Vec<_>>();
+    for external in declarations {
+        let Some(symbol) = ctx.std_registry.lookup_qualified(&external.path) else {
+            continue;
+        };
+        let Some(identity) = ctx.std_registry.declaration_key(symbol.id) else {
+            continue;
+        };
+        if ctx
+            .signature_facts
+            .reflection_declaration_identities
+            .get(&external.path)
+            == Some(identity)
+        {
+            ctx.signature_facts
+                .external_specs
+                .std_identities
+                .insert(external, identity.clone());
+        }
     }
 }

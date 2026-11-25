@@ -2,6 +2,47 @@ use etas_effects::Effect;
 use etas_frontend::{Frontend, ProjectInput, SourceInput};
 
 #[test]
+fn deferred_callback_row_completes_the_captured_result_and_method_receiver() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app;
+flow invoke<effect E>(callback: () -> unit ![E]) -> unit ![Error<string>, E] {
+    callback();
+    perform Error<string>.raise("failed");
+}
+flow main() -> unit ![] {
+    let result = invoke(() => ())?;
+    result.unwrap();
+    return;
+}
+"#,
+    )));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let (expression, capture) = checked.effects.try_captures.iter().next().unwrap();
+    let fact = &checked.types.try_facts[expression];
+    let (_, error) = etas_types::value_representation::result_parameters(
+        &checked.type_store,
+        &checked.types.known_std_types,
+        fact.result_type,
+    )
+    .unwrap();
+    assert_eq!(error, capture.captured_error);
+    let unwrap = checked.types.checked_method_calls.values().next().unwrap();
+    let (_, receiver_error) = etas_types::value_representation::result_parameters(
+        &checked.type_store,
+        &checked.types.known_std_types,
+        unwrap.receiver_type,
+    )
+    .unwrap();
+    assert_eq!(receiver_error, error);
+    assert!(!unwrap.owner_bindings.iter().any(|(_, argument)| matches!(
+        checked.type_store.get(*argument),
+        Some(etas_types::Type::Var(_))
+    )));
+}
+
+#[test]
 fn try_does_not_capture_the_same_error_from_a_preceding_statement() {
     let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
         r#"

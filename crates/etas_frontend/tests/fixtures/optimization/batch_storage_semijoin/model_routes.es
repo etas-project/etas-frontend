@@ -18,18 +18,18 @@ flow audit_ready(log: string) -> bool {
 flow main() -> bool {
     let scope = qualify_scope("model_routes");
     var audit = "";
-    for event in ["load", "authorize", "scan", "compare", "publish"] limit Iterations(5) {
+    for event in ["load", "authorize", "scan", "compare", "publish"] {
         audit = append_audit(audit, scope + ":" + event);
     }
 
     var first = false;
     var second = false;
-    for key_a in ["model_routes_primary", "stale", "queued", "active", "retry", "model_routes_published", "archived", "expired"] limit Iterations(8) {
+    for key_a in ["model_routes_primary", "stale", "queued", "active", "retry", "model_routes_published", "archived", "expired"] {
         if key_a == "model_routes_primary" {
             first = true;
         }
     }
-    for key_b in ["model_routes_primary", "stale", "queued", "active", "retry", "model_routes_published", "archived", "expired"] limit Iterations(8) {
+    for key_b in ["model_routes_primary", "stale", "queued", "active", "retry", "model_routes_published", "archived", "expired"] {
         if key_b == "model_routes_published" {
             second = true;
         }

@@ -18,18 +18,18 @@ flow audit_ready(log: string) -> bool {
 flow main() -> bool {
     let scope = qualify_scope("policy_rules");
     var audit = "";
-    for event in ["load", "authorize", "scan", "compare", "publish"] limit Iterations(5) {
+    for event in ["load", "authorize", "scan", "compare", "publish"] {
         audit = append_audit(audit, scope + ":" + event);
     }
 
     var first = false;
     var second = false;
-    for key_a in ["policy_rules_primary", "stale", "queued", "active", "retry", "policy_rules_published", "archived", "expired"] limit Iterations(8) {
+    for key_a in ["policy_rules_primary", "stale", "queued", "active", "retry", "policy_rules_published", "archived", "expired"] {
         if key_a == "policy_rules_primary" {
             first = true;
         }
     }
-    for key_b in ["policy_rules_primary", "stale", "queued", "active", "retry", "policy_rules_published", "archived", "expired"] limit Iterations(8) {
+    for key_b in ["policy_rules_primary", "stale", "queued", "active", "retry", "policy_rules_published", "archived", "expired"] {
         if key_b == "policy_rules_published" {
             second = true;
         }

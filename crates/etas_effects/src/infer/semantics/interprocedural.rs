@@ -6,6 +6,54 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
     type Domain = EffectState;
     type Summary = EffectSummary;
 
+    fn begin_component(&mut self, units: &[EffectUnit], cyclic: bool) {
+        self.trace_equations.begin(units, cyclic);
+    }
+
+    fn end_component(
+        &mut self,
+        units: &[EffectUnit],
+        summaries: &mut etas_hir_analysis::interprocedural::SummaryStore<EffectUnit, EffectSummary>,
+    ) {
+        for unit in units {
+            if let Some(mut summary) = summaries.get(*unit).cloned() {
+                self.trace_equations.close_summary(&mut summary);
+                // Publish each solved component as immutable subgraphs. Direct
+                // calls must share them just as first-class callable queries do.
+                summary.action_trace = summary.action_trace.shared();
+                if let Some(exits) = &mut summary.exits {
+                    for exit in &mut exits.exits {
+                        exit.trace = std::mem::take(&mut exit.trace).shared();
+                    }
+                    for exit in &mut exits.parameter_exits {
+                        exit.prefix = std::mem::take(&mut exit.prefix).shared();
+                    }
+                }
+                self.inputs.unit_effects.insert(*unit, summary.clone());
+                summaries.insert(*unit, summary);
+            }
+        }
+        if !self.trace_equations.has_active_component() {
+            return;
+        }
+        for summary in self
+            .inputs
+            .expr_effects
+            .values_mut()
+            .chain(self.inputs.stmt_effects.values_mut())
+            .chain(self.inputs.inferred_parameter_effects.values_mut())
+        {
+            self.trace_equations.close_summary(summary);
+        }
+        for fact in self.inputs.latent_effects.values_mut() {
+            self.trace_equations.close_summary(&mut fact.summary);
+        }
+        for fact in self.inputs.std_callable_values.values_mut() {
+            self.trace_equations.close_summary(&mut fact.summary);
+        }
+        self.callable_summaries.get_mut().invalidate();
+    }
+
     fn body_of(&self, unit: Self::Unit) -> HirAnalysisBody {
         unit.analysis_body_with_context(&self.context)
     }
@@ -20,7 +68,36 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
     }
 
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain {
+        // Retain all control-flow alternatives of the current analysis, rather
+        // than provisional reads from an earlier interprocedural iteration.
+        if let Some(previous) = self.checked_read_expressions.remove(&context.unit) {
+            let reads = self.discovered_call_results.get_mut();
+            for expr in previous {
+                reads.values.remove(&expr);
+            }
+        }
         let mut state = EffectState::for_unit(context.unit);
+        if let EffectUnit::Item(item) = context.unit
+            && self.types.facts.type_impl_methods.values().any(|method| {
+                method.body == item
+                    && self
+                        .types
+                        .facts
+                        .is_active_agent(&self.types.store, method.self_type)
+            })
+        {
+            state
+                .summary
+                .require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+            state.summary.determinism = crate::Determinism::NonDeterministic;
+            state.summary.independent_determinism = Some(crate::Determinism::NonDeterministic);
+        }
+
+        if let EffectUnit::Item(owner) = context.unit
+            && let Err(error) = self.record_agent_receiver_projections(owner, &mut state)
+        {
+            state = self.incomplete_at(self.hir.items[owner].span(), error.to_string(), state);
+        }
         if let Some(captures) = self.captured_values.get(&context.unit) {
             state.local_latent_values.join_assign(captures);
         }
@@ -75,10 +152,14 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
 
     fn stabilize_summary(
         &mut self,
-        _context: UnitContext<Self::Unit>,
+        context: UnitContext<Self::Unit>,
         mut summary: Self::Summary,
         current: Option<&Self::Summary>,
     ) -> Self::Summary {
+        self.trace_equations.summarize(context.unit, &mut summary);
+        self.inputs
+            .unit_effects
+            .insert(context.unit, summary.clone());
         summary.stabilize_for_fixpoint(current);
         summary
     }
@@ -111,7 +192,8 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             }
                         }
                         etas_std::StdExecutionRole::TaskStart
-                        | etas_std::StdExecutionRole::ScopeEnter => {
+                        | etas_std::StdExecutionRole::ScopeEnter
+                        | etas_std::StdExecutionRole::ResourceScope => {
                             let etas_hir::HirItem::Flow(flow) = &self.hir.items[item] else {
                                 unreachable!()
                             };
@@ -121,10 +203,10 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
                             summary.independent_determinism =
                                 Some(crate::Determinism::Deterministic);
-                            let body = if *role == etas_std::StdExecutionRole::TaskStart {
-                                flow.params[0]
-                            } else {
+                            let body = if *role == etas_std::StdExecutionRole::ScopeEnter {
                                 flow.params[1]
+                            } else {
+                                flow.params[0]
                             };
                             let target = crate::ParameterCallTarget::Native(body);
                             summary.handler_requests =
@@ -156,6 +238,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         etas_std::StdExecutionRole::StorageContext
                         | etas_std::StdExecutionRole::StorageNonce
                         | etas_std::StdExecutionRole::StreamClock
+                        | etas_std::StdExecutionRole::ReadScopeEnter
                         | etas_std::StdExecutionRole::CurrentSession
                         | etas_std::StdExecutionRole::MessageContextCapture
                         | etas_std::StdExecutionRole::MessageContextRecord => {
@@ -175,11 +258,16 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             }
                         }
                         etas_std::StdExecutionRole::CaptureData
+                        | etas_std::StdExecutionRole::CaptureStorage
+                        | etas_std::StdExecutionRole::RestoreStorage
+                        | etas_std::StdExecutionRole::StorageSchema
                         | etas_std::StdExecutionRole::PayloadConvert
                         | etas_std::StdExecutionRole::ParseBody
                         | etas_std::StdExecutionRole::AgentWithBody
                         | etas_std::StdExecutionRole::CallableWithBody
-                        | etas_std::StdExecutionRole::ToolReference => {
+                        | etas_std::StdExecutionRole::ToolReference
+                        | etas_std::StdExecutionRole::ComparatorCapture
+                        | etas_std::StdExecutionRole::ComparatorSame => {
                             let etas_types::ItemSignature::Flow(signature) =
                                 &self.types.facts.item_signatures[&item]
                             else {
@@ -210,6 +298,30 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         }],
                         ..Default::default()
                     });
+                    if *role == etas_std::StdExecutionRole::ResourceScope {
+                        // The VM returns the callback's actual value inside
+                        // the source-owned report. Keep its checked result
+                        // relation instead of replacing generic R by Any.
+                        let etas_hir::HirItem::Flow(flow) = &self.hir.items[item] else {
+                            unreachable!()
+                        };
+                        let projection = match self.intern_parameter_projection(
+                            item,
+                            flow.params[0],
+                            vec![etas_code::descriptor::ValueProjectionStep::CallResult],
+                        ) {
+                            Ok(projection) => projection,
+                            Err(error) => return self.incomplete_summary(span, error.to_string()),
+                        };
+                        summary.exits.as_mut().unwrap().value_projections.insert(
+                            vec![etas_code::descriptor::ValueProjectionStep::Field(
+                                "value".into(),
+                            )],
+                            crate::ProjectedReturnSources::Known(
+                                [crate::CallableReturnSource::Projection(projection)].into(),
+                            ),
+                        );
+                    }
                     self.inputs
                         .unit_effects
                         .insert(context.unit, summary.clone());
@@ -324,6 +436,15 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Ok(Some(main)) = self.autonomous_entry(expr) {
+            match main.declaration.target {
+                etas_types::method::MethodTarget::Source { callable, .. }
+                | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                    return vec![EffectUnit::Item(callable)];
+                }
+                _ => {}
+            }
+        }
         if let Some(targets) = self.spec_method_targets.get(&expr) {
             return targets.iter().copied().collect();
         }
@@ -458,7 +579,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             .facts
             .agent_inferences
             .get(&expr)
-            .map(|fact| fact.agent)
+            .map(|fact| (fact.agent, fact.owner))
             .or_else(|| self.tool_invocation_agent(expr).ok().flatten())
         {
             agents.insert(agent);
@@ -468,12 +589,12 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 self.types.store.get(context)
                 && let Some(method) = self.types.facts.agent_methods.get(method)
             {
-                agents.insert(method.agent);
+                agents.insert((method.agent, method.body));
             }
         }
         let mut dependencies = std::collections::BTreeSet::new();
-        for agent in agents {
-            if let Some(tools) = self.agent_model_tools(agent) {
+        for (agent, method) in agents {
+            if let Some(tools) = self.agent_model_tools(agent, method) {
                 for tool in tools {
                     if let super::inference::ModelToolSource::Item(item) = tool {
                         dependencies.insert(EffectUnit::Item(item));
@@ -492,6 +613,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         summary: &Self::Summary,
         mut state: Self::Domain,
     ) -> Self::Domain {
+        self.record_agent_dispatch(site.call, &mut state);
         let frozen = if let EffectUnit::Item(item) = callee {
             self.frozen_calls.get(&item).cloned()
         } else {
@@ -516,21 +638,32 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         {
             return self.incomplete_at(site.span, error.to_string(), state);
         }
-        let summary = match self.specialize_summary_for_call(callee, &site, &state, summary, None) {
-            Ok(summary) => summary,
-            Err(super::specialize::EffectSpecializationError::Interrupted(interruption)) => {
-                self.callable_summaries.borrow_mut().interruption = Some(interruption);
-                return state;
-            }
-            Err(error) => {
-                return self.incomplete_at(
-                    site.span,
-                    format!("call effect selector specialization failed: {error}"),
-                    state,
-                );
-            }
-        };
-        if let Err(error) = self.record_source_call_arguments(callee, &site, &state, None) {
+        let invoked_projections = Self::invoked_parameter_projections(summary);
+        let mut summary =
+            match self.specialize_summary_for_call(callee, &site, &state, summary, None) {
+                Ok(summary) => summary,
+                Err(super::specialize::EffectSpecializationError::Interrupted(interruption)) => {
+                    self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                    return state;
+                }
+                Err(error) => {
+                    return self.incomplete_at(
+                        site.span,
+                        format!("call effect selector specialization failed: {error}"),
+                        state,
+                    );
+                }
+            };
+        self.specialize_filesystem_open_call(&site, &mut summary);
+        if let Err(error) =
+            self.record_source_call_arguments(callee, &site, &state, None, &invoked_projections)
+        {
+            return self.incomplete_at(site.span, error.to_string(), state);
+        }
+        if let Err(error) = self
+            .apply_agent_helper_state(&site, callee, &summary, &mut state)
+            .and_then(|()| self.apply_committed_agent_state(&site, callee, &summary, &mut state))
+        {
             return self.incomplete_at(site.span, error.to_string(), state);
         }
         self.note_call_outcomes(site.call, Some(callee), &summary, &mut state);
@@ -557,7 +690,49 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             let mut other_unproved_control = false;
             let returns_flow = self.expr_type_contains_flow(site.call);
             for source in sources {
-                let mut summary = match self.latent_source_summary(source, site.span) {
+                let invocation_source = if matches!(
+                    source,
+                    LatentSource::Parameter { .. } | LatentSource::Projection(_)
+                ) && matches!(self.hir.exprs.get(site.call), Some(etas_hir::HirExpr::Call { args, .. }) if !args.is_empty())
+                {
+                    let inputs = match self.call_result_step(site.call, &state) {
+                        Ok(etas_code::descriptor::ValueProjectionStep::CallWithArguments {
+                            inputs,
+                        }) => inputs,
+                        Ok(_) => unreachable!("checked application records its inputs"),
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
+                    match self
+                        .project_parameter_origins(
+                            [source],
+                            &[etas_code::descriptor::ValueProjectionStep::Invocation { inputs }],
+                        )
+                        .and_then(|origins| origins.into_iter().next())
+                    {
+                        Some(source) => source,
+                        None => {
+                            return self.incomplete_at(
+                                site.span,
+                                "callback invocation has no checked input projection",
+                                state,
+                            );
+                        }
+                    }
+                } else {
+                    source
+                };
+                if invocation_source != source {
+                    let recorded = self
+                        .inputs
+                        .dynamic_call_sources
+                        .entry(site.call)
+                        .or_default();
+                    recorded.remove(&source);
+                    recorded.insert(invocation_source);
+                }
+                let mut summary = match self.latent_source_summary(invocation_source, site.span) {
                     Ok(summary) => summary,
                     Err(error) => {
                         return self.incomplete_at(site.span, error.to_string(), state);
@@ -691,6 +866,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         }
                         _ => {}
                     }
+                    let invoked_projections = Self::invoked_parameter_projections(&summary);
                     summary = match self.specialize_summary_for_call(
                         unit,
                         &site,
@@ -703,12 +879,39 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             return self.incomplete_at(site.span, error.to_string(), state);
                         }
                     };
-                    if let Err(error) =
-                        self.record_source_call_arguments(unit, &site, &state, environment)
-                    {
+                    if let Err(error) = self.record_source_call_arguments(
+                        unit,
+                        &site,
+                        &state,
+                        environment,
+                        &invoked_projections,
+                    ) {
                         return self.incomplete_at(site.span, error.to_string(), state);
                     }
                     state = self.validate_returned_flow_source(&site, state);
+                } else if matches!(
+                    source,
+                    LatentSource::Parameter { .. } | LatentSource::Projection(_)
+                ) && (returns_flow || self.expr_type_has_parameters(site.call))
+                {
+                    let step = match self.call_result_step(site.call, &state) {
+                        Ok(step) => step,
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
+                    let Some(origins) = self.project_parameter_origins([source], &[step]) else {
+                        return self.incomplete_at(
+                            site.span,
+                            format!(
+                                "callback result requires its checked value projection: {source:?}"
+                            ),
+                            state,
+                        );
+                    };
+                    state
+                        .local_latent_values
+                        .record_value_sources(site.call, origins);
                 } else if returns_flow {
                     state.local_latent_values.record_value_sources(
                         site.call,
@@ -720,6 +923,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                     .as_ref()
                     .is_some_and(crate::CallableExitSummary::returns_only)
                 {
+                    // Exit facts identify the callable; their argument field
+                    // already records this invocation's checked inputs. The
+                    // invocation projection is retained in the effect trace.
                     if let Some(target) = match source {
                         LatentSource::Parameter { symbol, .. } => {
                             Some(crate::ParameterCallTarget::Native(symbol))
@@ -841,7 +1047,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             return state;
         }
         if let Some(flow) = self.flow_type_for_expr(site.callee_expr) {
-            if flow.effects.is_none() && self.is_projected_flow_value(site.callee_expr) {
+            if flow.declared_effects().is_none() && self.is_projected_flow_value(site.callee_expr) {
                 return self.reject_effect_state(
                     site.span,
                     "latent flow realization requires checked latent source facts",

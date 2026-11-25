@@ -38,6 +38,7 @@ impl EffectFactProjector {
             metadata_callable_graphs: analysis.inputs.metadata_callable_graphs,
             captured_callables: analysis.inputs.captured_callables,
             native_call_targets: analysis.inputs.native_call_targets,
+            contract_method_calls: analysis.inputs.contract_method_calls,
             source_call_arguments: analysis.inputs.source_call_arguments,
             dynamic_call_sources: analysis.inputs.dynamic_call_sources,
             iteration_call_sources: analysis.inputs.iteration_call_sources,
@@ -448,7 +449,7 @@ fn collect_task_effects(
             }
         }
         Some(etas_types::Type::Function(flow)) => {
-            if let Some(row) = &flow.effects {
+            if let Some(row) = flow.declared_effects() {
                 effects.union_assign(&row_from_type_ref(registry, row));
             }
         }
@@ -536,16 +537,15 @@ fn task_owner_scope(
                 };
                 body_containing_expr(index, handler)?
             }
-            HirBodyKind::MatchArm { expr, .. } | HirBodyKind::StageLimit { expr, .. } => {
-                body_containing_expr(index, expr)?
-            }
+            HirBodyKind::MatchArm { expr, .. } => body_containing_expr(index, expr)?,
             HirBodyKind::Flow
             | HirBodyKind::Tool
             | HirBodyKind::Agent
             | HirBodyKind::TopLevelLet
             | HirBodyKind::ImplFlow(_)
             | HirBodyKind::ParameterDefault { .. }
-            | HirBodyKind::AnnotationArg { .. } => return None,
+            | HirBodyKind::AnnotationArg { .. }
+            | HirBodyKind::FieldAnnotation { .. } => return None,
         };
     }
 }
@@ -613,8 +613,7 @@ fn materialize_latent_effects(
         };
         let mut declared_bound = match types.store.get(flow_type) {
             Some(Type::Function(flow)) => flow
-                .effects
-                .as_ref()
+                .declared_effects()
                 .map(|row| row_from_type_ref(registry, row)),
             _ => {
                 let span = hir

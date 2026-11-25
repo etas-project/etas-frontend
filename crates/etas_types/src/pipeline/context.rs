@@ -13,6 +13,9 @@ pub struct TypePipelineContext<'a> {
     pub symbols: Arc<TypeSymbolIndex>,
     pub(crate) signature_base: Option<&'a crate::SignatureEnvironment>,
     pub(crate) body_parameters: Option<crate::pipeline::body::instantiation::BodyParameters>,
+    pub(crate) construction_parameters: HashMap<etas_hir::SymbolId, crate::TypeId>,
+    /// Lexical binders while importing a definition-owned metadata template.
+    pub(crate) external_type_parameters: HashMap<String, crate::TypeId>,
     pub diagnostics: Vec<Diagnostic>,
     pub lowering_type_stack: Vec<etas_hir::SymbolId>,
     pub(crate) type_applications: Vec<crate::lower::type_application::TypeApplication>,
@@ -140,6 +143,8 @@ impl<'a> TypePipelineContext<'a> {
             symbols: Arc::new(TypeSymbolIndex::build(hir)),
             signature_base: None,
             body_parameters: None,
+            construction_parameters: HashMap::new(),
+            external_type_parameters: HashMap::new(),
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
@@ -184,6 +189,8 @@ impl<'a> TypePipelineContext<'a> {
             symbols: base.symbols.clone(),
             signature_base: Some(base),
             body_parameters: None,
+            construction_parameters: HashMap::new(),
+            external_type_parameters: HashMap::new(),
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
@@ -273,7 +280,10 @@ impl<'a> TypePipelineContext<'a> {
     }
 
     pub(crate) fn bound_type_parameter(&self, symbol: etas_hir::SymbolId) -> Option<crate::TypeId> {
-        self.body_parameters.as_ref()?.types.get(&symbol).copied()
+        self.construction_parameters
+            .get(&symbol)
+            .copied()
+            .or_else(|| self.body_parameters.as_ref()?.types.get(&symbol).copied())
     }
 
     pub(crate) fn bound_effect_parameter(
@@ -287,16 +297,41 @@ impl<'a> TypePipelineContext<'a> {
         &mut self,
         ty: crate::TypeId,
     ) -> Result<crate::TypeId, crate::TypeSubstitutionError> {
-        let Some(parameters) = &self.body_parameters else {
-            return Ok(ty);
-        };
+        if self.construction_parameters.is_empty() {
+            let Some(parameters) = &self.body_parameters else {
+                return Ok(ty);
+            };
+            return crate::TypeSubstitutionEngine::materializing(
+                &mut self.interner,
+                &std::collections::HashMap::new(),
+                None,
+            )
+            .with_source_parameters(&parameters.types)
+            .with_effect_arguments(&parameters.row_names)
+            .substitute(ty);
+        }
+        let mut parameters = self
+            .body_parameters
+            .as_ref()
+            .map(|parameters| parameters.types.clone())
+            .unwrap_or_default();
+        parameters.extend(
+            self.construction_parameters
+                .iter()
+                .map(|(symbol, ty)| (*symbol, *ty)),
+        );
+        let rows = self
+            .body_parameters
+            .as_ref()
+            .map(|parameters| parameters.row_names.clone())
+            .unwrap_or_default();
         crate::TypeSubstitutionEngine::materializing(
             &mut self.interner,
             &std::collections::HashMap::new(),
             None,
         )
-        .with_source_parameters(&parameters.types)
-        .with_effect_arguments(&parameters.row_names)
+        .with_source_parameters(&parameters)
+        .with_effect_arguments(&rows)
         .substitute(ty)
     }
 
@@ -304,9 +339,43 @@ impl<'a> TypePipelineContext<'a> {
         &self,
         component: crate::TypeId,
     ) -> Option<&crate::AgentSignature> {
+        let component = match self.interner.store().get(component) {
+            Some(crate::Type::Applied { constructor, .. }) => crate::TypeId(constructor.0),
+            _ => component,
+        };
         self.signature_facts
             .agent_signature(component)
             .or_else(|| self.signature_base?.facts.agent_signature(component))
+    }
+
+    pub(crate) fn agent_state_type(
+        &mut self,
+        receiver: crate::TypeId,
+    ) -> Result<Option<crate::TypeId>, crate::TypeSubstitutionError> {
+        let Some(state) = self.agent_signature(receiver).and_then(|agent| agent.state) else {
+            return Ok(None);
+        };
+        let Some(crate::Type::Applied { constructor, args }) =
+            self.interner.store().get(receiver).cloned()
+        else {
+            return Ok(Some(state));
+        };
+        let names = self
+            .type_generics(crate::TypeId(constructor.0))
+            .into_iter()
+            .flatten()
+            .map(|parameter| parameter.name.clone())
+            .zip(args.iter().copied())
+            .collect();
+        let canonical = crate::ty::canonical_parameters_for_application(
+            self.interner.store(),
+            crate::TypeId(constructor.0),
+            &args,
+        )?;
+        crate::TypeSubstitutionEngine::materializing(&mut self.interner, &names, None)
+            .with_canonical_parameters(&canonical)
+            .substitute(state)
+            .map(Some)
     }
 
     pub(crate) fn agent_method(

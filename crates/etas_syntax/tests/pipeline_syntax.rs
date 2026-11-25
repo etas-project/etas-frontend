@@ -5,11 +5,11 @@ use etas_syntax::{
 };
 
 #[test]
-fn a_stage_limit_does_not_consume_the_next_pipeline_stage() {
+fn limit_and_limits_are_ordinary_identifiers_in_pipelines() {
     let parsed = parse_program(SourceFile::anonymous(
         r#"
-flow main(value: i32) -> i32 {
-    return value ~> first limit Tokens(23) ~> second limit Tokens(11);
+flow limit(limits: i32) -> i32 {
+    return limits ~> first ~> second;
 }
 "#,
     ));
@@ -17,6 +17,7 @@ flow main(value: i32) -> i32 {
     let Item::Flow(flow) = &parsed.value.items[0].item else {
         panic!("flow");
     };
+    assert_eq!(flow.name.text, "limit");
     let Stmt::Return(returned) = &flow.body.stmts[0] else {
         panic!("return");
     };
@@ -24,15 +25,6 @@ flow main(value: i32) -> i32 {
         panic!("pipeline");
     };
     assert_eq!(pipeline.stages.len(), 2);
-    for stage in &pipeline.stages {
-        assert!(matches!(stage.expr.as_ref(), Expr::Path(_)));
-        assert_eq!(stage.limits.len(), 1);
-        assert!(
-            matches!(&stage.limits[0], Expr::Call(_)),
-            "{:?}",
-            stage.limits
-        );
-    }
 }
 
 #[test]

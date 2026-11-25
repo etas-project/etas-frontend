@@ -1,4 +1,5 @@
 mod arena;
+mod constructor_injection;
 pub mod db;
 pub mod diagnostic;
 pub mod dump;
@@ -10,6 +11,7 @@ pub mod scope;
 mod serde_ordered;
 pub mod source_map;
 pub mod symbol;
+mod type_stage;
 pub mod view;
 
 pub use db::HirDb;

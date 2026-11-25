@@ -5,6 +5,7 @@ use crate::{EffectArgRef, EffectRef, EffectRowRef, Type, TypeId, TypeStore, Type
 #[derive(Clone, Debug, Default)]
 pub struct Substitution {
     vars: HashMap<TypeVarId, TypeId>,
+    inferred_rows: HashMap<String, String>,
 }
 
 impl Substitution {
@@ -19,6 +20,33 @@ impl Substitution {
     pub fn extend(&mut self, other: &Substitution) {
         self.vars
             .extend(other.vars.iter().map(|(var, ty)| (*var, *ty)));
+        for (left, right) in &other.inferred_rows {
+            self.unify_inferred_rows(left, right);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vars.is_empty() && self.inferred_rows.is_empty()
+    }
+
+    pub(crate) fn inferred_row<'a>(&'a self, mut name: &'a str) -> &'a str {
+        while let Some(parent) = self.inferred_rows.get(name) {
+            name = parent;
+        }
+        name
+    }
+
+    fn unify_inferred_rows(&mut self, left: &str, right: &str) {
+        let left = self.inferred_row(left).to_owned();
+        let right = self.inferred_row(right).to_owned();
+        if left != right {
+            let (parent, child) = if left < right {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            self.inferred_rows.insert(child, parent);
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (TypeVarId, TypeId)> + '_ {
@@ -242,6 +270,15 @@ impl<'a> TypeUnifier<'a> {
                     && !same_effect_row(a.effects.as_ref(), b.effects.as_ref())
                 {
                     return Err(UnifyError::Mismatch { lhs, rhs });
+                }
+                if let (Some(left), Some(right)) = (&a.effects, &b.effects)
+                    && left.is_inferred_lambda()
+                    && right.is_inferred_lambda()
+                {
+                    self.substitution.unify_inferred_rows(
+                        left.tail.as_deref().unwrap(),
+                        right.tail.as_deref().unwrap(),
+                    );
                 }
                 // Erasure projects descriptor values, not higher-order parameter types.
                 let erasure = self.read_only_erasure;

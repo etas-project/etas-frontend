@@ -18,7 +18,7 @@ pub(super) use crate::infer::unit::{EffectAnonymousFlowBody, EffectUnit};
 pub(super) use crate::{
     ActionInstanceRef, ActionTraceDomain, Effect, EffectRow, EffectSet, EffectSummary,
     FrontendRejectionReason, InterpreterSupport, LimitKind, LimitRequirement, LimitValue,
-    RequirementFact, RequirementSet, effect_var_id_from_name,
+    effect_var_id_from_name,
 };
 
 pub(super) use super::engine::{arg_expr, external_summary_matches_path, limit_kind_from_std};

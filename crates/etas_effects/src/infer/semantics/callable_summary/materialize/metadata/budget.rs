@@ -33,6 +33,7 @@ mod tests {
 
     fn graph() -> etas_package_metadata::CallableValueGraph {
         etas_package_metadata::CallableValueGraph {
+            call_inputs: Vec::new(),
             source_projections: Vec::new(),
             parameter_projections: Vec::new(),
             objects: Vec::new(),

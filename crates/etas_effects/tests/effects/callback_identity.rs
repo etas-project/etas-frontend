@@ -40,7 +40,7 @@ flow main() -> unit {
         "{summary:?}"
     );
     assert!(
-        matches!(&summary.action_trace, ActionTraceDomain::Event(event) if event.action == stdout),
+        matches!(summary.action_trace.structure(), ActionTraceDomain::Event(event) if event.action == stdout),
         "{summary:?}"
     );
 }
@@ -90,7 +90,7 @@ flow main() -> unit {
     let mut counts = [0, 0];
     let mut pending = vec![&summary.action_trace];
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Event(event) => {
                 counts[0] += usize::from(event.action == stdout);
                 counts[1] += usize::from(event.action == stderr);
@@ -139,7 +139,7 @@ flow main(f: () -> unit ![]) -> unit {
     let mut calls = 0;
     let mut pending = vec![&summary.action_trace];
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Event(event) => calls += usize::from(event.action == stdout),
             ActionTraceDomain::Seq(parts) => pending.extend(parts),
             ActionTraceDomain::Empty => {}

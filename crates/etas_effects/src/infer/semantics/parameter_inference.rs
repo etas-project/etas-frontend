@@ -27,7 +27,7 @@ impl EffectSemantics<'_> {
             let Some(ty) = self.symbol_value_type(symbol) else {
                 continue;
             };
-            if !matches!(self.types.store.get(ty), Some(Type::Function(flow)) if flow.effects.is_none())
+            if !matches!(self.types.store.get(ty), Some(Type::Function(flow)) if flow.declared_effects().is_none())
             {
                 continue;
             }
@@ -92,7 +92,7 @@ impl EffectSemantics<'_> {
     ) -> EffectState {
         if self
             .flow_type_for_expr(site.call)
-            .is_some_and(|flow| flow.effects.is_none())
+            .is_some_and(|flow| flow.declared_effects().is_none())
             && self
                 .latent_sources_for_expr(&state, site.call)
                 .is_none_or(|sources| {

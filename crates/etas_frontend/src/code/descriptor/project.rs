@@ -71,6 +71,11 @@ pub struct DefinitionDescriptorProjector<'a> {
     pub(super) work: Vec<Work>,
     memo: HashMap<(TypeId, usize), TypeInfoRef>,
     declarations: HashMap<DefinitionKey, TypeInfoRef>,
+    pub(super) shared_traces: HashMap<(TypeInfoRef, etas_code::CodeFingerprint), TraceInfoRef>,
+    pub(super) imported_handler_scopes:
+        HashMap<etas_effects::ParameterHandlerScopeRef, ParameterHandlerScopeInfo>,
+    pub(super) epsilon_analysis: etas_effects::trace_spec::EpsilonTraceAnalysis,
+    pub(super) epsilon_trace: Option<TraceInfoRef>,
     edges: usize,
     text_bytes: usize,
 }
@@ -101,6 +106,10 @@ impl<'a> DefinitionDescriptorProjector<'a> {
             work: Vec::new(),
             memo: HashMap::new(),
             declarations: HashMap::new(),
+            shared_traces: HashMap::new(),
+            imported_handler_scopes: HashMap::new(),
+            epsilon_analysis: Default::default(),
+            epsilon_trace: None,
             edges: 0,
             text_bytes: 0,
         }
@@ -166,6 +175,22 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 effects: None,
                 requested_actions: None,
             },
+        )
+    }
+
+    pub(crate) fn project_method_overload_inputs(
+        &mut self,
+        subject: &DefinitionKey,
+        owner_parameters: &[etas_types::CallableGenericParam],
+        signature: &CallableSignature,
+    ) -> Result<TypeInfoRef, ProjectionError> {
+        let mut signature = signature.clone();
+        signature
+            .generic_params
+            .splice(0..0, owner_parameters.iter().cloned());
+        self.project_overload_inputs_in_scope(
+            GenericOwner::ImplementationPattern(subject.clone()),
+            &signature,
         )
     }
 
@@ -755,6 +780,30 @@ impl<'a> DefinitionDescriptorProjector<'a> {
     }
     pub(super) fn node(&self) -> Result<(), ProjectionError> {
         self.ensure_nodes(1)
+    }
+
+    pub(crate) fn projection_error(
+        &self,
+        callable: &etas_code::CallableId,
+        stage: &str,
+        source: ProjectionError,
+    ) -> ProjectionError {
+        if matches!(source, ProjectionError::CallableContext { .. }) {
+            return source;
+        }
+        ProjectionError::CallableContext {
+            callable: callable.clone(),
+            stage: format!(
+                "{stage}: types={}, rows={}, binders={}, traces={}, shared={}, imported_scopes={}",
+                self.types.len(),
+                self.rows.len(),
+                self.binders.len(),
+                self.traces.len(),
+                self.shared_traces.len(),
+                self.imported_handler_scopes.len(),
+            ),
+            source: Box::new(source),
+        }
     }
     pub(super) fn ensure_nodes(&self, additional: usize) -> Result<(), ProjectionError> {
         let count = self

@@ -555,23 +555,16 @@ pub(crate) fn checked_spec_plan(
         if !seen.insert(spec.clone()) {
             continue;
         }
-        if !source_specs.is_empty() {
-            let canonical_ref = match &spec {
-                CheckedSpecRef::Source(symbol) => source
-                    .types
-                    .std_spec_aliases
-                    .get(symbol)
-                    .map(|path| CheckedSpecRef::Std(path.clone()))
-                    .unwrap_or_else(|| spec.clone()),
-                _ => spec.clone(),
-            };
-            if let Some(mapped) = source_specs.get(&identity(&canonical_ref)?) {
-                mapping.insert(spec, mapped.clone());
-                continue;
-            }
-        }
+        // A canonical imported role can inherit a standard spec. Keep that
+        // bound portable even when the SDK has a native declaration for it.
         if let Some(mapped) = checked_standard_ref(source, target, &spec)? {
             mapping.insert(spec, mapped);
+            continue;
+        }
+        if !source_specs.is_empty()
+            && let Some(mapped) = source_specs.get(&identity(&spec)?)
+        {
+            mapping.insert(spec, mapped.clone());
             continue;
         }
         let canonical = identity(&spec)?;
@@ -779,10 +772,26 @@ fn checked_standard_ref(
     target: &etas_std::StdRegistry,
     spec: &CheckedSpecRef,
 ) -> Result<Option<CheckedSpecRef>, ProjectionError> {
+    let external_path = |identity: &etas_types::facts::specs::ExternalSpecIdentity| {
+        source
+            .types
+            .external_specs
+            .std_identities
+            .get_key_value(identity)
+            .map(|(identity, _)| &identity.path)
+    };
     let path = match spec {
         CheckedSpecRef::Std(path) => Some(path),
-        CheckedSpecRef::Source(symbol) => source.types.std_spec_aliases.get(symbol),
-        CheckedSpecRef::External(_) | CheckedSpecRef::Canonical(_) => None,
+        CheckedSpecRef::Source(symbol) => source.types.std_spec_aliases.get(symbol).or_else(|| {
+            source
+                .types
+                .external_specs
+                .aliases
+                .get(symbol)
+                .and_then(external_path)
+        }),
+        CheckedSpecRef::External(identity) => external_path(identity),
+        CheckedSpecRef::Canonical(_) => None,
     };
     let Some(path) = path else { return Ok(None) };
     if source.std_registry.version() != target.version() {

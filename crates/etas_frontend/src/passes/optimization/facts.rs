@@ -88,6 +88,7 @@ pub(super) fn invalidate_replaced_expressions(
             && let Some(exits) = &mut summary.exits
         {
             exits.value_projections.clear();
+            exits.receiver_projections.clear();
         }
     }
     facts
@@ -95,6 +96,9 @@ pub(super) fn invalidate_replaced_expressions(
         .retain(|expr, _| !expressions.contains(expr));
     facts
         .native_call_targets
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
+        .contract_method_calls
         .retain(|expr, _| !expressions.contains(expr));
     facts
         .source_call_arguments

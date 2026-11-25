@@ -185,6 +185,14 @@ pub struct FlowType {
     pub effects: Option<EffectRowRef>,
 }
 
+impl FlowType {
+    pub fn declared_effects(&self) -> Option<&EffectRowRef> {
+        self.effects
+            .as_ref()
+            .filter(|row| !row.is_inferred_lambda())
+    }
+}
+
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]

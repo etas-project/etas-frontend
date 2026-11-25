@@ -188,6 +188,7 @@ pub enum TypeConstraint {
         start: TypeId,
         end: TypeId,
         output: TypeId,
+        index_error: Option<TypeId>,
         origin: ConstraintOrigin,
     },
     Iterable {

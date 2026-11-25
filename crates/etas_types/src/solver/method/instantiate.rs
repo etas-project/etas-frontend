@@ -167,7 +167,7 @@ pub(super) fn probe(
             let subject =
                 resolve_known_substitutions(input.store, &result.report, parameter.subject);
             for bound in &parameter.bounds {
-                obligations.push(SpecObligation {
+                let obligation = SpecObligation {
                     ty: subject,
                     spec: bound.spec.clone(),
                     args: bound
@@ -176,7 +176,12 @@ pub(super) fn probe(
                         .map(|arg| resolve_known_substitutions(input.store, &result.report, *arg))
                         .collect(),
                     span: call.origin.span,
-                });
+                };
+                if matches!(input.store.get(subject), Some(Type::Var(_))) {
+                    result.report.pending_spec_obligations.push(obligation);
+                } else {
+                    obligations.push(obligation);
+                }
             }
         }
         if let MethodEvidence::Bound {

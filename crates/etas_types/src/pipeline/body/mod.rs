@@ -16,6 +16,7 @@ pub mod collect {
     pub(in crate::pipeline) mod handler_request;
     pub mod index;
     pub mod inference;
+    pub(in crate::pipeline) mod injections;
     pub mod lambda;
     pub mod literal;
     pub mod loop_stmt;

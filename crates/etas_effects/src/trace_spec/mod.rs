@@ -5,6 +5,7 @@ mod materialize;
 pub(crate) use materialize::checked_callable_owner_kind;
 mod model;
 mod monitor;
+pub use monitor::EpsilonTraceAnalysis;
 mod residual_eligibility;
 mod semantics;
 mod source_obligation;

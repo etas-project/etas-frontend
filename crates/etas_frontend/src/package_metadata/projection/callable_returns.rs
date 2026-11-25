@@ -6,12 +6,46 @@ use etas_package_metadata::{
 };
 
 impl ProjectMetadataProjection<'_> {
+    pub(in crate::package_metadata) fn invocation_callable_graph(
+        &self,
+        item: HirItemId,
+        summary: &EffectSummary,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<Option<CallableValueGraph>, PackageMetadataError> {
+        use etas_code::descriptor::ValueProjectionStep;
+        use etas_effects::ParameterCallTarget as Target;
+        let needs_inputs = summary_parameters(summary).into_iter().any(|target| {
+            let path = match target {
+                Target::Projection(id) => self
+                    .checked
+                    .effects
+                    .parameter_projections
+                    .get(&id)
+                    .map(|p| &p.path),
+                Target::ExternalProjection(id) => self
+                    .checked
+                    .effects
+                    .external_parameter_projections
+                    .get(&id)
+                    .map(|p| &p.path),
+                _ => None,
+            };
+            path.is_some_and(|path| !ValueProjectionStep::call_inputs(path).is_empty())
+        });
+        if needs_inputs {
+            self.implementation_callable_graph(item, identities)
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     fn callable_trace_parameters(
         &self,
         summary: &EffectSummary,
     ) -> Result<BTreeSet<etas_effects::ParameterCallTarget>, PackageMetadataError> {
         use etas_effects::{ParameterCallTarget as Target, facts::CallableValueOrigin as Origin};
-        let mut parameters = trace_parameters(&summary.action_trace);
+        let mut parameters = summary_parameters(summary);
         let mut pending = parameters
             .iter()
             .filter_map(|parameter| match parameter {
@@ -109,6 +143,10 @@ impl ProjectMetadataProjection<'_> {
         let Some(roots) = builder.sources(&sources, CallableValueScope::Root, None)? else {
             return Ok(None);
         };
+        if roots.is_empty() {
+            // Checked absence of callable payload is not a callable graph.
+            return Ok(None);
+        }
         builder.root_projections =
             builder.return_projections(summary, CallableValueScope::Root, None)?;
         builder.finish(roots)
@@ -173,6 +211,9 @@ impl<'a, 'b> Builder<'a, 'b> {
             root,
             identities: projection.identities,
             parameter_projections: Default::default(),
+            input_instances: Default::default(),
+            pending_inputs: Default::default(),
+            call_inputs: Vec::new(),
             values: vec![],
             objects: vec![],
             native_objects: BTreeMap::new(),
@@ -202,7 +243,19 @@ impl<'a, 'b> Builder<'a, 'b> {
         mut self,
         roots: Vec<CallableValueSource>,
     ) -> Result<Option<crate::package_metadata::CheckedCallableGraph>, PackageMetadataError> {
-        while let Some(pending) = self.pending.pop() {
+        loop {
+            let pending = self.pending.pop();
+            if pending.is_none() {
+                let input = self.pending_inputs.borrow_mut().pop();
+                let Some((index, input)) = input else { break };
+                let node = self.input_node(input)?;
+                if self.call_inputs.len() <= index as usize {
+                    self.call_inputs.resize_with(index as usize + 1, || None);
+                }
+                self.call_inputs[index as usize] = Some(node);
+                continue;
+            }
+            let pending = pending.unwrap();
             let (index, node) = match pending {
                 Pending::ForeignObject(index, instance) => {
                     let Some(object) = self.foreign_object_node(instance)? else {
@@ -232,6 +285,11 @@ impl<'a, 'b> Builder<'a, 'b> {
             self.values[index as usize] = Some(node);
         }
         let mut graph = CallableValueGraph {
+            call_inputs: self
+                .call_inputs
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| invalid("callback input graph contains an unmaterialized node"))?,
             source_projections: self.root_projections,
             parameter_projections: self.parameter_projections.into_inner(),
             objects: self
@@ -288,7 +346,16 @@ enum Pending {
     Reference(u32, etas_effects::CallableReturnReference),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum InputInstance {
+    Native { id: u32, scope: CallableValueScope },
+    Foreign { id: u32, instance: ForeignInstance },
+}
+
 struct Builder<'a, 'b> {
+    input_instances: std::cell::RefCell<BTreeMap<InputInstance, u32>>,
+    pending_inputs: std::cell::RefCell<Vec<(u32, InputInstance)>>,
+    call_inputs: Vec<Option<etas_package_metadata::CallableCallInputs>>,
     parameter_projections: std::cell::RefCell<Vec<Vec<etas_code::descriptor::ValueProjectionStep>>>,
     projection: &'a ProjectMetadataProjection<'b>,
     root: HirItemId,
@@ -310,6 +377,19 @@ struct Builder<'a, 'b> {
 
 impl Builder<'_, '_> {
     fn with_projection(
+        &self,
+        parameter: CallableValueParameter,
+        suffix: &[etas_code::descriptor::ValueProjectionStep],
+        scope: CallableValueScope,
+    ) -> Result<CallableValueParameter, PackageMetadataError> {
+        let mut path = suffix.to_vec();
+        etas_code::descriptor::ValueProjectionStep::map_call_inputs(&mut path, &mut |id| {
+            self.reserve_inputs(InputInstance::Native { id, scope })
+        })?;
+        self.with_portable_projection(parameter, &path)
+    }
+
+    fn with_portable_projection(
         &self,
         mut parameter: CallableValueParameter,
         suffix: &[etas_code::descriptor::ValueProjectionStep],
@@ -358,7 +438,8 @@ impl Builder<'_, '_> {
                 let Some(root) = self.target_parameter(projection.root, scope)? else {
                     return Ok(None);
                 };
-                self.with_projection(root, &projection.path).map(Some)
+                self.with_projection(root, &projection.path, scope)
+                    .map(Some)
             }
             etas_effects::ParameterCallTarget::Interface(position) => {
                 Ok(Some(CallableValueParameter {
@@ -381,7 +462,8 @@ impl Builder<'_, '_> {
                 let Some(parameter) = self.parameter(projection.parameter, scope)? else {
                     return Ok(None);
                 };
-                self.with_projection(parameter, &projection.path).map(Some)
+                self.with_projection(parameter, &projection.path, scope)
+                    .map(Some)
             }
             _ => Ok(None),
         }
@@ -649,8 +731,12 @@ impl Builder<'_, '_> {
             let Some(parameter) =
                 self.target_parameter(target, CallableValueScope::Value(index))?
             else {
-                return self
-                    .unavailable_node(index, "trace parameter has no exported lexical binding");
+                return self.unavailable_node(
+                    index,
+                    &format!(
+                        "trace parameter {target:?} has no exported lexical binding in {unit:?}"
+                    ),
+                );
             };
             if !self.scope_contains(CallableValueScope::Value(index), parameter.scope) {
                 return self
@@ -667,10 +753,15 @@ impl Builder<'_, '_> {
         }
         let invocation_parameters =
             self.invocation_parameters(CallableValueScope::Value(index), &mut parameter_bindings);
+        for (symbol, position) in &invocation_parameters {
+            trace_labels
+                .entry(etas_effects::ParameterCallTarget::Native(*symbol))
+                .or_insert_with(|| parameter_bindings[*position as usize].label.clone());
+        }
         let invocation_projection = self
             .projection
             .with_invocation_parameters(invocation_parameters);
-        let Some(projected) = summary::project(
+        let Some(mut projected) = summary::project(
             &invocation_projection,
             summary,
             &type_names,
@@ -687,6 +778,16 @@ impl Builder<'_, '_> {
             };
             return self.unavailable_node(index, reason);
         };
+        projected.behavior.suspension =
+            self.projection
+                .checked
+                .effects
+                .suspension
+                .get(&unit)
+                .map(|summary| etas_code::descriptor::SuspensionInfo {
+                    may_suspend: summary.may_suspend,
+                    unknown: summary.unknown,
+                });
         Ok(Some(CallableValueNode {
             residual_checks: summary.residual_checks.iter().cloned().collect(),
             handler_requests: projected.handler_requests,
@@ -736,28 +837,28 @@ fn sources(summary: &EffectSummary) -> Option<BTreeSet<CallableReturnSource>> {
 }
 
 fn trace_parameters(trace: &ActionTraceDomain) -> BTreeSet<etas_effects::ParameterCallTarget> {
-    let mut parameters = BTreeSet::new();
-    let mut pending = vec![trace];
-    while let Some(trace) = pending.pop() {
-        match trace {
-            ActionTraceDomain::ParameterCall { target, .. } => {
-                parameters.insert(*target);
-            }
-            ActionTraceDomain::Widened {
-                parameter_calls, ..
-            } => {
-                for call in parameter_calls {
-                    parameters.insert(call.target);
-                }
-            }
-            ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
-                pending.extend(parts)
-            }
-            ActionTraceDomain::Repeat(part) => pending.push(part),
-            _ => {}
+    trace
+        .parameter_calls()
+        .into_iter()
+        .map(|call| call.target)
+        .collect()
+}
+
+fn summary_parameters(summary: &EffectSummary) -> BTreeSet<etas_effects::ParameterCallTarget> {
+    let mut targets = trace_parameters(&summary.action_trace);
+    let mut requests = vec![&summary.handler_requests];
+    if let Some(behavior) = &summary.default_behavior {
+        requests.push(&behavior.direct.handler_requests);
+        requests.extend(behavior.guarded.values().map(|part| &part.handler_requests));
+    }
+    for request in requests {
+        if let etas_effects::RequestInstantiationSummary::Available { parameters, .. } = request {
+            targets.extend(parameters.iter().map(|parameter| parameter.target));
         }
     }
-    parameters
+    // Return origins have their own graph projection. Completion gaps belong
+    // to descriptor outcome analysis, not this node's published input ABI.
+    targets
 }
 
 mod behavior;
@@ -777,3 +878,5 @@ pub(super) fn invalid(reason: &str) -> PackageMetadataError {
         reason: reason.into(),
     }
 }
+
+mod inputs;

@@ -43,9 +43,14 @@ pub(super) fn collect(
             Some(Type::Applied { constructor, .. }) => crate::TypeId(constructor.0),
             _ => method.self_type,
         };
+        let active = state.symbol_types.values().any(|fact| matches!(fact, SymbolTypeFact::Agent { signature } if signature.component == constructor && signature.state.is_some()));
         let mut fact = MethodSignatureFact {
             name: method.name.clone(),
-            owner: MethodOwner::Inherent(constructor),
+            owner: if active {
+                MethodOwner::Agent(constructor)
+            } else {
+                MethodOwner::Inherent(constructor)
+            },
             receiver,
             receiver_type: method.self_type,
             owner_params: method.owner_params.clone(),
@@ -149,6 +154,9 @@ pub(super) fn collect(
     let mut agents = state.agent_methods.values().collect::<Vec<_>>();
     agents.sort_by_key(|method| method.symbol);
     for method in agents {
+        if state.type_impl_methods.contains_key(&method.symbol) {
+            continue;
+        }
         let mut signature = method.callable.clone();
         signature.params.insert(0, method.component);
         if let Some(parameters) = &mut signature.parameter_interface {

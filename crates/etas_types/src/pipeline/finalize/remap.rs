@@ -373,6 +373,7 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
 
     fn agent(&mut self, signature: &mut crate::AgentSignature) {
         signature.component = self.ty(signature.component);
+        signature.state = signature.state.map(|state| self.ty(state));
         signature.definition_type = signature.definition_type.map(|ty| self.ty(ty));
         if let Some(entry) = &mut signature.default_entry {
             let entry = std::sync::Arc::make_mut(entry);
@@ -797,10 +798,22 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     facts.known_std_types.result_enum = facts.known_std_types.result_enum.map(|ty| remapper.ty(ty));
     facts.known_std_types.option_enum = facts.known_std_types.option_enum.map(|ty| remapper.ty(ty));
+    facts.known_std_types.source_slice =
+        facts.known_std_types.source_slice.map(|ty| remapper.ty(ty));
     facts.known_std_types.source_iterator = facts
         .known_std_types
         .source_iterator
         .map(|ty| remapper.ty(ty));
+    facts.known_std_types.trust_wrappers =
+        std::mem::take(&mut facts.known_std_types.trust_wrappers)
+            .into_iter()
+            .map(|(ty, wrapper)| (remapper.ty(ty), wrapper))
+            .collect();
+    facts.known_std_types.storage_resources =
+        std::mem::take(&mut facts.known_std_types.storage_resources)
+            .into_iter()
+            .map(|ty| remapper.ty(ty))
+            .collect();
     facts.known_std_types.directory_list_limit_error = facts
         .known_std_types
         .directory_list_limit_error

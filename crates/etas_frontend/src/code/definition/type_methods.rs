@@ -16,7 +16,7 @@ pub(crate) fn type_method_identities(
     limits: DescriptorLimits,
 ) -> Result<HashMap<SymbolId, MethodId>, ProjectionError> {
     let mut implementations = HashMap::new();
-    let mut methods = HashMap::new();
+    let mut groups = HashMap::<MethodId, Vec<_>>::new();
     for method in checked.types.type_impl_methods.values() {
         let implementation = match implementations.get(&method.implementation) {
             Some(identity) => identity,
@@ -35,10 +35,35 @@ pub(crate) fn type_method_identities(
                     .or_insert(identity)
             }
         };
-        methods.insert(
-            method.symbol,
-            MethodId::new(implementation.clone(), method.name.clone())?,
-        );
+        groups
+            .entry(MethodId::new(implementation.clone(), method.name.clone())?)
+            .or_default()
+            .push(method);
+    }
+    let mut methods = HashMap::new();
+    for (identity, declarations) in groups {
+        let overloaded = declarations.len() > 1;
+        for method in declarations {
+            let identity = if overloaded {
+                let Some(etas_types::SymbolTypeFact::Flow { signature }) =
+                    checked.types.symbol_types.get(&method.symbol)
+                else {
+                    return Err(ProjectionError::MissingCallable(method.symbol));
+                };
+                let mut projector =
+                    DefinitionDescriptorProjector::from_input(checked, identities, limits);
+                let inputs = projector.project_method_overload_inputs(
+                    identity.implementation().subject(),
+                    &method.owner_params,
+                    signature,
+                )?;
+                let signature = projector.finish()?.type_fingerprint(inputs)?;
+                identity.clone().with_overload(signature)
+            } else {
+                identity.clone()
+            };
+            methods.insert(method.symbol, identity);
+        }
     }
     Ok(methods)
 }

@@ -71,6 +71,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
             // These are checked source/capture identities, not type arena
             // references. Type and row substitution preserves their scope.
             value_projections: exits.value_projections.clone(),
+            receiver_projections: exits.receiver_projections.clone(),
             ..Default::default()
         };
         for exit in &exits.exits {
@@ -155,6 +156,9 @@ fn requirements<M: SummaryMapper>(
             mapper.checkpoint()?;
             Ok(match requirement {
                 RequirementFact::Limit(limit) => RequirementFact::Limit(limit.clone()),
+                RequirementFact::HostAuthority(action) => {
+                    RequirementFact::HostAuthority(mapper.effect(action.clone())?)
+                }
                 RequirementFact::TraceSpec(clause) => RequirementFact::TraceSpec(match clause {
                     TraceSpecClauseFact::Allow { pattern, label } => TraceSpecClauseFact::Allow {
                         pattern: mapper.row(pattern)?,

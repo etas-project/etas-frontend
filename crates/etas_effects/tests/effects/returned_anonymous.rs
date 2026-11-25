@@ -157,7 +157,7 @@ flow main(flag: bool) -> unit {{ let selected = choose(flag); selected(); select
         let mut calls = std::collections::BTreeMap::new();
         let mut pending = vec![&summary.action_trace];
         while let Some(trace) = pending.pop() {
-            match trace {
+            match trace.structure() {
                 ActionTraceDomain::Seq(children) | ActionTraceDomain::Choice(children) => {
                     pending.extend(children)
                 }
@@ -256,7 +256,7 @@ flow main(flag: bool) -> unit {
     let mut counts = std::collections::BTreeMap::new();
     let mut pending = vec![&main.action_trace];
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Empty => {}
             ActionTraceDomain::Seq(children) | ActionTraceDomain::Choice(children) => {
                 pending.extend(children)

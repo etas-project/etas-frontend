@@ -63,6 +63,7 @@ pub(super) fn empty_record_or_map<E>(
         return super::record::collect_record(
             ctx,
             &HirRecordExpr {
+                injections: None,
                 path: None,
                 generic_args: Vec::new(),
                 fields: Vec::new(),

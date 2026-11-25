@@ -417,12 +417,14 @@ impl EffectSemantics<'_> {
         let mut result = CallableExitSummary::default();
         if let Some(state) = control.return_state() {
             result.join_assign(&state.exits);
+            self.capture_agent_state_outputs(unit, state, &mut result);
             if state.exits.exits.is_empty() {
                 result.gaps.insert(Gap::MissingReturnObservation);
             }
             self.record_escaping_error_gap(state, &mut result);
         }
         if let Some(state) = control.normal_state() {
+            self.capture_agent_state_outputs(unit, state, &mut result);
             result.gaps.extend(state.exits.gaps.iter().cloned());
             result
                 .handler_gaps

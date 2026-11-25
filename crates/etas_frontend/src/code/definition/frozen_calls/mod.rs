@@ -117,8 +117,21 @@ impl FrozenCalls<'_> {
         let from =
             projection::Projection::build(original.as_ref().into(), &source_origins, self.limits)?;
         let to = projection::Projection::build(input, &origins, self.limits)?;
-        let relocation =
-            relocate::Relocation::new(original, input, self.types, &from, &to, self.overlay)?;
+        let relocation = relocate::Relocation::new(
+            original,
+            input,
+            self.types,
+            &from,
+            &to,
+            self.overlay,
+            original
+                .effects
+                .parameter_projections
+                .values()
+                .flat_map(|projection| projection.call_inputs.keys())
+                .max()
+                .map_or(0, |id| id + 1),
+        )?;
         let mut output = FrozenCallableEnvironment::default();
         for (id, source) in &from.callables {
             let target = to.callables.get(id).copied().ok_or_else(|| {

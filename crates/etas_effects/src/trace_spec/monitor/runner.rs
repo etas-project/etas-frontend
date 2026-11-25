@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use super::graph::{Node, NodeId, TraceGraph};
+use std::collections::{BTreeMap, BTreeSet};
 
 use etas_code::residual::monitor::{
     PriorEvidenceLabel, PriorEvidenceState, compile_prior_evidence,
@@ -28,11 +29,33 @@ pub fn require_before(
     registry: &EffectRegistry,
     types: &etas_types::TypeOutput,
 ) -> TemporalMonitorResult {
+    super::TemporalMonitorCache::new(registry, types).require_before(trace, guard, target)
+}
+
+#[derive(Default)]
+pub(super) struct TransitionCache {
+    rows: BTreeMap<(NodeId, AbstractState), TraceRun>,
+    dependents: BTreeMap<(NodeId, AbstractState), BTreeSet<(NodeId, AbstractState)>>,
+    pending: BTreeSet<(NodeId, AbstractState)>,
+    current: Option<(NodeId, AbstractState)>,
+}
+
+pub(super) fn require_before_graph(
+    graph: &TraceGraph,
+    root: NodeId,
+    guard: &TraceSpecPattern,
+    target: &TraceSpecPattern,
+    registry: &EffectRegistry,
+    types: &etas_types::TypeOutput,
+    transitions: &mut TransitionCache,
+) -> TemporalMonitorResult {
     let monitor = SingleComponentMonitor::new(compile_prior_evidence(guard, target), guard, target);
-    let result = monitor.run(
-        trace,
+    let result = monitor.run_graph(
+        graph,
+        root,
         registry,
         types,
+        transitions,
         |state| matches!(state, PriorEvidenceState::Rejected),
         |actions| {
             actions.iter().any(|action| {
@@ -41,11 +64,10 @@ pub fn require_before(
             })
         },
     );
-    // ActionTraceDomain records requested actions but not a correlated guard
-    // outcome. Ordered requests alone cannot prove accepted guard evidence.
+    // Request order cannot establish an accepted, correlated credential outcome.
     if result == TemporalMonitorResult::Satisfied
-        && trace
-            .action_set()
+        && graph.nodes[root]
+            .actions
             .iter()
             .any(|action| target.matches_effect(action, registry, types))
     {
@@ -82,6 +104,7 @@ impl<'a> SingleComponentMonitor<'a> {
         }
     }
 
+    #[cfg(test)]
     fn run(
         &self,
         trace: &ActionTraceDomain,
@@ -90,12 +113,81 @@ impl<'a> SingleComponentMonitor<'a> {
         final_rejects: impl Fn(PriorEvidenceState) -> bool,
         unknown_needs_order: impl Fn(&EffectSet) -> bool,
     ) -> TemporalMonitorResult {
+        let mut graph = TraceGraph::default();
+        let root = graph.compile(trace);
+        self.run_graph(
+            &graph,
+            root,
+            registry,
+            types,
+            &mut TransitionCache::default(),
+            final_rejects,
+            unknown_needs_order,
+        )
+    }
+
+    fn run_graph(
+        &self,
+        graph: &TraceGraph,
+        root: NodeId,
+        registry: &EffectRegistry,
+        types: &etas_types::TypeOutput,
+        transitions: &mut TransitionCache,
+        final_rejects: impl Fn(PriorEvidenceState) -> bool,
+        unknown_needs_order: impl Fn(&EffectSet) -> bool,
+    ) -> TemporalMonitorResult {
         let states = BTreeSet::from([AbstractState {
             monitor: self.product.initial_state(),
             prior_guard_request: false,
         }]);
         let matcher = TraceSpecMatcher { registry, types };
-        match self.run_trace(trace, states, &matcher, &unknown_needs_order) {
+        self.run_states(
+            graph,
+            root,
+            states.clone(),
+            &matcher,
+            &unknown_needs_order,
+            transitions,
+        );
+        // Rows range over a fixed finite product state space. Recursive calls
+        // read the current relation, register their dependency, and are revisited
+        // only when that relation gains a transition or a possible violation.
+        while let Some(key) = transitions.pending.pop_first() {
+            transitions.current = Some(key.clone());
+            let row = self.run_node(
+                graph,
+                key.0,
+                BTreeSet::from([key.1.clone()]),
+                &matcher,
+                &unknown_needs_order,
+                transitions,
+            );
+            transitions.current = None;
+            let previous = transitions
+                .rows
+                .get(&key)
+                .expect("scheduled transition row");
+            let joined = previous.join(&row);
+            if &joined != previous {
+                transitions.rows.insert(key.clone(), joined);
+                transitions.pending.extend(
+                    transitions
+                        .dependents
+                        .get(&key)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+            }
+        }
+        match self.run_states(
+            graph,
+            root,
+            states,
+            &matcher,
+            &unknown_needs_order,
+            transitions,
+        ) {
             TraceRun::Violation => TemporalMonitorResult::Violation,
             TraceRun::States { states, incomplete } => {
                 if states
@@ -112,55 +204,105 @@ impl<'a> SingleComponentMonitor<'a> {
         }
     }
 
-    fn run_trace(
+    fn run_states(
         &self,
-        trace: &ActionTraceDomain,
+        _graph: &TraceGraph,
+        node: NodeId,
+        states: BTreeSet<AbstractState>,
+        _matcher: &TraceSpecMatcher<'_>,
+        _unknown_needs_order: &impl Fn(&EffectSet) -> bool,
+        cache: &mut TransitionCache,
+    ) -> TraceRun {
+        let mut joined = BTreeSet::new();
+        let mut incomplete = false;
+        for state in states {
+            let key = (node, state.clone());
+            if let Some(parent) = &cache.current {
+                cache
+                    .dependents
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(parent.clone());
+            }
+            let result = cache
+                .rows
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    cache.pending.insert(key);
+                    TraceRun::known(BTreeSet::new())
+                })
+                .clone();
+            match result {
+                TraceRun::Violation => return TraceRun::Violation,
+                TraceRun::States {
+                    states,
+                    incomplete: unknown,
+                } => {
+                    joined.extend(states);
+                    incomplete |= unknown;
+                }
+            }
+        }
+        TraceRun::States {
+            states: joined,
+            incomplete,
+        }
+    }
+
+    fn run_node(
+        &self,
+        graph: &TraceGraph,
+        node: NodeId,
         states: BTreeSet<AbstractState>,
         matcher: &TraceSpecMatcher<'_>,
         unknown_needs_order: &impl Fn(&EffectSet) -> bool,
+        cache: &mut TransitionCache,
     ) -> TraceRun {
-        if states.is_empty() {
-            return TraceRun::known(states);
-        }
-        match trace {
-            ActionTraceDomain::Empty => TraceRun::known(states),
-            ActionTraceDomain::Event(event) => self.step_event(states, event, matcher),
-            ActionTraceDomain::DefaultHandler { body, .. } => {
-                self.run_trace(body, states, matcher, unknown_needs_order)
+        let stored = &graph.nodes[node];
+        match &stored.node {
+            Node::Leaf(ActionTraceDomain::Empty | ActionTraceDomain::TaskAwait { .. }) => {
+                TraceRun::known(states)
             }
-            ActionTraceDomain::ParameterCall { .. } => TraceRun::unknown(),
-            ActionTraceDomain::TaskAwait { .. } => TraceRun::known(states),
-            ActionTraceDomain::TaskStart { body, .. } => {
-                let actions = body.action_set();
-                if body.has_parameter_calls() || unknown_needs_order(&actions) {
+            Node::Leaf(ActionTraceDomain::Event(event)) => self.step_event(states, event, matcher),
+            Node::Leaf(ActionTraceDomain::ParameterCall { .. }) => TraceRun::unknown(),
+            Node::Leaf(ActionTraceDomain::Recursive { .. }) | Node::Equation(None) => {
+                TraceRun::unknown()
+            }
+            Node::Equation(Some(body)) => {
+                self.run_states(graph, *body, states, matcher, unknown_needs_order, cache)
+            }
+            Node::Leaf(ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. })
+            | Node::Parallel(_)
+            | Node::TaskStart { .. } => {
+                if stored.parameter_calls || unknown_needs_order(&stored.actions) {
                     TraceRun::unknown()
                 } else {
                     TraceRun::known(states)
                 }
             }
-            ActionTraceDomain::Parallel(branches) => {
-                let actions = trace.action_set();
-                if branches.iter().any(ActionTraceDomain::has_parameter_calls)
-                    || unknown_needs_order(&actions)
-                {
-                    TraceRun::unknown()
-                } else {
-                    TraceRun::known(states)
-                }
+            Node::DefaultHandler { body, .. } => {
+                self.run_states(graph, *body, states, matcher, unknown_needs_order, cache)
             }
-            ActionTraceDomain::Seq(parts) => {
+            Node::Seq(parts) => {
                 let mut current = states;
                 let mut incomplete = false;
                 for part in parts {
-                    match self.run_trace(part, current, matcher, unknown_needs_order) {
-                        TraceRun::States {
-                            states: next,
-                            incomplete: next_incomplete,
-                        } => {
-                            current = next;
-                            incomplete |= next_incomplete;
-                        }
+                    match self.run_states(
+                        graph,
+                        *part,
+                        current,
+                        matcher,
+                        unknown_needs_order,
+                        cache,
+                    ) {
                         TraceRun::Violation => return TraceRun::Violation,
+                        TraceRun::States {
+                            states,
+                            incomplete: unknown,
+                        } => {
+                            current = states;
+                            incomplete |= unknown;
+                        }
                     }
                 }
                 TraceRun::States {
@@ -168,22 +310,29 @@ impl<'a> SingleComponentMonitor<'a> {
                     incomplete,
                 }
             }
-            ActionTraceDomain::Choice(branches) => {
-                if branches.is_empty() {
+            Node::Choice(parts) => {
+                if parts.is_empty() {
                     return TraceRun::unknown();
                 }
                 let mut joined = BTreeSet::new();
                 let mut incomplete = false;
-                for branch in branches {
-                    match self.run_trace(branch, states.clone(), matcher, unknown_needs_order) {
-                        TraceRun::States {
-                            states: next,
-                            incomplete: next_incomplete,
-                        } => {
-                            joined.extend(next);
-                            incomplete |= next_incomplete;
-                        }
+                for part in parts {
+                    match self.run_states(
+                        graph,
+                        *part,
+                        states.clone(),
+                        matcher,
+                        unknown_needs_order,
+                        cache,
+                    ) {
                         TraceRun::Violation => return TraceRun::Violation,
+                        TraceRun::States {
+                            states,
+                            incomplete: unknown,
+                        } => {
+                            joined.extend(states);
+                            incomplete |= unknown;
+                        }
                     }
                 }
                 TraceRun::States {
@@ -191,28 +340,26 @@ impl<'a> SingleComponentMonitor<'a> {
                     incomplete,
                 }
             }
-            ActionTraceDomain::Repeat(inner) => {
-                let actions = inner.action_set();
-                if !inner.has_parameter_calls() && !unknown_needs_order(&actions) {
-                    return TraceRun::known(states);
-                }
-                // Nested Kleene closures have the same language as one closure.
-                let mut inner = inner.as_ref();
-                while let ActionTraceDomain::Repeat(nested) = inner {
-                    inner = nested;
-                }
+            Node::Repeat(body) => {
                 let mut reached = states;
                 let mut pending = reached.clone();
                 let mut incomplete = false;
                 while !pending.is_empty() {
-                    match self.run_trace(inner, pending, matcher, unknown_needs_order) {
+                    match self.run_states(
+                        graph,
+                        *body,
+                        pending,
+                        matcher,
+                        unknown_needs_order,
+                        cache,
+                    ) {
                         TraceRun::Violation => return TraceRun::Violation,
                         TraceRun::States {
-                            states: next,
-                            incomplete: next_incomplete,
+                            states,
+                            incomplete: unknown,
                         } => {
-                            incomplete |= next_incomplete;
-                            pending = next.difference(&reached).cloned().collect();
+                            incomplete |= unknown;
+                            pending = states.difference(&reached).cloned().collect();
                             reached.extend(pending.iter().cloned());
                         }
                     }
@@ -222,23 +369,7 @@ impl<'a> SingleComponentMonitor<'a> {
                     incomplete,
                 }
             }
-            ActionTraceDomain::UnknownOrder(actions) => {
-                if unknown_needs_order(actions) {
-                    TraceRun::unknown()
-                } else {
-                    TraceRun::known(states)
-                }
-            }
-            ActionTraceDomain::Widened {
-                actions,
-                parameter_calls,
-            } => {
-                if !parameter_calls.is_empty() || unknown_needs_order(actions) {
-                    TraceRun::unknown()
-                } else {
-                    TraceRun::known(states)
-                }
-            }
+            Node::Leaf(_) => unreachable!("composite trace was interned as a leaf"),
         }
     }
 
@@ -297,6 +428,7 @@ impl<'a> SingleComponentMonitor<'a> {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 enum TraceRun {
     States {
         states: BTreeSet<AbstractState>,
@@ -306,6 +438,24 @@ enum TraceRun {
 }
 
 impl TraceRun {
+    fn join(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Violation, _) | (_, Self::Violation) => Self::Violation,
+            (
+                Self::States {
+                    states: left,
+                    incomplete: a,
+                },
+                Self::States {
+                    states: right,
+                    incomplete: b,
+                },
+            ) => Self::States {
+                states: left.union(right).cloned().collect(),
+                incomplete: *a || *b,
+            },
+        }
+    }
     fn known(states: BTreeSet<AbstractState>) -> Self {
         Self::States {
             states,
@@ -330,6 +480,131 @@ mod tests {
     use super::*;
     use crate::{ActionEventSource, Effect, EffectRow, ParameterCallTarget};
     use etas_core::{SourceId, Span, TextRange, TextSize};
+
+    #[test]
+    fn recursive_ordered_equations_share_finite_spec_transfers() {
+        let registry = EffectRegistry::with_standard_effects();
+        let types = etas_types::TypeOutput::default();
+        let guard = Effect::Action(registry.action_by_name("Console.stdin_read_line").unwrap());
+        let target = Effect::Action(registry.action_by_name("Console.stdout_write").unwrap());
+        let pattern = |effect| TraceSpecPattern {
+            row: EffectRow::closed(EffectSet::one(effect)),
+            label: String::new(),
+            arg_bounds: vec![],
+        };
+        let guard_pattern = pattern(guard.clone());
+        let target_pattern = pattern(target.clone());
+        let event = |action| {
+            ActionTraceDomain::Event(ActionEvent {
+                action,
+                span: Span::empty(SourceId(0), TextSize(0)),
+                source: ActionEventSource::Perform,
+            })
+        };
+        let id = etas_code::CodeFingerprint::of_bytes("test.recursive-order", b"f");
+        // X = epsilon | A; X; B, a non-regular recursive trace language.
+        let trace = ActionTraceDomain::Recursive {
+            id,
+            body: Some(Box::new(ActionTraceDomain::Choice(vec![
+                ActionTraceDomain::Empty,
+                ActionTraceDomain::Seq(vec![
+                    event(guard.clone()),
+                    ActionTraceDomain::Recursive { id, body: None },
+                    event(target.clone()),
+                ]),
+            ]))),
+        };
+        let mut graph = TraceGraph::default();
+        let root = graph.compile(&trace);
+        let nodes = graph.nodes.len();
+        assert_eq!(graph.compile(&trace), root);
+        assert_eq!(graph.nodes.len(), nodes);
+        let mut cache = TransitionCache::default();
+        let check = |cache: &mut TransitionCache| {
+            require_before_graph(
+                &graph,
+                root,
+                &guard_pattern,
+                &target_pattern,
+                &registry,
+                &types,
+                cache,
+            )
+        };
+        assert_eq!(
+            check(&mut cache),
+            TemporalMonitorResult::NeedsOutcomeEvidence
+        );
+        let rows = cache.rows.len();
+        assert_eq!(
+            check(&mut cache),
+            TemporalMonitorResult::NeedsOutcomeEvidence
+        );
+        assert_eq!(cache.rows.len(), rows);
+        assert!(cache.pending.is_empty());
+        let invalid = ActionTraceDomain::Recursive {
+            id,
+            body: Some(Box::new(ActionTraceDomain::Choice(vec![
+                ActionTraceDomain::Empty,
+                ActionTraceDomain::Seq(vec![
+                    event(target),
+                    ActionTraceDomain::Recursive { id, body: None },
+                    event(guard),
+                ]),
+            ]))),
+        };
+        assert_eq!(
+            require_before(&invalid, &guard_pattern, &target_pattern, &registry, &types),
+            TemporalMonitorResult::Violation
+        );
+    }
+
+    #[test]
+    fn unordered_segments_preserve_surrounding_transfers_and_handler_boundaries() {
+        let registry = EffectRegistry::with_standard_effects();
+        let types = etas_types::TypeOutput::default();
+        let action = |name| Effect::Action(registry.action_by_name(name).unwrap());
+        let guard = action("Console.stdin_read_line");
+        let target = action("Console.stdout_write");
+        let unrelated = EffectSet::one(action("Console.stderr_write"));
+        let event = |action| {
+            ActionTraceDomain::Event(ActionEvent {
+                action,
+                span: Span::empty(SourceId(0), TextSize(0)),
+                source: ActionEventSource::Perform,
+            })
+        };
+        let pattern = |action| TraceSpecPattern {
+            row: EffectRow::closed(EffectSet::one(action)),
+            label: String::new(),
+            arg_bounds: vec![],
+        };
+        let handled = ActionTraceDomain::DefaultHandler {
+            guards: unrelated.clone(),
+            body: Box::new(ActionTraceDomain::Widened {
+                actions: unrelated.clone(),
+                parameter_calls: vec![],
+            }),
+        };
+        let mut alternatives = ActionTraceDomain::UnknownOrder(unrelated);
+        alternatives.choice_assign(handled.clone());
+        let mut trace = event(guard.clone());
+        trace.seq_assign(alternatives);
+        trace.seq_assign(event(target.clone()));
+
+        let ActionTraceDomain::Seq(parts) = &trace else {
+            panic!("known sequence must surround the unordered segment");
+        };
+        assert_eq!(parts.len(), 3);
+        let ActionTraceDomain::Choice(branches) = &parts[1] else {
+            panic!("unordered alternatives must remain separate");
+        };
+        assert!(branches.contains(&handled));
+        assert_eq!(
+            require_before(&trace, &pattern(guard), &pattern(target), &registry, &types),
+            TemporalMonitorResult::NeedsOutcomeEvidence
+        );
+    }
 
     #[test]
     fn repeated_traces_use_zero_or_more_iteration_fixpoint() {
@@ -419,6 +694,12 @@ mod tests {
 
     #[test]
     fn empty_choice_is_not_proof_of_a_safe_trace() {
+        assert!(!super::super::EpsilonTraceAnalysis::default().is_epsilon(
+            &ActionTraceDomain::Choice(vec![
+                ActionTraceDomain::Empty,
+                ActionTraceDomain::Choice(vec![])
+            ])
+        ));
         let registry = EffectRegistry::with_standard_effects();
         let types = etas_types::TypeOutput::default();
         let pattern = |name| TraceSpecPattern {

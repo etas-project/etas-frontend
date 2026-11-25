@@ -310,6 +310,15 @@ where
         <S as HirAnalysisSemantics>::loop_fixpoint_incomplete(self.semantics, body, state)
     }
 
+    fn join_loop_state(
+        &mut self,
+        body: HirBlockId,
+        state: &mut Self::Domain,
+        back_edge: &Self::Domain,
+    ) -> bool {
+        <S as HirAnalysisSemantics>::join_loop_state(self.semantics, body, state, back_edge)
+    }
+
     fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
         <S as HirAnalysisSemantics>::bounded_for_iterations(self.semantics, stmt)
     }
@@ -332,6 +341,14 @@ where
 
     fn before_stmt(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
         <S as HirAnalysisSemantics>::before_stmt(self.semantics, stmt, state)
+    }
+
+    fn begin_loop(&mut self, body: etas_hir::HirBlockId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::begin_loop(self.semantics, body, state)
+    }
+
+    fn end_loop(&mut self, body: etas_hir::HirBlockId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::end_loop(self.semantics, body, state)
     }
 
     fn after_stmt(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {

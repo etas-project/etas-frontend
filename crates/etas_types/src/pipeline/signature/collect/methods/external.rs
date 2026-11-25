@@ -40,7 +40,7 @@ pub(super) fn collect(ctx: &TypePipelineContext<'_>) -> Vec<MethodSignatureFact>
             spec_member: None,
             evidence: MethodEvidence::Inherent,
             defining_module: None,
-            public: true,
+            public: !method.internal,
         };
         if method.implementations.is_empty() {
             result.push(fact);

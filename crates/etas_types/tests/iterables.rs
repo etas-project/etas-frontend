@@ -14,13 +14,13 @@ fn map_iteration_binds_entry_pair_key_and_value_types() {
         r#"
 flow accept(key: string, value: i32) -> unit { return; }
 flow main(entries: Map<string, i32>) -> unit {
-    for (key, value) in entries limit Iterations(8) { accept(key, value); }
+    for (key, value) in entries { accept(key, value); }
 }
 "#,
         r#"
 flow main<K, V>(entries: Map<K, V>) -> unit {
-    for entry in entries limit Iterations(8) { let pair: (K, V) = entry; }
-    for (key, value) in entries limit Iterations(8) {
+    for entry in entries { let pair: (K, V) = entry; }
+    for (key, value) in entries {
         let expected_key: K = key;
         let expected_value: V = value;
     }
@@ -30,7 +30,7 @@ flow main<K, V>(entries: Map<K, V>) -> unit {
 type Key = string;
 type Value = i32;
 flow main(entries: Map<Key, Value>) -> unit {
-    for (key, value) in entries limit Iterations(8) {
+    for (key, value) in entries {
         let expected_key: Key = key;
         let expected_value: Value = value;
     }
@@ -50,19 +50,19 @@ flow main(entries: Map<Key, Value>) -> unit {
 fn map_iteration_rejects_wrong_key_value_or_entry_pattern() {
     for (body, code) in [
         (
-            "for (key, value) in entries limit Iterations(8) { let wrong: i32 = key; }",
+            "for (key, value) in entries { let wrong: i32 = key; }",
             TypeDiagnosticCode::Mismatch,
         ),
         (
-            "for (key, value) in entries limit Iterations(8) { let wrong: string = value; }",
+            "for (key, value) in entries { let wrong: string = value; }",
             TypeDiagnosticCode::Mismatch,
         ),
         (
-            "for (key, value, extra) in entries limit Iterations(8) {}",
+            "for (key, value, extra) in entries {}",
             TypeDiagnosticCode::TypeMismatch,
         ),
         (
-            "for entry in entries limit Iterations(8) { let wrong: i32 = entry; }",
+            "for entry in entries { let wrong: i32 = entry; }",
             TypeDiagnosticCode::Mismatch,
         ),
     ] {

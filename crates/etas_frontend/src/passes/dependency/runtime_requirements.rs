@@ -226,7 +226,24 @@ pub(super) fn compute_reachability(
         }
     }
     if let Some(types) = types {
+        let specs = std::cell::OnceCell::new();
+        let hir = &context.hir.as_ref().expect("typed runtime HIR").hir;
+        let store = &context.types.as_ref().expect("typed runtime linkage").store;
         for expr in &linked.exprs {
+            if matches!(hir.exprs.get(*expr), Some(HirExpr::Record(_)))
+                && let Some(ty) = types.expression_producer_type(*expr)
+                && etas_types::active_agent::has_main(types, store, ty)
+                && let Some(main) = etas_types::active_agent::autonomous_main(
+                    types,
+                    store,
+                    specs.get_or_init(|| etas_types::SpecFacts::from(types)),
+                    ty,
+                )?
+                && let etas_types::method::MethodTarget::External { identity } =
+                    &main.declaration.target
+            {
+                planner.collect_external_method(identity)?;
+            }
             if let Some(pack) = types.existential_packs.get(expr) {
                 for witness in &pack.witnesses {
                     if let etas_types::method::MethodTarget::External { identity } = &witness.target
@@ -571,7 +588,11 @@ pub(super) fn source_analysis_closure(
         hir: &hir.hir,
         resolved_paths,
         item_bindings,
-        types: context.types.as_ref().map(|types| types.facts.as_ref()),
+        types: context
+            .types
+            .as_ref()
+            .or(context.signature_types.as_ref())
+            .map(|types| types.facts.as_ref()),
         purpose: ReachabilityPurpose::ExecutableValues,
         view: &view,
         visited_items: BTreeSet::new(),
@@ -634,19 +655,6 @@ impl ReachableExprCollector<'_> {
             {
                 self.pending_items.push(method.body);
             }
-            let agent = self
-                .hir
-                .agent_methods
-                .values()
-                .find(|method| method.body == item)
-                .and_then(|method| self.hir.symbols.get(method.agent))
-                .and_then(|symbol| match symbol.def {
-                    SymbolDef::Item { item } => Some(item),
-                    _ => None,
-                });
-            if let Some(agent) = agent.filter(|agent| *agent != item) {
-                self.enqueue_runtime_annotation_items(agent);
-            }
             let mut missing_method = false;
             let mut visitor = ReachableItemVisitor {
                 hir: self.hir,
@@ -669,10 +677,7 @@ impl ReachableExprCollector<'_> {
     fn enqueue_runtime_annotation_items(&mut self, item: HirItemId) {
         let tool_values = self
             .hir
-            .item_annotations
-            .get(&item)
-            .into_iter()
-            .flatten()
+            .execution_annotations(item)
             .filter(|annotation| {
                 annotation
                     .path
@@ -689,8 +694,6 @@ impl ReachableExprCollector<'_> {
         for value in tool_values {
             let mut visitor = ToolAnnotationReachabilityVisitor {
                 hir: self.hir,
-                resolved_paths: self.resolved_paths,
-                item_bindings: self.item_bindings,
                 pending_items: &mut self.pending_items,
             };
             walk_expr(self.view, value, &mut visitor);
@@ -700,20 +703,20 @@ impl ReachableExprCollector<'_> {
 
 struct ToolAnnotationReachabilityVisitor<'a> {
     hir: &'a etas_hir::HirProgram,
-    resolved_paths: &'a crate::ResolvedPaths,
-    item_bindings: &'a HirItemBindings,
     pending_items: &'a mut Vec<HirItemId>,
 }
 
 impl<'view, 'hir> HirVisitor<'view, 'hir> for ToolAnnotationReachabilityVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
-        let Some(item) =
-            local_item_for_expr_path(self.hir, self.resolved_paths, self.item_bindings, expr.id())
-        else {
+        let HirExpr::Path(path) = expr.data() else {
             return;
         };
-        if matches!(self.hir.items.get(item), Some(HirItem::Tool(_))) {
-            self.pending_items.push(item);
+        if let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
+            && let Some(symbol) = self.hir.canonical_source_symbol(symbol)
+            && let Some(SymbolDef::Item { item }) = self.hir.symbols.get(symbol).map(|row| &row.def)
+            && matches!(self.hir.items.get(*item), Some(HirItem::Tool(_)))
+        {
+            self.pending_items.push(*item);
         }
     }
 }
@@ -733,6 +736,17 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
         let expr_id = expr.id();
         self.exprs.insert(expr_id);
+        if let Some(agent) = constructor_agent(self.hir, expr_id)
+            && let Some(types) = self.types
+        {
+            self.pending_items.extend(
+                types
+                    .agent_methods
+                    .values()
+                    .filter(|method| method.agent == agent && method.name == "main")
+                    .map(|method| method.body),
+            );
+        }
         if let Some(symbol) = self
             .types
             .and_then(|types| types.source_flow_calls.get(&expr_id))
@@ -943,4 +957,34 @@ fn import_root_segments(import_root: &str) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn constructor_agent(hir: &etas_hir::HirProgram, expr: HirExprId) -> Option<HirItemId> {
+    let HirExpr::Record(record) = hir.exprs.get(expr)? else {
+        return None;
+    };
+    let mut path = record.path.as_ref()?;
+    let mut seen = BTreeSet::new();
+    loop {
+        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+            return None;
+        };
+        let symbol = hir.canonical_source_symbol(symbol)?;
+        if !seen.insert(symbol) {
+            return None;
+        }
+        let SymbolDef::Item { item } = hir.symbols.get(symbol)?.def else {
+            return None;
+        };
+        match &hir.items[item] {
+            HirItem::Agent(_) => return Some(item),
+            HirItem::TypeAlias(alias) => {
+                let etas_hir::HirType::Path { path: target, .. } = &hir.types[alias.target] else {
+                    return None;
+                };
+                path = target;
+            }
+            _ => return None,
+        }
+    }
 }

@@ -605,6 +605,10 @@ impl LowerCtx {
         self.hir.scopes = scopes;
         self.hir.symbols = symbols;
         self.hir.source_map = source_map;
+        self.hir.elaborate_constructor_injections();
+        self.hir
+            .elaborate_type_stages(&std::collections::HashSet::new())
+            .expect("lowered type stage tree must be structurally valid");
         self.hir
     }
 
@@ -617,6 +621,10 @@ impl LowerCtx {
         self.hir.scopes = scopes;
         self.hir.symbols = symbols;
         self.hir.source_map = source_map;
+        self.hir.elaborate_constructor_injections();
+        self.hir
+            .elaborate_type_stages(&std::collections::HashSet::new())
+            .expect("lowered type stage tree must be structurally valid");
         self.hir
     }
 

@@ -312,15 +312,20 @@ fn contains_task_control(trace: &ActionTraceDomain) -> bool {
     let mut pending = vec![trace];
     while let Some(trace) = pending.pop() {
         match trace {
+            ActionTraceDomain::Shared(body) => pending.push(&body.body),
             ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::TaskAwait { .. } => {
                 return true;
             }
             ActionTraceDomain::Seq(parts)
             | ActionTraceDomain::Choice(parts)
             | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
-            ActionTraceDomain::Repeat(inner)
+            ActionTraceDomain::Recursive {
+                body: Some(inner), ..
+            }
+            | ActionTraceDomain::Repeat(inner)
             | ActionTraceDomain::DefaultHandler { body: inner, .. } => pending.push(inner),
-            ActionTraceDomain::Empty
+            ActionTraceDomain::Recursive { body: None, .. }
+            | ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
             | ActionTraceDomain::ParameterCall { .. }
             | ActionTraceDomain::UnknownOrder(_)

@@ -6152,7 +6152,7 @@ flow read_directory() -> unit ![Fs.list<ProjectRoot>, Fs.read<ProjectRoot>, Erro
     Ok(target) => list(target),
     Err(error) => perform Error<IOError>.raise(error),
   };
-  for entry in entries limit Iterations(16) {
+  for entry in entries {
     let _contents = read_bytes(entry);
   }
   return;

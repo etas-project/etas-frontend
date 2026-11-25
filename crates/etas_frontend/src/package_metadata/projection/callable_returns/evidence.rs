@@ -94,6 +94,26 @@ impl ProjectMetadataProjection<'_> {
         let builder = Builder::new(self, snapshot.owner);
         let mut captured = builder.generic_context(Some(snapshot.owner))?;
         captured.owner_type_names.clear();
+        for (parameter, value) in &snapshot.generics {
+            if let (
+                CallableGenericParameter::TypeParameter { subject },
+                CallableGenericValue::Type(argument),
+            ) = (parameter, value)
+            {
+                let identity = self
+                    .checked
+                    .type_store
+                    .parameter_identity(*subject)
+                    .ok_or_else(|| {
+                        invalid("exported method type parameter has no canonical identity")
+                    })?;
+                let mut argument = self.metadata_type(*argument)?;
+                normalize_generic_type(&mut argument, &captured.type_names);
+                captured
+                    .parameters
+                    .insert((identity.owner().clone(), identity.index()), argument);
+            }
+        }
         for (position, (name, kind)) in definition.generics.iter().enumerate() {
             let value = snapshot
                 .generics
@@ -355,17 +375,30 @@ impl ProjectMetadataProjection<'_> {
             for origin in origins {
                 let (source, environment) = builder
                     .checked_origin(*origin)?
-                    .ok_or_else(|| invalid("method evidence callback has no exportable origin"))?;
+                    .ok_or_else(|| {
+                        invalid(&format!(
+                            "method evidence callback has no exportable origin: {origin:?}, owner {:?}, call {call:?}, input {position}",
+                            snapshot.owner,
+                        ))
+                    })?;
                 sources.extend(
                     builder
                         .sources(&[source].into(), CallableValueScope::Root, environment)?
                         .ok_or_else(|| {
-                            invalid("method evidence callback sources are incomplete")
+                            invalid(&format!(
+                                "method evidence callback sources are incomplete: {origin:?}, owner {:?}, call {call:?}, input {position}, parameters {:?}",
+                                snapshot.owner, builder.parameters,
+                            ))
                         })?,
                 );
             }
             sources.sort();
             sources.dedup();
+            // Binding a checked projection can establish an empty callable
+            // payload even when its symbolic origin set was nonempty.
+            if sources.is_empty() {
+                continue;
+            }
             let graph = builder
                 .finish(sources)?
                 .ok_or_else(|| invalid("method evidence callback graph is incomplete"))?;
@@ -391,9 +424,7 @@ impl ProjectMetadataProjection<'_> {
                         etas_hir::HirExpr::Lambda { params, .. } => return Some(params),
                         _ => return None,
                     },
-                    HirBodyKind::MatchArm { .. } | HirBodyKind::StageLimit { .. } => {
-                        *index.body_owner.get(&body)?
-                    }
+                    HirBodyKind::MatchArm { .. } => *index.body_owner.get(&body)?,
                     _ => return None,
                 },
                 HirOwner::Expr(expr) => *index.expr_owner.get(&expr)?,

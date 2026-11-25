@@ -37,7 +37,8 @@ impl EffectSemantics<'_> {
                     unit,
                     environment,
                 }) => self.prepare_native_value_summary(unit, environment, key.span(), key.mode),
-                super::super::spec_methods::MethodEvidence::Deferred { summary } => {
+                super::super::spec_methods::MethodEvidence::Deferred { summary }
+                | super::super::spec_methods::MethodEvidence::Contract { summary } => {
                     Ok(CallableSummaryPlan::Leaf(*summary))
                 }
                 super::super::spec_methods::MethodEvidence::Resolved(LatentSource::Metadata(
@@ -48,21 +49,32 @@ impl EffectSemantics<'_> {
                 )),
             },
             LatentSource::SpecMethod { call, environment } => {
+                use super::super::spec_methods::MethodEvidence;
+                let managed = self.is_bound_agent_request(call);
                 match self.spec_method_evidence(call, environment)? {
-                    super::super::spec_methods::MethodEvidence::Alternatives(sources) => {
-                        Ok(CallableSummaryPlan::Alternatives(
-                            sources
-                                .into_iter()
-                                .map(|source| {
-                                    CallableSummaryKey::in_mode(source, key.span(), key.mode)
-                                })
-                                .collect(),
-                        ))
+                    MethodEvidence::Alternatives(sources) => Ok(CallableSummaryPlan::Dispatch {
+                        implementations: sources
+                            .into_iter()
+                            .map(|source| CallableSummaryKey::in_mode(source, key.span(), key.mode))
+                            .collect(),
+                        managed,
+                    }),
+                    MethodEvidence::Resolved(source) if managed => {
+                        Ok(CallableSummaryPlan::Dispatch {
+                            implementations: [CallableSummaryKey::in_mode(
+                                source,
+                                key.span(),
+                                key.mode,
+                            )]
+                            .into(),
+                            managed,
+                        })
                     }
                     super::super::spec_methods::MethodEvidence::Resolved(
                         LatentSource::Captured { unit, environment },
                     ) => self.prepare_native_value_summary(unit, environment, key.span(), key.mode),
-                    super::super::spec_methods::MethodEvidence::Deferred { summary, .. } => {
+                    super::super::spec_methods::MethodEvidence::Deferred { summary }
+                    | super::super::spec_methods::MethodEvidence::Contract { summary } => {
                         Ok(CallableSummaryPlan::Leaf(*summary))
                     }
                     super::super::spec_methods::MethodEvidence::Resolved(

@@ -67,10 +67,17 @@ impl Pass<ProjectContext> for FinalizeTypeFactsPass {
                         &context.std_registry,
                         &output,
                     ));
-                match super::lexical_capture::escape_diagnostics(
-                    &context.hir.as_ref().unwrap().hir,
-                    &output.facts,
-                ) {
+                let hir = &context.hir.as_ref().unwrap().hir;
+                let layouts =
+                    match etas_hir_analysis::closures::analyze_runtime_captures(&hir.view()) {
+                        Ok(layouts) => layouts,
+                        Err(reason) => return PassResult::failed(reason),
+                    };
+                match super::lexical_capture::escape_diagnostics(hir, &output.facts, &layouts) {
+                    Ok(diagnostics) => context.diagnostics.extend(diagnostics),
+                    Err(reason) => return PassResult::failed(reason),
+                }
+                match super::session_lease::check(hir, &output, &layouts) {
                     Ok(diagnostics) => context.diagnostics.extend(diagnostics),
                     Err(reason) => return PassResult::failed(reason),
                 }

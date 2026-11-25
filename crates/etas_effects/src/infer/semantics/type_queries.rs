@@ -1,6 +1,6 @@
 use std::{
     cell::{OnceCell, RefCell},
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
 };
 
 use etas_code::{CodeFingerprint, descriptor::ValueProjectionStep};
@@ -15,8 +15,11 @@ pub(crate) struct EffectTypeQueries {
     pub(super) index: OnceCell<TypeLookupIndex>,
     representations: RefCell<HashMap<TypeId, Option<TypeId>>>,
     projections: RefCell<HashMap<TypeId, ValueProjections>>,
+    pub(super) payload_paths: RefCell<HashMap<TypeId, BTreeSet<Vec<ValueProjectionStep>>>>,
     // Successful projection IDs remain in the fact table across solver rounds.
     pub(super) parameter_projection_ids: RefCell<ParameterProjectionIds>,
+    pub(super) confined_agent_constructions: RefCell<HashMap<etas_hir::HirExprId, bool>>,
+    pub(super) confined_agent_methods: RefCell<HashMap<TypeId, bool>>,
 }
 
 type ValueProjections = HashMap<Vec<ValueProjectionStep>, Option<TypeId>>;
@@ -24,6 +27,30 @@ type ParameterProjectionIds =
     HashMap<(HirItemId, SymbolId), HashMap<Vec<ValueProjectionStep>, CodeFingerprint>>;
 
 impl EffectSemantics<'_> {
+    pub(super) fn type_substitution<'a>(
+        &'a self,
+        names: &'a HashMap<String, TypeId>,
+    ) -> etas_types::TypeSubstitutionEngine<'a> {
+        etas_types::TypeSubstitutionEngine::existing_indexed(
+            &self.types.store,
+            self.type_lookup(),
+            names,
+        )
+        .with_type_requests(&self.requested_types)
+    }
+
+    fn requested_type<T>(
+        &self,
+        result: Result<T, TypeSubstitutionError>,
+    ) -> Result<T, TypeSubstitutionError> {
+        result.map_err(|error| {
+            if let TypeSubstitutionError::UnmaterializedType(ty) = &error {
+                self.requested_types.borrow_mut().push(ty.clone());
+            }
+            error
+        })
+    }
+
     pub(super) fn applied_representation(
         &self,
         ty: TypeId,
@@ -31,11 +58,12 @@ impl EffectSemantics<'_> {
         if let Some(result) = self.type_queries.representations.borrow().get(&ty) {
             return Ok(*result);
         }
-        let result = etas_types::ty::applied_representation_in_store_indexed(
-            &self.types.store,
-            self.type_lookup(),
-            ty,
-        )?;
+        let result =
+            self.requested_type(etas_types::ty::applied_representation_in_store_indexed(
+                &self.types.store,
+                self.type_lookup(),
+                ty,
+            ))?;
         self.type_queries
             .representations
             .borrow_mut()
@@ -57,13 +85,13 @@ impl EffectSemantics<'_> {
         {
             return Ok(*result);
         }
-        let result = etas_types::value_projection::project_indexed(
+        let result = self.requested_type(etas_types::value_projection::project_indexed(
             &self.types.store,
             &self.types.facts,
             self.type_lookup(),
             ty,
             path,
-        )?;
+        ))?;
         self.type_queries
             .projections
             .borrow_mut()

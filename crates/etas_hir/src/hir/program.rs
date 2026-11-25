@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirProgram {
+    pub constructor_external_bindings: Vec<HirConstructorExternalBinding>,
     /// Explicit provider choice; source syntax must not fall back per symbol to
     /// the legacy collection representation or algorithm implementations.
     pub source_standard_types: bool,
@@ -115,10 +116,7 @@ impl HirProgram {
         direct(symbol).or_else(|| direct(self.canonical_source_symbol(symbol)?))
     }
 
-    pub(crate) fn flow_overload_root(
-        &self,
-        symbols: &[crate::SymbolId],
-    ) -> Option<crate::SymbolId> {
+    pub fn flow_overload_root(&self, symbols: &[crate::SymbolId]) -> Option<crate::SymbolId> {
         let group = self.flow_overload_group(*symbols.first()?)?;
         symbols
             .iter()
@@ -258,15 +256,118 @@ impl HirProgram {
         }
     }
 
+    pub fn enclosing_impl(&self, scope: crate::ScopeId) -> Option<&crate::HirImplDecl> {
+        let parent = self.scopes.get(self.scopes.get(scope)?.parent?)?;
+        let crate::ScopeOwner::Item(owner) = parent.owner else {
+            return None;
+        };
+        match self.items.get(owner)? {
+            crate::HirItem::Impl(decl) => Some(decl),
+            _ => None,
+        }
+    }
+
+    pub fn impl_target_symbol(
+        &self,
+        implementation: &crate::HirImplDecl,
+    ) -> Option<crate::SymbolId> {
+        let path = match &implementation.target {
+            crate::HirImplTarget::Inherent { target, .. } => target,
+            crate::HirImplTarget::SpecSatisfaction { self_type, .. } => {
+                let crate::HirType::Path { path, .. } = self.types.get(*self_type)? else {
+                    return None;
+                };
+                path
+            }
+            _ => return None,
+        };
+        let crate::ResolveResult::Resolved(symbol) = path.resolution else {
+            return None;
+        };
+        self.canonical_source_symbol(symbol)
+    }
+
+    pub fn active_agent_item(&self, symbol: crate::SymbolId) -> Option<HirItemId> {
+        let crate::SymbolDef::Item { item } = self.symbols.get(symbol)?.def else {
+            return None;
+        };
+        matches!(self.items.get(item), Some(crate::HirItem::Agent(agent)) if agent.state.is_some())
+            .then_some(item)
+    }
+
+    pub fn active_method_agent(&self, item: HirItemId) -> Option<HirItemId> {
+        let crate::HirItem::Flow(flow) = self.items.get(item)? else {
+            return None;
+        };
+        let owner = self.impl_target_symbol(self.enclosing_impl(flow.scope)?)?;
+        self.active_agent_item(owner)
+    }
+
+    pub fn member_tool_owner(&self, item: HirItemId) -> Option<crate::SymbolId> {
+        let crate::HirItem::Tool(tool) = self.items.get(item)? else {
+            return None;
+        };
+        self.impl_target_symbol(self.enclosing_impl(tool.scope)?)
+    }
+
+    pub fn member_tool_receiver(&self, item: HirItemId) -> Option<crate::SymbolId> {
+        let crate::HirItem::Tool(tool) = self.items.get(item)? else {
+            return None;
+        };
+        self.member_tool_owner(item)?;
+        let first = *tool.params.first()?;
+        (self.symbols.get(first)?.name == "self").then_some(first)
+    }
+
+    /// A method's tool declaration overrides its Agent's tool declaration.
+    pub fn agent_tools_annotation(
+        &self,
+        agent: HirItemId,
+        method: HirItemId,
+    ) -> Option<&crate::HirAnnotation> {
+        [method, agent].into_iter().find_map(|item| {
+            self.item_annotations.get(&item)?.iter().rev().find(|annotation| {
+                matches!(annotation.path.segments.as_slice(), [name] if name.name == "tools")
+            })
+        })
+    }
+
+    /// Include the tool list inherited by a method when collecting executable dependencies.
+    pub fn execution_annotations(
+        &self,
+        item: HirItemId,
+    ) -> impl Iterator<Item = &crate::HirAnnotation> {
+        let own = self.item_annotations.get(&item).into_iter().flatten();
+        let inherited = self
+            .active_method_agent(item)
+            .or_else(|| {
+                let symbol = self.items.get(item)?.symbol()?;
+                let method = self.agent_methods.get(&symbol)?;
+                match self.symbols.get(method.agent)?.def {
+                    crate::SymbolDef::Item { item } => Some(item),
+                    _ => None,
+                }
+            })
+            .filter(|agent| *agent != item && self.agent_tools_annotation(item, item).is_none())
+            .and_then(|agent| self.agent_tools_annotation(agent, item));
+        own.chain(inherited)
+    }
+
     pub fn declaration_path(&self, symbol: crate::SymbolId) -> Option<Vec<String>> {
         let symbol = self.symbols.get(symbol)?;
         if let crate::SymbolDef::ImportAlias { path, .. } = &symbol.def {
             return Some(path.clone());
         }
-        let owner = match self.agent_methods.get(&symbol.id) {
-            Some(method) => self.symbols.get(method.agent)?,
-            None => symbol,
-        };
+        let owner = self
+            .agent_methods
+            .get(&symbol.id)
+            .map(|method| method.agent)
+            .or_else(|| match symbol.def {
+                crate::SymbolDef::Item { item } => self.member_tool_owner(item),
+                _ => None,
+            })
+            .and_then(|owner| self.symbols.get(owner))
+            .unwrap_or(symbol);
         let mut path = self
             .modules_arena
             .get(owner.defining_module)?
@@ -317,3 +418,11 @@ impl HirProgram {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
+pub struct HirConstructorExternalBinding {
+    pub symbol: crate::SymbolId,
+    pub package: u32,
+    pub path: Vec<String>,
+    pub span: etas_core::Span,
+}

@@ -117,7 +117,6 @@ impl Parser<'_> {
         let first_span = first.span();
         let mut stages = vec![PipelineStage {
             expr: Box::new(first),
-            limits: Vec::new(),
             span: first_span,
         }];
         while self.cursor.eat_punct(Punct::Pipe).is_some() {
@@ -133,17 +132,9 @@ impl Parser<'_> {
 
     pub(crate) fn pipeline_stage(&mut self) -> PipelineStage {
         let expr = self.list_cons_expr();
-        let mut span = expr.span();
-        let mut limits = Vec::new();
-        while self.cursor.eat_keyword(Keyword::Limit).is_some() {
-            limits.extend(self.limit_list_using(|parser| parser.binary_expr(0)));
-            if let Some(limit) = limits.last() {
-                span = span.cover(limit.span());
-            }
-        }
+        let span = expr.span();
         PipelineStage {
             expr: Box::new(expr),
-            limits,
             span,
         }
     }
@@ -762,6 +753,26 @@ impl Parser<'_> {
     }
 
     pub(crate) fn handler_arm(&mut self) -> HandlerArm {
+        let start = self.cursor.peek().span;
+        if let Some(ty) = self.try_handler_type_head() {
+            let head = start.cover(self.previous_span());
+            let (effect, action) = EffectRef::typed_injection(ty, head);
+            let value = self.expr();
+            let end = self.expect_punct(Punct::Semi, "expected `;` after dependency provider");
+            let span = start.cover(end);
+            return HandlerArm {
+                effect,
+                action,
+                generic_args: Vec::new(),
+                patterns: Vec::new(),
+                continuation: None,
+                body: HandlerArmBody::Stmt(Box::new(Stmt::Resume(ResumeStmt {
+                    span: value.span().cover(end),
+                    value: Some(value),
+                }))),
+                span,
+            };
+        }
         let before = self.cursor.position();
         let (effect, action) = self.effect_action_ref("expected handler action path");
         let generic_args = self.generic_args();

@@ -335,7 +335,7 @@ impl crate::CheckedProgramData {
             defaults_seen: &mut defaults_seen,
         };
         walk_item(&self.hir.view(), item, &mut visitor);
-        for annotation in self.hir.item_annotations.get(&item).into_iter().flatten() {
+        for annotation in self.hir.execution_annotations(item) {
             for argument in &annotation.args {
                 let value = match argument {
                     etas_hir::HirAnnotationArg::Positional { value, .. }
@@ -444,7 +444,7 @@ impl crate::CheckedProgramData {
                 defaults_seen: &mut defaults_seen,
             };
             walk_item(&view, item, &mut visitor);
-            for annotation in self.hir.item_annotations.get(&item).into_iter().flatten() {
+            for annotation in self.hir.execution_annotations(item) {
                 for argument in &annotation.args {
                     let value = match argument {
                         etas_hir::HirAnnotationArg::Positional { value, .. }
@@ -593,7 +593,8 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
                 )
             })
         {
-            let deferred = self.checked.effects.expr_effects.get(&expression.id()).is_some_and(|summary|
+            let deferred = self.checked.effects.contract_method_calls.contains_key(&expression.id())
+                || self.checked.effects.expr_effects.get(&expression.id()).is_some_and(|summary|
                 summary.action_trace.parameter_calls().iter().any(|call|
                     matches!(call.target, etas_effects::ParameterCallTarget::SpecMethod { call, .. } if call == expression.id())));
             let metadata = self

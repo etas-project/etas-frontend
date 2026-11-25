@@ -106,6 +106,15 @@ pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, Stri
     append(&mut parts, "external-impls", &facts.external_specs.impls)?;
     append(
         &mut parts,
+        "external-std-identities",
+        facts
+            .external_specs
+            .std_identities
+            .iter()
+            .collect::<Vec<_>>(),
+    )?;
+    append(
+        &mut parts,
         "canonical-spec-signatures",
         sorted(&facts.canonical_specs.signatures),
     )?;

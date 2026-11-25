@@ -51,3 +51,20 @@ pub enum EffectArgRef {
     Int(String),
     Wildcard,
 }
+
+impl EffectRowRef {
+    /// A local inference variable, owned by one lambda occurrence. It is never
+    /// a declared bound or evidence that the callable is pure.
+    pub fn inferred_lambda(value: etas_hir::HirExprId) -> Self {
+        Self {
+            effects: Vec::new(),
+            tail: Some(format!("@lambda:{}", value.0)),
+        }
+    }
+
+    pub fn is_inferred_lambda(&self) -> bool {
+        self.tail
+            .as_ref()
+            .is_some_and(|tail| tail.starts_with("@lambda:"))
+    }
+}

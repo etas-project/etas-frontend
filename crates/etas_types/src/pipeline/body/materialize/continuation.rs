@@ -245,16 +245,16 @@ fn task_owner_scope(
                 };
                 body_containing_expr(index, handler)?
             }
-            HirBodyKind::MatchArm { expr, .. } | HirBodyKind::StageLimit { expr, .. } => {
-                body_containing_expr(index, expr)?
-            }
+            HirBodyKind::MatchArm { expr, .. } => body_containing_expr(index, expr)?,
             HirBodyKind::Flow
             | HirBodyKind::Tool
             | HirBodyKind::Agent
             | HirBodyKind::TopLevelLet
             | HirBodyKind::ImplFlow(_)
             | HirBodyKind::AnnotationArg { .. } => return None,
-            HirBodyKind::ParameterDefault { .. } => return None,
+            HirBodyKind::ParameterDefault { .. } | HirBodyKind::FieldAnnotation { .. } => {
+                return None;
+            }
         };
     }
 }
@@ -371,7 +371,7 @@ fn enclosing_handler_arm(
     loop {
         match body.kind {
             HirBodyKind::HandlerArm(arm) => return Some(arm),
-            HirBodyKind::MatchArm { expr, .. } | HirBodyKind::StageLimit { expr, .. } => {
+            HirBodyKind::MatchArm { expr, .. } => {
                 body = body_containing_expr(index, expr)?;
             }
             HirBodyKind::Lambda(_) => return None,
@@ -381,7 +381,9 @@ fn enclosing_handler_arm(
             | HirBodyKind::TopLevelLet
             | HirBodyKind::ImplFlow(_)
             | HirBodyKind::AnnotationArg { .. } => return None,
-            HirBodyKind::ParameterDefault { .. } => return None,
+            HirBodyKind::ParameterDefault { .. } | HirBodyKind::FieldAnnotation { .. } => {
+                return None;
+            }
         }
     }
 }

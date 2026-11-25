@@ -4,10 +4,33 @@ use std::collections::BTreeSet;
 
 use etas_code::descriptor::ValueProjectionStep as Step;
 use etas_hir::{HirExpr, HirExprId, HirFieldInit, HirMatchArmBody, ResolveResult};
-use etas_types::{Type, TypeId};
+use etas_types::Type;
 
 use super::{engine::EffectSemantics, state::EffectState};
 use crate::{CallableExitSummary, ProjectedReturnSources};
+
+pub(super) fn element_origin_path(
+    path: &[etas_code::descriptor::ValueProjectionStep],
+) -> Vec<etas_code::descriptor::ValueProjectionStep> {
+    use etas_code::descriptor::ValueProjectionStep as Step;
+    // List origins join all elements. Selecting an element after a tail
+    // therefore uses the same checked set of possible callable origins.
+    path.iter()
+        .enumerate()
+        .filter_map(|(position, step)| match step {
+            Step::ListTail
+                if matches!(
+                    path.get(position + 1),
+                    Some(Step::SequenceElement | Step::ListHead | Step::ListTail)
+                ) =>
+            {
+                None
+            }
+            Step::ListHead => Some(Step::SequenceElement),
+            _ => Some(step.clone()),
+        })
+        .collect()
+}
 
 impl EffectSemantics<'_> {
     fn position_payload_carrier(&self, expr: HirExprId, path: &[Step]) -> bool {
@@ -86,104 +109,6 @@ impl EffectSemantics<'_> {
             etas_std::intrinsic::pure::OPTION_NONE => Some("None".into()),
             _ => None,
         }
-    }
-
-    pub(super) fn value_payload_paths(&self, root: TypeId) -> Option<BTreeSet<Vec<Step>>> {
-        let mut paths = BTreeSet::new();
-        let mut pending = vec![(root, Vec::<Step>::new(), BTreeSet::<TypeId>::new())];
-        let mut work = 0usize;
-        while let Some((mut ty, path, mut ancestors)) = pending.pop() {
-            work += 1;
-            if work > etas_package_metadata::MAX_METADATA_GRAPH_NODES
-                || path.len() > etas_package_metadata::MAX_METADATA_GRAPH_DEPTH
-            {
-                return None;
-            }
-            if !self.type_contains_flow(ty) && !self.type_has_parameters(ty) {
-                continue;
-            }
-            if !ancestors.insert(ty) {
-                if !path.is_empty() {
-                    paths.insert(path);
-                }
-                continue;
-            }
-            if matches!(
-                self.types.store.get(ty),
-                Some(Type::Nominal(_) | Type::Applied { .. })
-            ) && let Ok(Some(representation)) = self.applied_representation(ty)
-            {
-                ty = representation;
-            }
-            let steps = match self.types.store.get(ty)? {
-                Type::Tuple(elements) => (0..elements.len())
-                    .map(|i| Step::TupleElement(i as u32))
-                    .collect::<Vec<_>>(),
-                Type::Record(record) => record
-                    .fields
-                    .iter()
-                    .map(|field| Step::Field(field.name.clone()))
-                    .collect(),
-                Type::Array(_) | Type::List(_) | Type::Set(_) | Type::Slice(_) => {
-                    vec![Step::SequenceElement]
-                }
-                Type::Map { .. } => vec![Step::MapKey, Step::MapValue],
-                Type::Option(_) => vec![Step::VariantPayload {
-                    variant: "Some".into(),
-                    position: 0,
-                }],
-                Type::Result { .. } => vec![
-                    Step::VariantPayload {
-                        variant: "Ok".into(),
-                        position: 0,
-                    },
-                    Step::VariantPayload {
-                        variant: "Err".into(),
-                        position: 0,
-                    },
-                ],
-                Type::Enum(_) | Type::Applied { .. } => {
-                    let constructor = match self.types.store.get(ty)? {
-                        Type::Applied { constructor, .. } => TypeId(constructor.0),
-                        _ => ty,
-                    };
-                    self.types
-                        .facts
-                        .enum_layouts
-                        .get(&constructor)
-                        .map(|layout| {
-                            layout
-                                .variants
-                                .iter()
-                                .flat_map(|variant| {
-                                    (0..variant.fields.len()).map(|i| Step::VariantPayload {
-                                        variant: variant.name.clone(),
-                                        position: i as u32,
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                }
-                _ => Vec::new(),
-            };
-            if steps.is_empty() {
-                if !path.is_empty() {
-                    paths.insert(path);
-                }
-                continue;
-            }
-            for step in steps {
-                let mut selected = path.clone();
-                selected.push(step.clone());
-                if let Ok(Some(child)) = self.project_value(ty, &[step]) {
-                    pending.push((child, selected, ancestors.clone()));
-                } else {
-                    paths.insert(selected);
-                }
-            }
-        }
-        Some(paths)
     }
 
     pub(super) fn record_iteration_pattern_sources(
@@ -289,13 +214,19 @@ impl EffectSemantics<'_> {
         let Some(ty) = self.symbol_value_type(symbol) else {
             return;
         };
-        let Some(paths) = self.value_payload_paths(ty) else {
+        let stable_state = self.stable_agent_state_layout(ty);
+        let Some(paths) = self.value_payload_paths(stable_state.unwrap_or(ty)) else {
             return;
         };
         for path in paths {
             let mut selected = prefix.to_vec();
             selected.extend(path.iter().cloned());
-            if let Some(sources) = self.projected_sources(value, &selected, state) {
+            let sources = self.projected_sources(value, &selected, state).or_else(|| {
+                stable_state.map(|_| {
+                    BTreeSet::from([super::state::LatentSource::Unavailable { expr: value }])
+                })
+            });
+            if let Some(sources) = sources {
                 state
                     .local_latent_values
                     .symbol_projections
@@ -323,6 +254,34 @@ impl EffectSemantics<'_> {
         if let Some(found) = self.call_results.value_projections.get(&key) {
             return Some(found.clone());
         }
+        // A checked collection element set also covers a head or an element
+        // selected after any number of tails. Keep the surrounding fields:
+        // aggregate roots may contain unrelated callable payloads.
+        let element_key = (expr, element_origin_path(path));
+        if element_key != key
+            && let Some(found) = state
+                .local_latent_values
+                .value_projections
+                .get(&element_key)
+                .or_else(|| self.call_results.value_projections.get(&element_key))
+        {
+            return Some(found.clone());
+        }
+        for values in [
+            &state.local_latent_values.value_projections,
+            &self.call_results.value_projections,
+        ] {
+            if let Some(found) = self.regular_projection_sources(
+                values.iter().filter_map(|((value, position), sources)| {
+                    (*value == expr).then_some((position.as_slice(), sources))
+                }),
+                path,
+                state,
+                expr,
+            ) {
+                return Some(found);
+            }
+        }
         let HirExpr::Path(value) = self.hir.exprs.get(expr)? else {
             return None;
         };
@@ -335,6 +294,12 @@ impl EffectSemantics<'_> {
             _ => return None,
         };
         selected.extend_from_slice(path);
+        if !state.agent_state.is_empty()
+            && let Some(allocation) = self.agent_allocation(symbol)
+            && let Some(origins) = state.agent_state.get(&(allocation, selected.clone()))
+        {
+            return Some(origins.clone());
+        }
         let key = (symbol, selected);
         state
             .local_latent_values
@@ -342,7 +307,66 @@ impl EffectSemantics<'_> {
             .get(&key)
             .or_else(|| self.global_values.symbol_projections.get(&key))
             .or_else(|| self.discovered_global_values.symbol_projections.get(&key))
+            .or_else(|| {
+                let element_key = (symbol, element_origin_path(&key.1));
+                state
+                    .local_latent_values
+                    .symbol_projections
+                    .get(&element_key)
+                    .or_else(|| self.global_values.symbol_projections.get(&element_key))
+                    .or_else(|| {
+                        self.discovered_global_values
+                            .symbol_projections
+                            .get(&element_key)
+                    })
+            })
             .cloned()
+            .or_else(|| {
+                for values in [
+                    &state.local_latent_values.symbol_projections,
+                    &self.global_values.symbol_projections,
+                    &self.discovered_global_values.symbol_projections,
+                ] {
+                    if let Some(found) = self.regular_projection_sources(
+                        values.iter().filter_map(|((value, position), sources)| {
+                            (*value == symbol).then_some((position.as_slice(), sources))
+                        }),
+                        &key.1,
+                        state,
+                        expr,
+                    ) {
+                        return Some(found);
+                    }
+                }
+                None
+            })
+    }
+
+    fn regular_projection_sources<'a>(
+        &self,
+        positions: impl IntoIterator<Item = (&'a [Step], &'a BTreeSet<super::state::LatentSource>)>,
+        path: &[Step],
+        state: &EffectState,
+        application: HirExprId,
+    ) -> Option<BTreeSet<super::state::LatentSource>> {
+        let positions = positions.into_iter().collect::<Vec<_>>();
+        if !positions.iter().any(|(position, _)| {
+            position
+                .iter()
+                .any(|step| matches!(step, Step::Repeat { .. }))
+        }) {
+            return None;
+        }
+        let positions = super::return_projection::returned_positions(positions, path);
+        if positions.is_empty() {
+            return None;
+        }
+        positions
+            .into_iter()
+            .try_fold(BTreeSet::new(), |mut result, (sources, suffix)| {
+                result.extend(self.project_value_origins(sources, &suffix, state, application)?);
+                Some(result)
+            })
     }
 
     pub(crate) fn projected_sources(
@@ -351,8 +375,36 @@ impl EffectSemantics<'_> {
         path: &[Step],
         state: &EffectState,
     ) -> Option<BTreeSet<super::state::LatentSource>> {
+        if self.checked_empty_store_projection(expr) {
+            return Some(BTreeSet::new());
+        }
+        if let Some(position) = path
+            .iter()
+            .position(|step| matches!(step, Step::Invocation { .. }))
+        {
+            let Step::Invocation { inputs } = path[position] else {
+                unreachable!()
+            };
+            let origins = self.projected_sources(expr, &path[..position], state)?;
+            let origins = self
+                .applied_callable_origins(&origins, inputs, state)
+                .ok()?;
+            let application = self.native_call_inputs(inputs)?.call;
+            return self.project_value_origins(&origins, &path[position + 1..], state, application);
+        }
         if let Some(found) = self.known_projection_sources(state, expr, path) {
             return Some(found);
+        }
+        // A checked aggregate field can be available before a longer query
+        // through its callable result. Consume that field once, then evaluate
+        // the remaining path with the same origin projection machinery.
+        for prefix in (1..path.len()).rev() {
+            if let Some(sources) = self.known_projection_sources(state, expr, &path[..prefix])
+                && let Some(found) =
+                    self.project_value_origins(&sources, &path[prefix..], state, expr)
+            {
+                return Some(found);
+            }
         }
         if let Some(ty) = self.types.facts.expr_types.get(&expr)
             && let Ok(Some(selected)) = self.project_value(*ty, path)
@@ -409,9 +461,34 @@ impl EffectSemantics<'_> {
                 continue;
             }
             let (step, rest) = path.split_first()?;
-            if matches!(step, Step::CallResult) {
+            if let Step::Repeat { alternatives } = step {
+                if let Some(origins) = self.latent_sources_for_expr(state, expr)
+                    && let Some(selected) = self.project_parameter_origins(origins, &path)
+                {
+                    result.extend(selected);
+                    continue;
+                }
+                // A regular path is the union of zero traversals and every
+                // alternative followed by the same closure. The existing
+                // checked-expression worklist closes cycles without executing
+                // a callback or inventing its behavior.
+                pending.push((expr, rest.to_vec()));
+                for alternative in alternatives {
+                    let mut selected = alternative.clone();
+                    selected.extend_from_slice(&path);
+                    pending.push((expr, selected));
+                }
+                continue;
+            }
+            if matches!(step, Step::CallResult | Step::CallWithArguments { .. }) {
                 let origins = self.latent_sources_for_expr(state, expr)?;
-                result.extend(self.invoked_value_projection(&origins, rest, state, expr)?);
+                let inputs = match step {
+                    Step::CallWithArguments { inputs } => Some(*inputs),
+                    _ => None,
+                };
+                result.extend(
+                    self.invoked_value_projection_with_inputs(&origins, rest, state, expr, inputs)?,
+                );
                 continue;
             }
             match self.hir.exprs.get(expr)? {
@@ -507,6 +584,32 @@ impl EffectSemantics<'_> {
                         _ => return None,
                     }
                 }
+                HirExpr::If {
+                    then_block,
+                    else_branch,
+                    ..
+                } => {
+                    let mut blocks = vec![*then_block];
+                    match else_branch {
+                        Some(etas_hir::HirElseBranch::Block(block)) => blocks.push(*block),
+                        Some(etas_hir::HirElseBranch::If(value)) => {
+                            if !self.expr_is_never(*value) {
+                                pending.push((*value, path.clone()));
+                            }
+                        }
+                        None => return None,
+                    }
+                    for block in blocks {
+                        match self.hir.blocks.get(block)?.final_expr {
+                            Some(value) if !self.expr_is_never(value) => {
+                                pending.push((value, path.clone()));
+                            }
+                            Some(_) => {}
+                            None if self.block_type_is_never(block) => {}
+                            None => return None,
+                        }
+                    }
+                }
                 HirExpr::Match { arms, .. } => {
                     for arm in arms {
                         let value = match arm.body {
@@ -529,6 +632,10 @@ impl EffectSemantics<'_> {
                     None if self.block_type_is_never(*block) => {}
                     None => return None,
                 },
+                HirExpr::Try { expr: operand, .. } if matches!(step, Step::VariantPayload { variant, position: 0 } if variant == "Ok") =>
+                {
+                    pending.push((*operand, rest.to_vec()));
+                }
                 HirExpr::Call { callee, args, .. }
                     if self.projection_constructor(*callee).is_some() =>
                 {
@@ -543,21 +650,25 @@ impl EffectSemantics<'_> {
                         pending.push((value, rest.to_vec()));
                     }
                 }
-                HirExpr::Call { callee, args, .. } if args.is_empty() => {
+                HirExpr::Call { callee, .. } => {
                     let sources = self.latent_sources_for_expr(state, *callee)?;
-                    result.extend(self.invoked_value_projection(&sources, &path, state, expr)?);
-                }
-                HirExpr::Path(callee) if matches!(step, Step::VariantPayload { .. }) => {
-                    let ResolveResult::Resolved(symbol) = callee.resolution else {
+                    let Step::CallWithArguments { inputs } =
+                        self.call_result_step(expr, state).ok()?
+                    else {
                         return None;
                     };
-                    if !self.checked_empty_constructor_value(expr, symbol) {
-                        result.extend(self.project_parameter_origins(
-                            self.latent_sources_for_expr(state, expr)?,
-                            &path,
-                        )?);
-                    }
+                    result.extend(self.invoked_value_projection_with_inputs(
+                        &sources,
+                        &path,
+                        state,
+                        expr,
+                        Some(inputs),
+                    )?);
                 }
+                HirExpr::Path(callee)
+                    if matches!(step, Step::VariantPayload { .. })
+                        && matches!(callee.resolution, ResolveResult::Resolved(symbol)
+                            if self.checked_empty_constructor_value(expr, symbol)) => {}
                 HirExpr::Path(_) => {
                     let sources = self.latent_sources_for_expr(state, expr)?;
                     if let Some(selected) =

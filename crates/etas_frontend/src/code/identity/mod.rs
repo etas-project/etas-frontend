@@ -739,10 +739,19 @@ impl DefinitionIdentityIndex {
                         .collect()
                 })
                 .unwrap_or_default();
+            let mut declaration = Vec::new();
+            if let Some(owner) = checked.hir.member_tool_owner(item_id) {
+                let owner = checked
+                    .symbols
+                    .get(owner)
+                    .ok_or(ProjectionError::MissingSymbol(owner))?;
+                declaration.push(owner.name.clone());
+            }
+            declaration.push(data.name.clone());
             let key = DefinitionKey::new(
                 origin.package(),
                 origin.module().to_vec(),
-                vec![data.name.clone()],
+                declaration,
                 kind,
             )?;
             let mut path = local_path;

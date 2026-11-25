@@ -39,7 +39,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
         );
         match effects {
             Ok(mut effects) => {
-                let imported =
+                let mut imported =
                     crate::suspension::imported_contracts(
                         context
                             .input
@@ -52,6 +52,23 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
                                 ),
                             ),
                     );
+                // Method body graphs are the canonical execution contract and
+                // are available without demand-loading reflection descriptors.
+                for method in context.input.external_implementations {
+                    let summary = method
+                        .metadata
+                        .checked_body()
+                        .and_then(|body| body.behavior.suspension)
+                        .map(|summary| crate::suspension::SuspensionSummary {
+                            may_suspend: summary.may_suspend,
+                            unknown: summary.unknown,
+                        })
+                        .unwrap_or(crate::suspension::SuspensionSummary::UNKNOWN);
+                    imported.insert(
+                        etas_code::CallableId::method(method.metadata.identity.clone()),
+                        summary,
+                    );
+                }
                 effects.facts.suspension = match crate::suspension::analyze(
                     context.input.hir,
                     context.input.types,

@@ -6,11 +6,11 @@ use std::collections::HashSet;
 impl LowerCtx {
     pub(super) fn lower_impl_type_params(
         &mut self,
-        target: &ast::ImplTarget,
+        declaration: &ast::ImplDecl,
         scope: ScopeId,
         item: HirItemId,
     ) -> Vec<SymbolId> {
-        let arguments = match target {
+        let arguments = match &declaration.target {
             ast::ImplTarget::Inherent { type_args, .. } => type_args.as_slice(),
             ast::ImplTarget::SpecSatisfaction {
                 self_type: ast::TypeExpr::Path { args, .. },
@@ -19,8 +19,12 @@ impl LowerCtx {
             _ => &[],
         };
         let mut pending = arguments.iter().rev().collect::<Vec<_>>();
-        let mut names = HashSet::new();
-        let mut parameters = Vec::new();
+        let mut names = declaration
+            .type_params
+            .iter()
+            .map(|parameter| parameter.name.text.clone())
+            .collect::<HashSet<_>>();
+        let mut parameters = declaration.type_params.clone();
         while let Some(ty) = pending.pop() {
             match ty {
                 ast::TypeExpr::Path { path, args, .. } => {

@@ -226,7 +226,14 @@ pub struct HirRecordExpr {
     pub path: Option<ResolvedPath>,
     pub generic_args: Vec<HirGenericArg>,
     pub fields: Vec<HirFieldInit>,
+    pub injections: Option<HirRecordInjections>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
+pub struct HirRecordInjections {
+    pub parameters: Vec<crate::SymbolId>,
+    pub values: Vec<HirExprId>,
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
@@ -284,7 +291,6 @@ pub struct HirHandlerArm {
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirStage {
     pub expr: HirExprId,
-    pub limits: Vec<HirExprId>,
     pub span: Span,
 }
 

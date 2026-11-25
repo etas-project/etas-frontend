@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+mod constructors;
 mod enums;
 mod implementation_methods;
 mod methods;
@@ -52,6 +53,7 @@ pub(super) fn prepare_external_signature_input(
     input: &ExternalSignatureInput,
 ) -> Option<ExternalBindingState> {
     let mut state = ExternalBindingState::default();
+    constructors::declare(ctx, input);
     specs::declare(ctx, input);
     if !types::prepare(ctx, input) {
         return None;
@@ -87,12 +89,37 @@ pub(super) fn prepare_external_signature_input(
                 ctx.signature_facts
                     .external_scoped_methods
                     .insert(identity.clone(), contract.parameters.clone());
+                ctx.signature_facts
+                    .external_resource_boundaries
+                    .insert(identity.clone(), contract.resource_boundaries.clone());
             }
         }
         for ty in &metadata.behavior_types {
             lower_external_type(ctx, span, ty);
         }
         for item in &metadata.types {
+            let owner = ctx
+                .signature_facts
+                .reflection_declaration_identities
+                .get(&item.path)
+                .cloned()
+                .map(etas_code::descriptor::GenericOwner::Declaration);
+            let Some(parameters) = crate::lower::external::lower_external_scoped_generic_params(
+                ctx,
+                span,
+                metadata.package,
+                &item.path.join("."),
+                &item.generic_params,
+                owner.clone(),
+            ) else {
+                continue;
+            };
+            let previous = ctx.external_type_parameters.clone();
+            ctx.external_type_parameters.extend(
+                parameters
+                    .iter()
+                    .map(|parameter| (parameter.name.clone(), parameter.subject)),
+            );
             let ty = lower_external_type_declaration(
                 ctx,
                 span,
@@ -100,15 +127,27 @@ pub(super) fn prepare_external_signature_input(
                 &item.generic_params,
                 item.ty.as_ref(),
             );
-            let Some(parameters) = lower_external_callable_generic_params(
-                ctx,
-                span,
-                metadata.package,
-                &item.path,
-                &item.generic_params,
-            ) else {
-                continue;
-            };
+            ctx.external_type_parameters = previous;
+            if !parameters.is_empty()
+                && let Some(etas_code::descriptor::GenericOwner::Declaration(identity)) = owner
+            {
+                if matches!(
+                    ctx.interner.store().get(ty),
+                    Some(Type::Nominal(_) | Type::Enum(_))
+                ) && let Err(reason) = ctx.interner.bind_canonical_nominal(ty, identity.clone())
+                {
+                    incomplete_external_type_facts(
+                        ctx,
+                        span,
+                        format!(
+                            "{reason}: import {}, requested {identity:?}, existing {:?}",
+                            item.path.join("."),
+                            ctx.interner.store().nominal_identity(ty)
+                        ),
+                    );
+                    continue;
+                }
+            }
             let fact = match item.ty.as_ref() {
                 Some(crate::ExternalTypeInput::Alias { .. }) => SymbolTypeFact::TypeAlias {
                     target: ty,
@@ -205,11 +244,14 @@ pub(super) fn prepare_external_signature_input(
                 if item.param_names.len() == signature.params.len()
                     && !contract.parameters.is_empty()
                     && contract.parameters.windows(2).all(|pair| pair[0] < pair[1])
+                    && contract.resource_boundaries.windows(2).all(|pair| pair[0] < pair[1])
+                    && contract.resource_boundaries.iter().all(|slot| contract.parameters.contains(slot))
                     && contract.parameters.iter().all(|slot| signature.params.get(*slot as usize)
                         .is_some_and(|ty| matches!(ctx.interner.store().get(*ty), Some(Type::Function(_)))))
                 {
                     scoped.insert((metadata.package, item.path.clone()), crate::facts::concurrency::ScopedCallbackFact {
                         parameters: contract.parameters.clone(), parameter_names: item.param_names.clone(),
+                        resource_boundaries: contract.resource_boundaries.clone(),
                     });
                 } else {
                     incomplete_external_type_facts(ctx, span, "scoped callback contract differs from its imported signature".into());
@@ -221,7 +263,37 @@ pub(super) fn prepare_external_signature_input(
             );
         }
         for item in &metadata.agents {
-            let Some(generic_params) = lower_external_callable_generic_params(
+            let contract = metadata
+                .constructor_contracts
+                .iter()
+                .find(|contract| contract.agent && contract.path == item.path);
+            let parameters = match contract.map(constructors::parameters).transpose() {
+                Ok(Some(parameters)) => parameters,
+                Ok(None) => item.generic_params.clone(),
+                Err(error) => {
+                    incomplete_external_type_facts(ctx, span, error.message);
+                    continue;
+                }
+            };
+            let owner = ctx
+                .signature_facts
+                .reflection_declaration_identities
+                .get(&item.path)
+                .cloned()
+                .map(etas_code::descriptor::GenericOwner::Declaration);
+            let Some(owner_parameters) =
+                crate::lower::external::lower_external_scoped_generic_params(
+                    ctx,
+                    span,
+                    metadata.package,
+                    &item.path.join("."),
+                    &parameters,
+                    owner.clone(),
+                )
+            else {
+                continue;
+            };
+            let Some(entry_parameters) = lower_external_callable_generic_params(
                 ctx,
                 span,
                 metadata.package,
@@ -230,21 +302,51 @@ pub(super) fn prepare_external_signature_input(
             ) else {
                 continue;
             };
-            let component = ctx
-                .interner
-                .intern(crate::Type::Nominal(crate::NominalTypeRef {
-                    read_only_erased_view: false,
-                    name: item.path.join("."),
-                    params: Vec::new(),
-                    representation: None,
-                }));
+            let component =
+                lower_external_type_declaration(ctx, span, &item.path, &parameters, None);
+            if !owner_parameters.is_empty()
+                && let Some(etas_code::descriptor::GenericOwner::Declaration(identity)) = owner
+            {
+                if let Err(reason) = ctx
+                    .interner
+                    .bind_canonical_nominal(component, identity.clone())
+                {
+                    incomplete_external_type_facts(
+                        ctx,
+                        span,
+                        format!(
+                            "{reason}: import {}, requested {identity:?}, existing {:?}",
+                            item.path.join("."),
+                            ctx.interner.store().nominal_identity(component)
+                        ),
+                    );
+                    continue;
+                }
+            }
             ctx.signature_facts
                 .type_generics
-                .insert(component, Vec::new());
+                .insert(component, owner_parameters.clone());
+            let previous = ctx.external_type_parameters.clone();
+            ctx.external_type_parameters.extend(
+                owner_parameters
+                    .iter()
+                    .map(|parameter| (parameter.name.clone(), parameter.subject)),
+            );
+            let state_result = contract
+                .map(|contract| constructors::state(ctx, span, contract))
+                .transpose();
+            ctx.external_type_parameters = previous;
+            let state = match state_result {
+                Ok(state) => state,
+                Err(error) => {
+                    incomplete_external_type_facts(ctx, span, error.message);
+                    continue;
+                }
+            };
             let default_entry = item.output.as_ref().map(|output| {
                 let signature = CallableSignature {
                     parameter_interface: metadata.parameter_interfaces.get(&item.path).cloned(),
-                    generic_params,
+                    generic_params: entry_parameters,
                     params: item
                         .input
                         .iter()
@@ -275,6 +377,7 @@ pub(super) fn prepare_external_signature_input(
             );
             let signature = crate::AgentSignature {
                 component,
+                state,
                 definition_type,
                 default_entry,
             };

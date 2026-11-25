@@ -35,6 +35,7 @@ flow main() -> unit {
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let registry = etas_std::standard_registry();
     let output = RunEffectPipeline::run(EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,

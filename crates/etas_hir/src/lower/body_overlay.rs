@@ -34,8 +34,16 @@ pub(super) fn callable_slots(program: &ast::Program, slots: &mut HashSet<SyntaxK
             }
             ast::Item::Impl(implementation) => {
                 for member in &implementation.items {
-                    if let ast::ImplItem::Flow(flow) = member {
-                        slots.insert(key(flow.span));
+                    match member {
+                        ast::ImplItem::Flow(flow) => {
+                            slots.insert(key(flow.span));
+                        }
+                        ast::ImplItem::Tool(tool)
+                            if matches!(tool.body, ast::ToolBody::Source(_)) =>
+                        {
+                            slots.insert(key(tool.span));
+                        }
+                        _ => {}
                     }
                 }
             }

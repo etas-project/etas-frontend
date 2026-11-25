@@ -38,18 +38,15 @@ pub enum HirStmt {
     For {
         pat: HirPatId,
         iter: HirExprId,
-        limits: Vec<HirExprId>,
         body: HirBlockId,
         span: Span,
     },
     While {
         cond: HirExprId,
-        limits: Vec<HirExprId>,
         body: HirBlockId,
         span: Span,
     },
     Retry {
-        limits: Vec<HirExprId>,
         body: HirBlockId,
         span: Span,
     },

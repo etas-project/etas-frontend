@@ -27,9 +27,9 @@ pub mod objects;
 pub use modules::LibrarySlicePlan;
 mod restore;
 
-const SCHEMA: u32 = 71;
+const SCHEMA: u32 = 93;
 const EFFECT_ANALYSIS_SCHEMA: u32 = 1;
-const PREPARED_EFFECT_MAGIC: &[u8; 8] = b"ETASEFF2";
+const PREPARED_EFFECT_MAGIC: &[u8; 8] = b"ETASEFF3";
 
 /// Input to fact materialization, before runtime proofs are projected and bound.
 #[derive(Serialize, Deserialize)]

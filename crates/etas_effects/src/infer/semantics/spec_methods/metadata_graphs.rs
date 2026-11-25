@@ -43,12 +43,18 @@ fn enqueue(
     }));
 }
 
-pub(super) fn graph_key(method: CodeFingerprint, position: u32) -> CodeFingerprint {
+pub(super) fn graph_key(
+    method: CodeFingerprint,
+    position: u32,
+    generics: &[(String, CallableGenericParamKind)],
+) -> CodeFingerprint {
+    let context = serde_json::to_vec(generics).expect("checked generic interface serializes");
     CodeFingerprint::of_parts(
-        "etas.effects.method-callback.v1",
+        "etas.effects.method-callback.v2",
         [
             method.as_bytes().as_slice(),
             position.to_le_bytes().as_slice(),
+            context.as_slice(),
         ],
     )
 }
@@ -71,8 +77,15 @@ pub(super) fn targets<'a>(
             } => targets.extend(parameter_calls),
             ExternalActionTraceMetadata::Seq(parts)
             | ExternalActionTraceMetadata::Choice(parts) => pending.extend(parts),
-            ExternalActionTraceMetadata::Repeat(part) => pending.push(part),
-            _ => {}
+            ExternalActionTraceMetadata::Repeat(part)
+            | ExternalActionTraceMetadata::DefaultHandler { body: part, .. }
+            | ExternalActionTraceMetadata::Recursive {
+                body: Some(part), ..
+            } => pending.push(part),
+            ExternalActionTraceMetadata::Empty
+            | ExternalActionTraceMetadata::Event { .. }
+            | ExternalActionTraceMetadata::Recursive { body: None, .. }
+            | ExternalActionTraceMetadata::UnknownOrder(_) => {}
         }
     }
     targets
@@ -112,6 +125,39 @@ impl EffectSemantics<'_> {
                 definition.span,
             ));
         }
+        for default in self.external_defaults {
+            for (position, node) in default.graph.values.iter().enumerate() {
+                if let Some(checked) = default.values.get(position)
+                    && let Some(generics) =
+                        node_generic_kinds(&default.graph, node, &default.generics)
+                {
+                    enqueue(
+                        &mut pending,
+                        targets(&checked.action_trace, checked.handler_requests.as_ref()),
+                        &generics,
+                        default.span,
+                    );
+                }
+            }
+        }
+        for method in self.external_implementations {
+            for (position, checked) in method.values.iter().enumerate() {
+                let source = crate::MetadataCallableSource {
+                    graph: method.graph_key,
+                    value: position as u32,
+                    environment: None,
+                    analysis: crate::CallableAnalysisKind::CheckedRevision,
+                };
+                if let Some(generics) = self.metadata_evidence_generics(source) {
+                    enqueue(
+                        &mut pending,
+                        targets(&checked.action_trace, checked.handler_requests.as_ref()),
+                        &generics,
+                        method.span,
+                    );
+                }
+            }
+        }
         let mut visited =
             BTreeMap::<CodeFingerprint, Vec<Vec<(String, CallableGenericParamKind)>>>::new();
         while let Some((method, generics, span)) = pending.pop() {
@@ -121,7 +167,7 @@ impl EffectSemantics<'_> {
             }
             contexts.push(generics.clone());
             for (position, argument) in method.callable_arguments.iter().enumerate() {
-                let key = graph_key(method.identity, argument.position);
+                let key = graph_key(method.identity, argument.position, &generics);
                 let entry = MethodCallbackGraph {
                     method: method.clone(),
                     position,
@@ -161,8 +207,20 @@ impl EffectSemantics<'_> {
         source: crate::MetadataCallableSource,
     ) -> Option<Vec<(String, CallableGenericParamKind)>> {
         let (graph, node, _) = self.metadata_callable(source)?;
-        let root = if self.implementation_graphs.contains_key(&source.graph) {
-            Vec::new()
+        let implementation = self
+            .implementation_graphs
+            .get(&source.graph)
+            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)));
+        let default = self
+            .external_defaults
+            .iter()
+            .find(|default| default.graph_key == source.graph);
+        let root = if let Some(method) = implementation {
+            method
+                .owner_params
+                .iter()
+                .map(|parameter| (parameter.name.clone(), parameter.kind))
+                .collect()
         } else if let Some(proof) = self.frozen_graphs.get(&source.graph) {
             self.native_generic_params(proof.identity.owner)?
                 .iter()
@@ -174,6 +232,8 @@ impl EffectSemantics<'_> {
             .and_then(Option::as_ref)
         {
             entry.generics.clone()
+        } else if let Some(default) = default {
+            default.generics.clone()
         } else {
             self.external_summaries
                 .get(
@@ -185,7 +245,18 @@ impl EffectSemantics<'_> {
                 .generic_params
                 .clone()
         };
-        node_generic_kinds(graph, node, &root)
+        let mut generics = node_generic_kinds(graph, node, &root)?;
+        let owner_params = implementation
+            .map(|method| method.owner_params.as_slice())
+            .or_else(|| default.map(|default| default.owner_params.as_slice()));
+        if let Some(owner_params) = owner_params {
+            for parameter in owner_params.iter().rev() {
+                if !generics.iter().any(|(name, _)| name == &parameter.name) {
+                    generics.insert(0, (parameter.name.clone(), parameter.kind));
+                }
+            }
+        }
+        Some(generics)
     }
 }
 

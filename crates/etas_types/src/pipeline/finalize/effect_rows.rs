@@ -12,6 +12,63 @@ pub struct ResolvedEffectRowInstantiation {
     pub bindings: Vec<(String, EffectRowRef)>,
 }
 
+pub struct ResolvedTryCapture {
+    pub expression: HirExprId,
+    pub error: crate::TypeId,
+}
+
+/// Complete the Result error variables that waited for a callback's Effect row.
+/// Apply the checked unification to every dependent fact, including method
+/// owner arguments selected before Effects could close that row.
+pub fn materialize_try_captures(
+    output: &mut TypeOutput,
+    captures: &[ResolvedTryCapture],
+) -> Result<bool, EffectRowMaterializationError> {
+    let mut substitutions = crate::Substitution::default();
+    for capture in captures {
+        let error = |reason| EffectRowMaterializationError {
+            call: capture.expression,
+            reason,
+        };
+        let fact = output
+            .facts
+            .try_facts
+            .get(&capture.expression)
+            .ok_or_else(|| error("captured Error has no checked try type fact"))?;
+        let target = fact
+            .target_error
+            .or_else(|| {
+                crate::value_representation::result_parameters(
+                    &output.store,
+                    &output.facts.known_std_types,
+                    fact.result_type,
+                )
+                .map(|(_, error)| error)
+            })
+            .ok_or_else(|| error("captured Error has no Result error type"))?;
+        let mut unifier =
+            crate::TypeUnifier::with_known_substitution(&output.store, &substitutions);
+        unifier
+            .unify(target, capture.error)
+            .map_err(|_| error("captured Error conflicts with the checked Result error type"))?;
+        substitutions.extend(&unifier.into_substitution());
+    }
+    if substitutions.is_empty() {
+        return Ok(false);
+    }
+    let mut facts = output.facts.as_ref().clone();
+    let mut interner = crate::TypeInterner::from_store(output.store.as_ref().clone());
+    super::remap::substitute_facts(&mut facts, &mut interner, &substitutions).map_err(|_| {
+        EffectRowMaterializationError {
+            call: captures[0].expression,
+            reason: "captured Error could not complete its dependent checked types",
+        }
+    })?;
+    output.facts = Arc::new(facts);
+    output.store = Arc::new(interner.into_store());
+    Ok(true)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct EffectRowMaterializationError {
     pub call: HirExprId,
@@ -214,6 +271,71 @@ pub fn materialize_effect_row_instantiations(
         fact.deferred_effect_row_obligations.clear();
     }
     Ok(())
+}
+
+/// Complete solved lambda rows and rederive selected method ABIs from their
+/// checked declaration and arguments. Filling a row may make an inferred
+/// function type equal to an earlier interned type used by the declaration.
+pub fn materialize_lambda_effect_rows(
+    output: &mut TypeOutput,
+    rows: &HashMap<String, EffectRowRef>,
+) -> Result<bool, EffectRowMaterializationError> {
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    let mut store = output.store.as_ref().clone();
+    if !store.resolve_lambda_effect_rows(rows) {
+        return Ok(false);
+    }
+    let mut interner = crate::TypeInterner::from_store(store);
+    // Calls outside the checked reachability may still wait for a row. They
+    // keep their deferred obligation and are completed when that body is checked.
+    let mut calls = output
+        .facts
+        .checked_method_calls
+        .iter()
+        .filter(|(_, fact)| {
+            fact.instantiation
+                .deferred_effect_row_obligations
+                .is_empty()
+        })
+        .collect::<Vec<_>>();
+    calls.sort_by_key(|(call, _)| **call);
+    let mut methods = Vec::with_capacity(calls.len());
+    let mut intrinsic_calls = Vec::new();
+    for (call, fact) in calls {
+        let error = |reason| EffectRowMaterializationError {
+            call: *call,
+            reason,
+        };
+        let declaration = output
+            .facts
+            .methods
+            .declaration(&fact.target, &fact.evidence)
+            .ok_or_else(|| error("completed lambda row has no checked method declaration"))?;
+        let mut method = fact.clone();
+        method.signature = crate::method::instantiate::signature(&mut interner, declaration, fact)
+            .map_err(|_| error("completed lambda row could not rederive its checked method ABI"))?;
+        if let Some(intrinsic) = output.facts.std_intrinsic_calls.get(call) {
+            let mut intrinsic = intrinsic.clone();
+            intrinsic.signature = method.signature.clone();
+            intrinsic.callable_type = interner.intern(crate::Type::Function(crate::FlowType {
+                input: method.signature.params.clone(),
+                output: method.signature.output,
+                effects: method.signature.effects.clone(),
+            }));
+            intrinsic_calls.push((*call, intrinsic));
+        }
+        methods.push((*call, method));
+    }
+    output.store = Arc::new(interner.into_store());
+    let facts = Arc::make_mut(&mut output.facts);
+    for (call, method) in methods {
+        facts.expr_types.insert(call, method.signature.output);
+        facts.checked_method_calls.insert(call, method);
+    }
+    facts.std_intrinsic_calls.extend(intrinsic_calls);
+    Ok(true)
 }
 
 #[cfg(test)]

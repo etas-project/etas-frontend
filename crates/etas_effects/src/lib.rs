@@ -59,13 +59,13 @@ pub use pipeline::{
     ExternalEffectFootprintMetadata, ExternalEffectMetadata, ExternalEffectRowMetadata,
     ExternalEffectSummaryMetadata, ExternalExistentialMemberMetadata,
     ExternalExistentialValueMetadata, ExternalLatentFlowSummaryMetadata,
-    ExternalMethodRequirements, ExternalMethodTraceRequirement, ExternalParameterRequestMetadata,
-    ExternalRequestInstantiationMetadata, ExternalSpecImplementationMetadata,
-    ExternalSpecMethodCallableArgument, ExternalSpecMethodGenericArgument,
-    ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata,
-    ExternalTraceSpecEffectMetadata, ExternalTraceSpecEffectRowMetadata,
-    ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry, RunEffectPipeline,
-    TraceSpecPipelineAnalysis,
+    ExternalMethodRequirements, ExternalMethodTraceRequirement, ExternalParameterDefaultMetadata,
+    ExternalParameterRequestMetadata, ExternalRequestInstantiationMetadata,
+    ExternalSpecImplementationMetadata, ExternalSpecMethodCallableArgument,
+    ExternalSpecMethodGenericArgument, ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind,
+    ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
+    ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry,
+    RunEffectPipeline, TraceSpecPipelineAnalysis,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{

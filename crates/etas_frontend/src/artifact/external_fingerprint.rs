@@ -177,6 +177,14 @@ impl Encoder {
                     self.byte(8);
                     match trace {
                         Trace::Empty => self.byte(0),
+                        Trace::Recursive { id, body } => {
+                            self.byte(9);
+                            self.text(&id.to_string());
+                            self.byte(u8::from(body.is_some()));
+                            if let Some(body) = body {
+                                tasks.push(Task::Trace(body));
+                            }
+                        }
                         Trace::DefaultHandler { guards, body } => {
                             self.byte(8);
                             self.number(guards.len());
@@ -390,6 +398,11 @@ impl Encoder {
                 }
                 Task::Behavior(behavior) => {
                     self.byte(22);
+                    self.optional(behavior.suspension.is_some());
+                    if let Some(summary) = behavior.suspension {
+                        self.optional(summary.may_suspend);
+                        self.optional(summary.unknown);
+                    }
                     self.number(behavior.determinism as usize);
                     self.optional(behavior.independent_determinism.is_some());
                     if let Some(value) = behavior.independent_determinism {
@@ -878,6 +891,12 @@ pub(crate) fn external_trace_summary(
 pub(crate) fn external_effect_summary(value: &crate::ProjectExternalEffectSummaryInput) -> String {
     let mut encoder = Encoder::new();
     encoder.byte(31);
+    encoder.optional(value.callable_body.is_some());
+    if let Some(graph) = &value.callable_body {
+        encoder.0.update(
+            etas_package_metadata::callable_value_graph_input_fingerprint(graph).as_bytes(),
+        );
+    }
     encoder.path(&value.item);
     encoder.number(value.residual_checks.len());
     for reference in &value.residual_checks {
@@ -1152,6 +1171,7 @@ mod tests {
     fn behavior_and_handler_requests_distinguish_absent_and_changed_facts() {
         use etas_package_metadata::{CallableValueBehavior, CallableValueDeterminism};
         let mut behavior = Some(CallableValueBehavior {
+            suspension: None,
             determinism: CallableValueDeterminism::Deterministic,
             independent_determinism: None,
             host_requirements: vec![],
@@ -1161,6 +1181,12 @@ mod tests {
         let before = external_behavior(&behavior);
         behavior.as_mut().unwrap().independent_determinism =
             Some(CallableValueDeterminism::Deterministic);
+        assert_ne!(before, external_behavior(&behavior));
+        let before = external_behavior(&behavior);
+        behavior.as_mut().unwrap().suspension = Some(etas_code::descriptor::SuspensionInfo {
+            may_suspend: false,
+            unknown: false,
+        });
         assert_ne!(before, external_behavior(&behavior));
         let mut requests = Some(Requests {
             actions: vec![],
@@ -1265,6 +1291,7 @@ mod tests {
             ProjectExternalLatentFlowSummaryInput as Latent,
         };
         let mut summary = Summary {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,

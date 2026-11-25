@@ -170,7 +170,7 @@ impl Builder<'_, '_> {
         let invocation_projection = self
             .projection
             .with_invocation_parameters(invocation_parameters);
-        let Some(projected) = summary::project(
+        let Some(mut projected) = summary::project(
             &invocation_projection,
             summary,
             &projection.type_names,
@@ -179,6 +179,36 @@ impl Builder<'_, '_> {
         )?
         else {
             return Ok(None);
+        };
+        projected.behavior.suspension = match &reference.target {
+            etas_effects::CallableReferenceTarget::Source(item) => checked
+                .effects
+                .suspension
+                .get(&etas_effects::EffectUnit::Item(*item))
+                .map(|summary| etas_code::descriptor::SuspensionInfo {
+                    may_suspend: summary.may_suspend,
+                    unknown: summary.unknown,
+                }),
+            etas_effects::CallableReferenceTarget::External {
+                callable,
+                frozen: false,
+                reflection: false,
+            } => checked
+                .external_definition_origins()
+                .iter()
+                .filter_map(|origin| origin.descriptors.as_deref())
+                .chain(
+                    checked
+                        .standard_library
+                        .as_ref()
+                        .map(|library| library.descriptors.as_ref()),
+                )
+                .filter_map(|descriptors| descriptors.headers.as_ref())
+                .flat_map(|headers| &headers.callables)
+                .find(|header| &header.id == callable)
+                .and_then(|header| header.analysis.suspension),
+            etas_effects::CallableReferenceTarget::StdIntrinsic(_)
+            | etas_effects::CallableReferenceTarget::External { .. } => None,
         };
         Ok(Some(CallableValueNode {
             residual_checks: summary.residual_checks.iter().cloned().collect(),

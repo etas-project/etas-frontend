@@ -21,6 +21,11 @@ pub(crate) fn validate(
         if flow.receiver_mode != HirReceiverMode::Updating {
             continue;
         }
+        if types.facts.type_impl_methods.values().any(|method| {
+            method.body == item && types.facts.is_active_agent(&types.store, method.self_type)
+        }) {
+            continue;
+        }
         let ordinary_method = types
             .facts
             .type_impl_methods
@@ -54,6 +59,9 @@ pub(crate) fn validate(
             continue;
         }
         if !method.receiver.is_updating() {
+            continue;
+        }
+        if method.kind.is_agent() {
             continue;
         }
         let span = hir.exprs[call].span(&hir.blocks);

@@ -753,6 +753,9 @@ flow main() -> unit ![] { callee<i32>(1); invoke<![]>(noop); forward<![]>(noop);
             .callable_environment_site(forward_site.call)
             .unwrap();
         let environment = crate::facts::CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: site,
             application: site,
         };
@@ -760,6 +763,8 @@ flow main() -> unit ![] { callee<i32>(1); invoke<![]>(noop); forward<![]>(noop);
             .record_callable_environment(
                 environment,
                 crate::facts::CallableEnvironment {
+                    invocation_origin: None,
+                    invocation_inputs: Default::default(),
                     owner: forward,
                     parameters: Default::default(),
                     generics: captured_values.clone(),
@@ -829,6 +834,9 @@ flow main() -> unit ![] { callee<i32>(1); invoke<![]>(noop); forward<![]>(noop);
         *source = alternate_call;
         let wrong_site = semantics.callable_environment_site(alternate_call).unwrap();
         let wrong_target_environment = crate::facts::CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: CodeFingerprint::from_bytes([98; 32]),
             application: wrong_site,
         };
@@ -836,6 +844,8 @@ flow main() -> unit ![] { callee<i32>(1); invoke<![]>(noop); forward<![]>(noop);
             .record_callable_environment(
                 wrong_target_environment,
                 crate::facts::CallableEnvironment {
+                    invocation_origin: None,
+                    invocation_inputs: Default::default(),
                     owner: forward,
                     parameters: Default::default(),
                     generics: wrong_target_values.clone(),
@@ -853,6 +863,9 @@ flow main() -> unit ![] { callee<i32>(1); invoke<![]>(noop); forward<![]>(noop);
             Err(EffectSpecializationError::UnsupportedResidualSubstitution)
         ));
         let forged_environment = crate::facts::CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: CodeFingerprint::from_bytes([99; 32]),
             application: site,
         };
@@ -860,6 +873,8 @@ flow main() -> unit ![] { callee<i32>(1); invoke<![]>(noop); forward<![]>(noop);
             .record_callable_environment(
                 forged_environment,
                 crate::facts::CallableEnvironment {
+                    invocation_origin: None,
+                    invocation_inputs: Default::default(),
                     owner: forward,
                     parameters: Default::default(),
                     generics: forged_values.clone(),

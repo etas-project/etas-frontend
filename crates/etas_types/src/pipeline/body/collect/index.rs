@@ -18,16 +18,21 @@ pub fn collect_index<E>(
         _ => None,
     };
     let index_ty = collect_expr(ctx, index, expected_index)?;
-    let inferred_output = match ctx.ctx.interner.store().get(base_ty).cloned() {
-        Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
-            Some(inner)
-        }
-        Some(Type::Primitive(crate::PrimitiveType::Bytes)) => {
-            Some(ctx.primitive(crate::PrimitiveType::U8))
-        }
-        Some(Type::Map { value, .. }) => Some(value),
-        _ => None,
-    };
+    let source_element = ctx
+        .ctx
+        .known_std_types()
+        .slice_element(ctx.ctx.interner.store(), base_ty);
+    let inferred_output =
+        source_element.or_else(|| match ctx.ctx.interner.store().get(base_ty).cloned() {
+            Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
+                Some(inner)
+            }
+            Some(Type::Primitive(crate::PrimitiveType::Bytes)) => {
+                Some(ctx.primitive(crate::PrimitiveType::U8))
+            }
+            Some(Type::Map { value, .. }) => Some(value),
+            _ => None,
+        });
     let output = expected
         .or(inferred_output)
         .unwrap_or_else(|| ctx.fresh_type_var());
@@ -56,23 +61,40 @@ pub fn collect_slice<E>(
     let base_ty = collect_expr(ctx, base, None)?;
     let start_ty = collect_expr(ctx, start, None)?;
     let end_ty = collect_expr(ctx, end, Some(start_ty))?;
-    let inferred_output = match ctx.ctx.interner.store().get(base_ty).cloned() {
-        Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
-            Some(ctx.ctx.interner.intern(Type::Slice(inner)))
-        }
-        Some(Type::Primitive(crate::PrimitiveType::Bytes)) => Some(base_ty),
-        Some(Type::Range { index }) => Some(ctx.ctx.interner.intern(Type::Range { index })),
+    let source_element = ctx
+        .ctx
+        .known_std_types()
+        .slice_element(ctx.ctx.interner.store(), base_ty);
+    let inferred_element = source_element.or_else(|| match ctx.ctx.interner.store().get(base_ty) {
+        Some(Type::Array(inner) | Type::List(inner) | Type::Slice(inner)) => Some(*inner),
         _ => None,
+    });
+    let inferred_output = if let Some(inner) = inferred_element {
+        Some(match ctx.ctx.known_std_types().source_slice {
+            Some(owner) => ctx.ctx.interner.intern(Type::Applied {
+                constructor: crate::TypeConstructorId(owner.0),
+                args: vec![inner],
+            }),
+            None => ctx.ctx.interner.intern(Type::Slice(inner)),
+        })
+    } else {
+        match ctx.ctx.interner.store().get(base_ty).cloned() {
+            Some(Type::Primitive(crate::PrimitiveType::Bytes)) => Some(base_ty),
+            Some(Type::Range { index }) => Some(ctx.ctx.interner.intern(Type::Range { index })),
+            _ => None,
+        }
     };
     let output = expected
         .or(inferred_output)
         .unwrap_or_else(|| ctx.fresh_type_var());
+    let index_error = checked_index_error_type(ctx, span);
     ctx.emit(TypeConstraint::SliceAccess {
         expr,
         base: base_ty,
         start: start_ty,
         end: end_ty,
         output,
+        index_error,
         origin: ConstraintOrigin { span },
     });
     Ok(output)

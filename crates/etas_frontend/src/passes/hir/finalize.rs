@@ -48,6 +48,12 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
                 ));
             }
         };
+        if let Err(reason) = super::constructor_injection::elaborate(context, &mut hir) {
+            return PassResult::failed(reason);
+        }
+        if let Err(reason) = super::type_stage::elaborate(context, &mut hir) {
+            return PassResult::failed(reason);
+        }
         if context.input.options.standard_library_mode
             == crate::StandardLibraryMode::SourceBootstrap
         {

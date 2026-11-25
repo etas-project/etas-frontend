@@ -3,21 +3,10 @@ use super::shared::*;
 
 impl EffectSemantics<'_> {
     pub(crate) fn limit_requirement_from_expr(&self, expr: HirExprId) -> Option<LimitRequirement> {
-        self.checked_limit_requirement(expr, false)
+        self.checked_limit_requirement(expr)
     }
 
-    pub(super) fn loop_limit_requirement_from_expr(
-        &self,
-        expr: HirExprId,
-    ) -> Option<LimitRequirement> {
-        self.checked_limit_requirement(expr, true)
-    }
-
-    fn checked_limit_requirement(
-        &self,
-        expr: HirExprId,
-        dynamic_iterations: bool,
-    ) -> Option<LimitRequirement> {
+    fn checked_limit_requirement(&self, expr: HirExprId) -> Option<LimitRequirement> {
         let (callee, args) = match self.hir.exprs.get(expr)? {
             HirExpr::Call { callee, args, .. } => (*callee, args.as_slice()),
             _ => return None,
@@ -35,9 +24,7 @@ impl EffectSemantics<'_> {
         )?;
         let kind = limit_kind_from_std(std_kind);
         let value = self.limit_value_from_args(kind, args);
-        if value.is_none()
-            && !(dynamic_iterations && kind == LimitKind::Iterations && args.len() == 1)
-        {
+        if value.is_none() {
             return None;
         }
         Some(LimitRequirement {
@@ -101,20 +88,6 @@ impl EffectSemantics<'_> {
                 .join_assign(&captured);
         }
         for stage in stages {
-            let mut parsed_limits = RequirementSet::new();
-            for limit in stage.limits {
-                let Some(requirement) = self.limit_requirement_from_expr(limit) else {
-                    state = self.incomplete_at(
-                        span,
-                        "pipeline stage limit requires a checked standard limit constructor",
-                        state,
-                    );
-                    continue;
-                };
-                parsed_limits.insert(RequirementFact::Limit(requirement));
-            }
-            state.summary.requirements.union_assign(&parsed_limits);
-
             if let Some(summary) = self.summary_for_callable_expr(&state, stage.expr, span) {
                 state.summary.seq_assign(&summary);
             } else if self.is_typed_flow_expr(stage.expr) {
@@ -168,7 +141,7 @@ impl EffectSemantics<'_> {
     pub(crate) fn incomplete_summary(
         &mut self,
         span: Span,
-        message: &'static str,
+        message: impl Into<String>,
     ) -> EffectSummary {
         self.diagnostics.push(Diagnostic::effect_check(
             EffectDiagnosticCode::IncompleteEffectFacts,

@@ -669,6 +669,7 @@ fn trace_has_parameter_calls(graph: &DescriptorGraph, root: TraceInfoRef) -> boo
             TraceInfo::Seq(parts) | TraceInfo::Choice(parts) => {
                 pending.extend(parts.iter().copied())
             }
+            TraceInfo::Recursive { body, .. } => pending.extend(*body),
             TraceInfo::Repeat(inner) => pending.push(*inner),
             TraceInfo::Empty
             | TraceInfo::Event(_)
@@ -694,6 +695,7 @@ fn trace_has_widened_parameter_calls(graph: &DescriptorGraph, root: TraceInfoRef
             TraceInfo::Seq(parts) | TraceInfo::Choice(parts) => {
                 pending.extend(parts.iter().copied())
             }
+            TraceInfo::Recursive { body, .. } => pending.extend(*body),
             TraceInfo::Repeat(inner) => pending.push(*inner),
             _ => {}
         }

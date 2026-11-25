@@ -12,7 +12,7 @@ impl ProjectMetadataProjection<'_> {
             .methods
             .entries()
             .filter(|method| {
-                method.public
+                (method.public || self.internal_value_operation(method, identities))
                     && matches!(
                         method.target,
                         MethodTarget::Source { .. } | MethodTarget::Agent { .. }
@@ -33,14 +33,16 @@ impl ProjectMetadataProjection<'_> {
                 | MethodTarget::Agent { symbol, callable } => (symbol, callable),
                 _ => continue,
             };
-            if !crate::code::definition::selected_callable(
-                self.checked,
-                identities,
-                symbol,
-                callable,
-                Some(&selection),
-            )
-            .map_err(|error| invalid(&error.to_string()))?
+            let internal = self.internal_value_operation(method, identities);
+            if !internal
+                && !crate::code::definition::selected_callable(
+                    self.checked,
+                    identities,
+                    symbol,
+                    callable,
+                    Some(&selection),
+                )
+                .map_err(|error| invalid(&error.to_string()))?
             {
                 continue;
             }
@@ -77,6 +79,10 @@ impl ProjectMetadataProjection<'_> {
                 };
             let published = etas_package_metadata::PublishedMethod {
                 identity: identity.clone(),
+                internal,
+                parameter_defaults: self
+                    .with_identities(Some(identities))
+                    .parameter_defaults(method.signature.parameter_interface.as_deref())?,
                 self_type: self.metadata_type_in_generic_scope(method.receiver_type, &names)?,
                 receiver: match method.receiver {
                     MethodReceiver::Value { slot } => {
@@ -93,12 +99,27 @@ impl ProjectMetadataProjection<'_> {
                 callable: callable_graph,
             };
             published.validate()?;
-            if let Some(previous) = methods.insert(identity, published.clone())
+            if let Some(previous) = methods.insert(identity.clone(), published.clone())
                 && previous != published
             {
-                return Err(invalid(
-                    "one method identity has conflicting checked declarations",
-                ));
+                let subject = identity.implementation().subject();
+                let path = subject
+                    .module()
+                    .iter()
+                    .chain(subject.declaration())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(".");
+                return Err(invalid(&format!(
+                    "method `{path}.{}` has conflicting checked declarations \
+                     (receiver: {}, owner parameters: {}, requirements: {}, callable: {})",
+                    identity.name(),
+                    previous.self_type != published.self_type
+                        || previous.receiver != published.receiver,
+                    previous.owner_params != published.owner_params,
+                    previous.requirements != published.requirements,
+                    previous.callable != published.callable,
+                )));
             }
         }
         if !graph_errors.is_empty() {
@@ -108,6 +129,31 @@ impl ProjectMetadataProjection<'_> {
             )));
         }
         Ok(methods.into_values().collect())
+    }
+
+    pub(in crate::package_metadata) fn internal_value_operation(
+        &self,
+        method: &etas_types::method::MethodSignatureFact,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> bool {
+        if !self.checked.hir.source_standard_types || method.public {
+            return false;
+        }
+        let MethodTarget::Source { symbol, .. } = method.target else {
+            return false;
+        };
+        identities
+            .and_then(|identities| identities.method(symbol))
+            .is_some_and(|identity| {
+                let owner = identity.implementation().subject();
+                (method.name == etas_std::SOURCE_VALUE_EQUALITY_METHOD
+                    && etas_std::source_value_equality_owner(owner.module(), owner.declaration()))
+                    || etas_std::source_storage_method(
+                        owner.module(),
+                        owner.declaration(),
+                        &method.name,
+                    )
+            })
     }
 
     fn method_requirements(
@@ -132,6 +178,7 @@ impl ProjectMetadataProjection<'_> {
         let mut requirements = etas_package_metadata::MethodRequirements::default();
         for requirement in summary.requirements.iter() {
             match requirement {
+                RequirementFact::HostAuthority(_) => {} // Published in the guarded footprint.
                 RequirementFact::Limit(limit) => {
                     requirements
                         .limits

@@ -24,7 +24,14 @@ impl EffectSemantics<'_> {
             reason: "method callback row has no checked argument capture".into(),
         };
         let mut state = EffectState::for_unit(crate::EffectUnit::Item(snapshot.owner));
-        for (position, expr) in self.checked_method_arguments(call)?.into_iter().enumerate() {
+        for (position, expr) in self
+            .checked_method_argument_slots(call)?
+            .into_iter()
+            .enumerate()
+        {
+            let Some(expr) = expr else {
+                continue;
+            };
             if let Some(sources) = snapshot
                 .parameters
                 .get(&ParameterCallTarget::Interface(position as u32))

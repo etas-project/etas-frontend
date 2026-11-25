@@ -12,10 +12,10 @@ fn std_iterable_element_types_survive_aliases_generic_calls_and_finalization() {
     for name in ["Deque", "Queue", "Stack", "Iter"] {
         for source in [
             format!(
-                "flow first<T>(xs: {name}<T>) -> Option<T> {{ for x in xs limit Iterations(1) {{ return Some(x); }} return None; }} flow main(xs: {name}<string>) -> Option<string> {{ return first(xs); }}"
+                "flow first<T>(xs: {name}<T>) -> Option<T> {{ for x in xs {{ return Some(x); }} return None; }} flow main(xs: {name}<string>) -> Option<string> {{ return first(xs); }}"
             ),
             format!(
-                "alias Values<T> = {name}<T>; flow main(xs: Values<string>) -> string {{ for x in xs limit Iterations(1) {{ return x; }} return \"\"; }}"
+                "alias Values<T> = {name}<T>; flow main(xs: Values<string>) -> string {{ for x in xs {{ return x; }} return \"\"; }}"
             ),
         ] {
             let output = check(&source);
@@ -47,13 +47,13 @@ fn std_iterable_checks_item_type_and_does_not_project_unrelated_nominals() {
     for name in ["Deque", "Queue", "Stack", "Iter"] {
         for source in [
             format!(
-                "flow main(xs: {name}<string>) -> i32 {{ for x in xs limit Iterations(1) {{ return x; }} return 0; }}"
+                "flow main(xs: {name}<string>) -> i32 {{ for x in xs {{ return x; }} return 0; }}"
             ),
             format!(
-                "type {name}<T> = {{ item: T }}; flow main(xs: {name}<i32>) -> unit {{ for x in xs limit Iterations(1) {{ }} return; }}"
+                "type {name}<T> = {{ item: T }}; flow main(xs: {name}<i32>) -> unit {{ for x in xs {{ }} return; }}"
             ),
             format!(
-                "type Wrapped<T> = {name}<T>; flow main(xs: Wrapped<i32>) -> unit {{ for x in xs limit Iterations(1) {{ }} return; }}"
+                "type Wrapped<T> = {name}<T>; flow main(xs: Wrapped<i32>) -> unit {{ for x in xs {{ }} return; }}"
             ),
         ] {
             let output = check(&source);
@@ -75,10 +75,10 @@ fn std_entry_iterables_bind_declared_key_and_value_parameters() {
         let source = format!(
             "alias Entries<K, V> = {container}<{parameters}>; \
              flow visit<K, V>(entries: Entries<K, V>) -> unit {{ \
-                 for (key, value) in entries limit Iterations(8) {{ \
+                 for (key, value) in entries {{ \
                      let expected_key: K = key; let expected_value: V = value; \
                  }} \
-                 for entry in entries limit Iterations(8) {{ let pair: (K, V) = entry; }} \
+                 for entry in entries {{ let pair: (K, V) = entry; }} \
              }}"
         );
         let output = check(&source);
@@ -94,7 +94,7 @@ fn std_entry_iterables_bind_declared_key_and_value_parameters() {
 fn std_ordered_set_iterator_preserves_nominal_element_identity() {
     let output = check(
         "type Key = i32; flow visit(entries: OrderedSet<Key>) -> unit { \
-             for key in entries limit Iterations(8) { let expected: Key = key; } \
+             for key in entries { let expected: Key = key; } \
          }",
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
@@ -103,11 +103,11 @@ fn std_ordered_set_iterator_preserves_nominal_element_identity() {
 #[test]
 fn std_entry_iterables_reject_wrong_types_arity_and_nominal_wrappers() {
     for source in [
-        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (key, value) in entries limit Iterations(8) { let wrong: i32 = key; } }",
-        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (key, value) in entries limit Iterations(8) { let wrong: string = value; } }",
-        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (a, b, c) in entries limit Iterations(8) {} }",
-        "flow visit(entries: PriorityQueue<string, i32>) -> unit { for (priority, value) in entries limit Iterations(8) { let wrong: string = priority; } }",
-        "type Wrapped = OrderedMap<i32, i32>; flow visit(entries: Wrapped) -> unit { for pair in entries limit Iterations(8) {} }",
+        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (key, value) in entries { let wrong: i32 = key; } }",
+        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (key, value) in entries { let wrong: string = value; } }",
+        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (a, b, c) in entries {} }",
+        "flow visit(entries: PriorityQueue<string, i32>) -> unit { for (priority, value) in entries { let wrong: string = priority; } }",
+        "type Wrapped = OrderedMap<i32, i32>; flow visit(entries: Wrapped) -> unit { for pair in entries {} }",
     ] {
         let output = check(source);
         assert!(!output.diagnostics.is_empty(), "{source}");

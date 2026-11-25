@@ -820,7 +820,7 @@ fn checked_clause_facts_are_bound_to_real_analysis_and_source_alternatives() {
 }
 
 #[test]
-fn checked_clause_fact_preserves_widened_trace_uncertainty() {
+fn checked_clause_fact_preserves_loop_order_and_outcome_uncertainty() {
     use etas_effects::trace_spec::{CheckedTraceClauseDisposition, CheckedTraceUncertainty};
 
     let key = StableSourceKey::new(
@@ -828,7 +828,7 @@ fn checked_clause_fact_preserves_widened_trace_uncertainty() {
         &["src".into(), "main.es".into()],
     )
     .unwrap();
-    let text = "module app; effect Gate { action approve() -> unit; action request() -> unit; } spec Safe: trace = Gate.approve >> Gate.request; flow main(ready: bool) -> unit ![Gate.approve, Gate.request] ~ Safe { while ready limit Iterations(2) { perform Gate.approve(); perform Gate.request(); } }";
+    let text = "module app; effect Gate { action approve() -> unit; action request() -> unit; } spec Safe: trace = Gate.approve >> Gate.request; flow main(ready: bool) -> unit ![Gate.approve, Gate.request] ~ Safe { while ready { perform Gate.approve(); perform Gate.request(); } }";
     let mut source = SourceInput::anonymous(text);
     source.id = SourceId(0);
     let mut input = ProjectInput::single_source(source);
@@ -897,7 +897,8 @@ fn checked_clause_fact_preserves_widened_trace_uncertainty() {
     assert!(fact.source_clause.is_some());
     assert_eq!(
         fact.disposition,
-        CheckedTraceClauseDisposition::Unsupported(CheckedTraceUncertainty::OrderedActions)
+        // Loop structure preserves order; successful guard outcomes still need evidence.
+        CheckedTraceClauseDisposition::Unsupported(CheckedTraceUncertainty::OutcomeEvidence)
     );
 }
 

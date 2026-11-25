@@ -95,9 +95,9 @@ impl DefinitionDescriptorProjector<'_> {
                 && self.binder_contract(owner.clone(), &previous)?
                     != self.binder_contract(owner.clone(), parameters)?
             {
-                return Err(ProjectionError::Invalid(
-                    "one definition identity has conflicting generic bounds".into(),
-                ));
+                return Err(ProjectionError::Invalid(format!(
+                    "one definition identity has conflicting generic bounds: {owner:?}"
+                )));
             }
             // A declaration can have both an imported signature and a linked
             // source signature. Their local parameter IDs share one portable

@@ -245,6 +245,7 @@ fn candidate_dependency_source_keeps_stable_key_after_source_id_remapping() {
             type_spec_satisfactions: vec![],
             callable_spec_satisfactions: vec![],
             trace_spec_conformances: vec![],
+            constructor_contracts: Vec::new(),
             scoped_callbacks: vec![],
             effect_summaries: vec![],
             action_summaries: vec![],

@@ -91,6 +91,17 @@ impl ProjectMetadataProjection<'_> {
         };
         let mut selection = self.exported_definition_items()?;
         selection.extend(self.agent_surface_items(&identities)?);
+        selection.extend(
+            self.checked
+                .types
+                .methods
+                .entries()
+                .filter(|method| self.internal_value_operation(method, Some(&identities)))
+                .filter_map(|method| match method.target {
+                    etas_types::method::MethodTarget::Source { callable, .. } => Some(callable),
+                    _ => None,
+                }),
+        );
         let set = DefinitionCatalog::exported_descriptors(
             self.checked.clone(),
             origins,

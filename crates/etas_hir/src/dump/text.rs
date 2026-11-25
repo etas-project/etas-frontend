@@ -562,6 +562,9 @@ impl<'a> Dump<'a> {
                     ),
                     item.span,
                     |this| {
+                        if let Some(state) = item.state {
+                            this.type_id("State", state);
+                        }
                         if let Some(output_type) = item.output_type {
                             this.type_id("Output", output_type);
                         }
@@ -713,34 +716,21 @@ impl<'a> Dump<'a> {
             HirStmt::For {
                 pat,
                 iter,
-                limits,
                 body,
                 span,
             } => self.node(&format!("st{} For", id.0), *span, |this| {
                 this.pat_id("Pat", *pat);
                 this.expr_id("Iter", *iter);
-                for limit in limits {
-                    this.expr_id("Limit", *limit);
-                }
                 this.block_id("Body", *body);
             }),
-            HirStmt::While {
-                cond,
-                limits,
-                body,
-                span,
-            } => self.node(&format!("st{} While", id.0), *span, |this| {
-                this.expr_id("Cond", *cond);
-                for limit in limits {
-                    this.expr_id("Limit", *limit);
-                }
-                this.block_id("Body", *body);
-            }),
-            HirStmt::Retry { limits, body, span } => {
+            HirStmt::While { cond, body, span } => {
+                self.node(&format!("st{} While", id.0), *span, |this| {
+                    this.expr_id("Cond", *cond);
+                    this.block_id("Body", *body);
+                })
+            }
+            HirStmt::Retry { body, span } => {
                 self.node(&format!("st{} Retry", id.0), *span, |this| {
-                    for limit in limits {
-                        this.expr_id("Limit", *limit);
-                    }
                     this.block_id("Body", *body);
                 })
             }
@@ -1046,9 +1036,6 @@ impl<'a> Dump<'a> {
             self.line("Stage", Some(stage.span));
             self.indented(|this| {
                 this.expr_id("Expr", stage.expr);
-                for limit in &stage.limits {
-                    this.expr_id("Limit", *limit);
-                }
             });
         }
     }
@@ -1237,6 +1224,19 @@ impl<'a> Dump<'a> {
             HirType::Record { fields, .. } => {
                 for field in fields {
                     self.line(&format!("Field s{}", field.symbol.0), Some(field.span));
+                    for annotation in &field.annotations {
+                        self.node(
+                            &format!("Annotation {}", path_ref(&annotation.path)),
+                            annotation.span,
+                            |this| {
+                                for argument in &annotation.args {
+                                    let (crate::HirAnnotationArg::Positional { value, .. }
+                                    | crate::HirAnnotationArg::Named { value, .. }) = argument;
+                                    this.expr_id("Value", *value);
+                                }
+                            },
+                        );
+                    }
                     self.type_id("Type", field.ty);
                 }
             }
@@ -1264,6 +1264,7 @@ impl<'a> Dump<'a> {
                     }
                 }
             }
+            HirType::Metadata { ty, .. } => self.line(&format!("ImportedType {ty:?}"), None),
             HirType::Error { .. } => self.line("ErrorType", None),
         }
     }

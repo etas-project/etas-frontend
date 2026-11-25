@@ -10,6 +10,8 @@ pub type ToolSignature = CallableSignature;
 )]
 pub struct AgentSignature {
     pub component: TypeId,
+    /// Private instance layout, separate from the opaque reference type.
+    pub state: Option<TypeId>,
     pub definition_type: Option<TypeId>,
     pub default_entry: Option<std::sync::Arc<AgentEntrySignature>>,
 }

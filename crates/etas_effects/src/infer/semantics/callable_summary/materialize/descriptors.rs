@@ -43,13 +43,29 @@ impl EffectSemantics<'_> {
                     .map(Descriptor::Reference),
             )
             .collect::<BTreeSet<_>>();
+        let mut visited_origins = BTreeSet::new();
         for summary in self.inputs.unit_effects.values() {
-            collect(summary, None, &mut instances);
+            self.collect_return_descriptors(summary, None, &mut instances, &mut visited_origins)?;
         }
         for snapshot in self.callable_environments.borrow().values() {
             for source in snapshot.parameters.values().flatten() {
-                if let Some(reference) = self.callable_reference_for_source(*source) {
-                    instances.insert(Descriptor::Reference(reference));
+                self.collect_origin_descriptors(*source, &mut instances, &mut visited_origins)?;
+            }
+        }
+        for inputs in self
+            .parameter_projection_index
+            .borrow()
+            .call_inputs
+            .values()
+        {
+            for argument in &inputs.arguments {
+                for origin in argument.sources.iter().chain(
+                    argument
+                        .projections
+                        .iter()
+                        .flat_map(|projection| &projection.sources),
+                ) {
+                    self.collect_origin_descriptors(*origin, &mut instances, &mut visited_origins)?;
                 }
             }
         }
@@ -69,6 +85,17 @@ impl EffectSemantics<'_> {
                 });
             }
             let mut returned = BTreeSet::new();
+            let environment = match &descriptor {
+                Descriptor::Captured(instance) => Some(instance.environment),
+                Descriptor::Reference(reference) => reference.environment,
+            };
+            if let Some(environment) =
+                environment.and_then(|id| self.callable_environments.borrow().get(&id).cloned())
+            {
+                for origin in environment.parameters.values().flatten() {
+                    self.collect_origin_descriptors(*origin, &mut returned, &mut visited_origins)?;
+                }
+            }
             match descriptor {
                 Descriptor::Reference(reference) => {
                     let analysis = self.materialize_reference(&reference)?;
@@ -78,22 +105,37 @@ impl EffectSemantics<'_> {
                         ..
                     } = &analysis
                     {
-                        collect(summary, *invocation_environment, &mut returned);
+                        self.collect_return_descriptors(
+                            summary,
+                            *invocation_environment,
+                            &mut returned,
+                            &mut visited_origins,
+                        )?;
                     }
                     references.insert(reference, analysis);
                 }
                 Descriptor::Captured(instance) => {
-                    let EffectUnit::AnonymousFlow { value, .. } = instance.unit else {
-                        return Err(EffectPipelineError::InvalidCallableFacts {
-                            reason: "captured descriptor is not an anonymous source unit".into(),
-                        });
+                    let span = match instance.unit {
+                        EffectUnit::Item(item) => self
+                            .hir
+                            .items
+                            .get(item)
+                            .ok_or_else(|| EffectPipelineError::InvalidCallableFacts {
+                                reason: "captured declaration is missing".into(),
+                            })?
+                            .span(),
+                        EffectUnit::AnonymousFlow { value, .. } => self
+                            .hir
+                            .exprs
+                            .get(value)
+                            .ok_or(EffectPipelineError::MissingExprFact { expr: value })?
+                            .span(&self.hir.blocks),
+                        _ => {
+                            return Err(EffectPipelineError::InvalidCallableFacts {
+                                reason: "captured descriptor has no source declaration".into(),
+                            });
+                        }
                     };
-                    let span = self
-                        .hir
-                        .exprs
-                        .get(value)
-                        .ok_or(EffectPipelineError::MissingExprFact { expr: value })?
-                        .span(&self.hir.blocks);
                     let analysis = match self.solve_callable_summary_in_mode(
                         LatentSource::Captured {
                             unit: instance.unit,
@@ -103,7 +145,12 @@ impl EffectSemantics<'_> {
                         CallableSummaryMode::Descriptor,
                     ) {
                         Ok(summary) => {
-                            collect(&summary, Some(instance.environment), &mut returned);
+                            self.collect_return_descriptors(
+                                &summary,
+                                Some(instance.environment),
+                                &mut returned,
+                                &mut visited_origins,
+                            )?;
                             CapturedCallableAnalysis::Solved(Arc::new(summary))
                         }
                         Err(EffectSpecializationError::Interrupted(interruption)) => {
@@ -124,6 +171,75 @@ impl EffectSemantics<'_> {
         }
         self.inputs.callable_references = references;
         self.inputs.captured_callables = captures;
+        Ok(())
+    }
+
+    fn collect_return_descriptors(
+        &self,
+        summary: &crate::EffectSummary,
+        environment: Option<CallableEnvironmentId>,
+        output: &mut BTreeSet<Descriptor>,
+        visited: &mut BTreeSet<LatentSource>,
+    ) -> Result<(), EffectPipelineError> {
+        collect(summary, environment, output);
+        for source in super::descriptor_return_sources(summary) {
+            if let CallableReturnSource::Projection(id) = source {
+                self.collect_origin_descriptors(LatentSource::Projection(id), output, visited)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_origin_descriptors(
+        &self,
+        origin: LatentSource,
+        output: &mut BTreeSet<Descriptor>,
+        seen: &mut BTreeSet<LatentSource>,
+    ) -> Result<(), EffectPipelineError> {
+        let mut pending = vec![origin];
+        while let Some(origin) = pending.pop() {
+            if let Some(control) = self.query_control {
+                control
+                    .checkpoint()
+                    .map_err(EffectPipelineError::Interrupted)?;
+            }
+            if !seen.insert(origin) {
+                continue;
+            }
+            match origin {
+                LatentSource::Captured { unit, environment }
+                | LatentSource::FrozenContract {
+                    unit,
+                    environment: Some(environment),
+                    reference: None,
+                } => {
+                    output.insert(Descriptor::Captured(CapturedCallableId {
+                        unit,
+                        environment,
+                    }));
+                }
+                LatentSource::Projection(id) => {
+                    if let Some(projection) = self.parameter_projection(id) {
+                        for inputs in projection.call_inputs.values() {
+                            for argument in &inputs.arguments {
+                                pending.extend(&argument.sources);
+                                pending.extend(
+                                    argument
+                                        .projections
+                                        .iter()
+                                        .flat_map(|projection| &projection.sources),
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(reference) = self.callable_reference_for_source(origin) {
+                        output.insert(Descriptor::Reference(reference));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 

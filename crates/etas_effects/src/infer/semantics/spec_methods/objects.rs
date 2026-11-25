@@ -10,7 +10,7 @@ use crate::{
     facts::{CallableEnvironment, CallableEnvironmentId},
     infer::unit::EffectUnit,
 };
-use etas_types::{Type, TypeId, TypeSubstitutionEngine, method::MethodTarget};
+use etas_types::{Type, TypeId, method::MethodTarget};
 
 fn invalid(reason: &str) -> EffectSpecializationError {
     EffectSpecializationError::InvalidCallableEnvironment {
@@ -69,7 +69,10 @@ impl EffectSemantics<'_> {
                 continue;
             }
             let LatentSource::Existential { pack, environment } = origin else {
-                if matches!(origin, LatentSource::Parameter { .. }) {
+                if matches!(
+                    origin,
+                    LatentSource::Parameter { .. } | LatentSource::Projection(_)
+                ) {
                     return Ok(None);
                 }
                 return Err(invalid(
@@ -95,13 +98,10 @@ impl EffectSemantics<'_> {
                 self.native_environment_type_parameters(owner, &packed.generics)?;
             let names = types.into_iter().collect::<HashMap<_, _>>();
             let rows = self.type_row_arguments(&rows, Some(packed.owner))?;
-            let mut substitution = TypeSubstitutionEngine::existing_indexed(
-                &self.types.store,
-                self.type_lookup(),
-                &names,
-            )
-            .with_type_parameters(&type_parameters)
-            .with_effect_arguments(&rows);
+            let mut substitution = self
+                .type_substitution(&names)
+                .with_type_parameters(&type_parameters)
+                .with_effect_arguments(&rows);
             let source_type = substitution.substitute(pack_fact.source_type)?;
             let mut selected = None;
             for witness in &pack_fact.witnesses {

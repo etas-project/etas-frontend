@@ -23,7 +23,12 @@ pub(crate) fn method_identities_from_input(
 ) -> Result<HashMap<SymbolId, MethodId>, ProjectionError> {
     let mut projector = DefinitionDescriptorProjector::from_input(checked, identities, limits);
     let mut headers = HashMap::<HirItemId, PendingHeader>::new();
-    for method in checked.types.agent_methods.values() {
+    for method in checked
+        .types
+        .agent_methods
+        .values()
+        .filter(|method| !checked.types.type_impl_methods.contains_key(&method.symbol))
+    {
         let Some(implementation) = method.implementation else {
             continue;
         };
@@ -98,7 +103,12 @@ pub(crate) fn method_identities_from_input(
     }
     let implicit_header = ImplementationHeader::new(Vec::new())?;
     let mut methods = HashMap::new();
-    for method in checked.types.agent_methods.values() {
+    for method in checked
+        .types
+        .agent_methods
+        .values()
+        .filter(|method| !checked.types.type_impl_methods.contains_key(&method.symbol))
+    {
         let header = match method.implementation {
             Some(implementation) => finished.get(&implementation).ok_or_else(|| {
                 ProjectionError::Invalid("implementation header was not projected".into())
@@ -123,7 +133,9 @@ pub(crate) fn inherent_method_identities(
         .types
         .agent_methods
         .values()
-        .filter(|method| method.inherent)
+        .filter(|method| {
+            method.inherent && !checked.types.type_impl_methods.contains_key(&method.symbol)
+        })
         .map(|method| {
             Ok((
                 method.symbol,

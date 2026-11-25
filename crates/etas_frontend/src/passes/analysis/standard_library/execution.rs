@@ -1,6 +1,62 @@
 use etas_hir::HirItemId;
 use etas_types::{CallableGenericParamKind, PrimitiveType as P, Type, TypeOutput};
 
+pub(super) fn comparator_signature_matches(
+    types: &TypeOutput,
+    item: HirItemId,
+    role: etas_std::StdExecutionRole,
+) -> bool {
+    let Some(etas_types::ItemSignature::Flow(signature)) = types.facts.item_signatures.get(&item)
+    else {
+        return false;
+    };
+    let Some(method) = types
+        .facts
+        .type_impl_methods
+        .values()
+        .find(|method| method.body == item)
+    else {
+        return false;
+    };
+    let identity = method.self_type;
+    if !method.inherent
+        || !method.owner_params.is_empty()
+        || !matches!(types.store.get(identity), Some(Type::Nominal(owner))
+            if owner.name == "std.collections.ComparatorIdentity"
+                && owner.params.is_empty() && owner.representation.is_none())
+        || signature
+            .effects
+            .as_ref()
+            .is_none_or(|row| !row.effects.is_empty() || row.tail.is_some())
+        || signature
+            .requested_actions
+            .as_ref()
+            .is_some_and(|row| !row.effects.is_empty() || row.tail.is_some())
+    {
+        return false;
+    }
+    if role == etas_std::StdExecutionRole::ComparatorSame {
+        return signature.generic_params.is_empty()
+            && signature.params == [identity, identity]
+            && matches!(
+                types.store.get(signature.output),
+                Some(Type::Primitive(P::Bool))
+            );
+    }
+    let [parameter] = signature.generic_params.as_slice() else {
+        return false;
+    };
+    role == etas_std::StdExecutionRole::ComparatorCapture
+        && parameter.kind == CallableGenericParamKind::Type
+        && parameter.bounds.is_empty()
+        && signature.output == identity
+        && signature.params.len() == 1
+        && matches!(types.store.get(signature.params[0]), Some(Type::Function(flow))
+            if flow.input == [parameter.subject, parameter.subject]
+                && matches!(types.store.get(flow.output), Some(Type::Primitive(P::I32)))
+                && flow.effects.as_ref().is_some_and(|row| row.effects.is_empty() && row.tail.is_none()))
+}
+
 pub(super) fn observation_signature_matches(
     types: &TypeOutput,
     item: HirItemId,
@@ -386,6 +442,149 @@ pub(super) fn transfer_signature_matches(
 
 /// This ABI describes a VM representation boundary. Data and DataError remain
 /// ordinary source definitions, without a duplicate public native declaration.
+pub(super) fn read_scope_signature_matches(types: &TypeOutput, item: HirItemId) -> bool {
+    let Some(etas_types::ItemSignature::Flow(signature)) = types.facts.item_signatures.get(&item)
+    else {
+        return false;
+    };
+    let [stream] = signature.params.as_slice() else {
+        return false;
+    };
+    let Some(etas_types::Type::Tuple(fields)) = types.store.get(signature.output) else {
+        return false;
+    };
+    let [returned, owner] = fields.as_slice() else {
+        return false;
+    };
+    if returned != stream
+        || signature.generic_params.len() != 1
+        || signature
+            .effects
+            .as_ref()
+            .is_none_or(|row| !row.effects.is_empty() || row.tail.is_some())
+    {
+        return false;
+    }
+    let Some(owner) = etas_types::value_representation::option_parameter(
+        &types.store,
+        &types.facts.known_std_types,
+        *owner,
+    ) else {
+        return false;
+    };
+    matches!(types.store.get(owner), Some(etas_types::Type::Nominal(value))
+        if value.name == "std.stream.ReadOwner" && value.representation.is_none())
+        && types.facts.known_std_types.opaque_values.contains(&owner)
+}
+
+pub(super) fn storage_signature_matches(
+    types: &TypeOutput,
+    item: HirItemId,
+    role: etas_std::StdExecutionRole,
+) -> bool {
+    use etas_std::StdExecutionRole as R;
+    let store = &types.store;
+    let Some(etas_types::ItemSignature::Flow(signature)) = types.facts.item_signatures.get(&item)
+    else {
+        return false;
+    };
+    let [generic] = signature.generic_params.as_slice() else {
+        return false;
+    };
+    let Some(method) = types
+        .facts
+        .type_impl_methods
+        .values()
+        .find(|method| method.body == item)
+    else {
+        return false;
+    };
+    let data = method.self_type;
+    if generic.kind != CallableGenericParamKind::Type
+        || !generic.bounds.is_empty()
+        || !method.inherent
+        || !method.owner_params.is_empty()
+        || !matches!(store.get(data), Some(Type::Enum(owner)) if owner.name == "std.memory.StorageValue")
+        || signature
+            .effects
+            .as_ref()
+            .is_none_or(|row| !row.effects.is_empty() || row.tail.is_some())
+        || signature
+            .requested_actions
+            .as_ref()
+            .is_some_and(|row| !row.effects.is_empty() || row.tail.is_some())
+    {
+        return false;
+    }
+    let primitive =
+        |ty, kind| matches!(store.get(ty), Some(Type::Primitive(actual)) if *actual == kind);
+    let Some(layout) = types.facts.enum_layouts.get(&data) else {
+        return false;
+    };
+    let array = |ty, inner| matches!(store.get(ty), Some(Type::Array(value)) if *value == inner);
+    let pairs = |ty, first, second| match store.get(ty) {
+        Some(Type::Array(pair)) => {
+            matches!(store.get(*pair), Some(Type::Tuple(values)) if values == &[first, second])
+        }
+        _ => false,
+    };
+    let Some(string) = layout
+        .variants
+        .iter()
+        .find(|variant| variant.name == "String")
+        .and_then(|variant| variant.fields.first())
+        .copied()
+    else {
+        return false;
+    };
+    if !layout.type_params.is_empty()
+        || layout.variants.len() != 11
+        || !layout.variants.iter().all(|variant| {
+            if variant.field_names.is_some() {
+                return false;
+            }
+            match (variant.name.as_str(), variant.fields.as_slice()) {
+                ("Unit", []) => true,
+                ("Bool", [ty]) => primitive(*ty, P::Bool),
+                ("Scalar", [a, b, c]) => {
+                    primitive(*a, P::U8) && primitive(*b, P::U8) && primitive(*c, P::U128)
+                }
+                ("String", [ty]) => primitive(*ty, P::String),
+                ("Bytes", [ty]) => primitive(*ty, P::Bytes),
+                ("Sequence", [tag, values]) => primitive(*tag, P::U8) && array(*values, data),
+                ("Map", [values]) => pairs(*values, data, data),
+                ("Record", [values]) => pairs(*values, string, data),
+                ("Nominal", [id, value]) => primitive(*id, P::String) && *value == data,
+                ("Variant", [id, name, values]) => {
+                    primitive(*id, P::String) && primitive(*name, P::String) && array(*values, data)
+                }
+                ("Trust", [label, proof, value]) => {
+                    primitive(*label, P::U8) && primitive(*proof, P::Bytes) && *value == data
+                }
+                _ => false,
+            }
+        })
+    {
+        return false;
+    }
+    if role == R::StorageSchema {
+        return signature.params.is_empty() && primitive(signature.output, P::String);
+    }
+    let Some((ok, err)) = etas_types::value_representation::result_parameters(
+        store,
+        &types.facts.known_std_types,
+        signature.output,
+    ) else {
+        return false;
+    };
+    storage_error_layout_matches(types, err)
+        && match role {
+            R::CaptureStorage => signature.params == [generic.subject] && ok == data,
+            R::RestoreStorage => signature.params == [data] && ok == generic.subject,
+            _ => false,
+        }
+}
+
 pub(super) fn capture_signature_matches(types: &TypeOutput, item: HirItemId) -> bool {
     let store = &types.store;
     let Some(etas_types::ItemSignature::Flow(signature)) = types.facts.item_signatures.get(&item)
@@ -562,26 +761,58 @@ pub(super) fn context_signature_matches(
     ) else {
         return false;
     };
-    let Some(Type::Nominal(error)) = store.get(err) else {
-        return false;
-    };
-    let Some(fields) = etas_types::record_fields_with_applied_params(store, err)
-        .ok()
-        .flatten()
+    role == R::StorageNonce
+        && matches!(store.get(ok), Some(Type::Primitive(P::U128)))
+        && storage_error_layout_matches(types, err)
+}
+
+pub(super) fn resource_scope_signature_matches(types: &TypeOutput, item: HirItemId) -> bool {
+    let Some(etas_types::ItemSignature::Flow(signature)) = types.facts.item_signatures.get(&item)
     else {
         return false;
     };
-    role == R::StorageNonce
-        && matches!(store.get(ok), Some(Type::Primitive(P::U128)))
-        && error.name == "std.memory.StorageError"
-        && error.params.is_empty()
-        && fields.fields.len() == 2
-        && ["code", "message"].into_iter().all(|name| {
-            fields.fields.iter().any(|field| {
-                field.name == name
-                    && matches!(store.get(field.ty), Some(Type::Primitive(P::String)))
-            })
+    let [result, effects] = signature.generic_params.as_slice() else {
+        return false;
+    };
+    let [body_type] = signature.params.as_slice() else {
+        return false;
+    };
+    let Some(Type::Function(body)) = types.store.get(*body_type) else {
+        return false;
+    };
+    let Some(Type::Applied { constructor, args }) = types.store.get(signature.output) else {
+        return false;
+    };
+    if !matches!(types.store.get(etas_types::TypeId(constructor.0)), Some(Type::Nominal(owner)) if matches!(owner.name.as_str(), "std.resource.ScopeReport" | "std.agent.session.LeaseScopeReport"))
+        || args != &[result.subject]
+    {
+        return false;
+    }
+    let Ok(Some(fields)) =
+        etas_types::record_fields_with_applied_params(&types.store, signature.output)
+    else {
+        return false;
+    };
+    result.kind == CallableGenericParamKind::Type
+        && effects.kind == CallableGenericParamKind::Effect
+        && result.bounds.is_empty()
+        && effects.bounds.is_empty()
+        && body.input.is_empty()
+        && body.output == result.subject
+        && body.effects.as_ref() == signature.effects.as_ref()
+        && signature.effects.as_ref().is_some_and(|row| {
+            row.effects.is_empty() && row.tail.as_deref() == Some(effects.name.as_str())
         })
+        && signature
+            .requested_actions
+            .as_ref()
+            .is_none_or(|row| row.effects.is_empty() && row.tail.is_none())
+        && fields.fields.len() == 2
+        && fields
+            .fields
+            .iter()
+            .any(|field| field.name == "value" && field.ty == result.subject)
+        && fields.fields.iter().any(|field| field.name == "failures")
 }
 
 pub(super) fn scope_signature_matches(
@@ -694,6 +925,58 @@ pub(super) fn scope_signature_matches(
             fields.fields.iter().any(|field| {
                 field.name == *name
                     && matches!(types.store.get(field.ty), Some(Type::Primitive(P::U64)))
+            })
+        })
+}
+
+// Source owns the record; these are the fields that the host error ABI emits.
+fn storage_error_layout_matches(types: &TypeOutput, ty: etas_types::TypeId) -> bool {
+    let store = &types.store;
+    if !matches!(store.get(ty), Some(Type::Nominal(owner))
+        if owner.name == "std.memory.StorageError" && owner.params.is_empty())
+    {
+        return false;
+    }
+    let Ok(Some(fields)) = etas_types::record_fields_with_applied_params(store, ty) else {
+        return false;
+    };
+    if fields.fields.len() != 3
+        || !["code", "message"].into_iter().all(|name| {
+            fields.fields.iter().any(|field| {
+                field.name == name
+                    && matches!(store.get(field.ty), Some(Type::Primitive(P::String)))
+            })
+        })
+    {
+        return false;
+    }
+    let Some(operation) = fields
+        .fields
+        .iter()
+        .find(|field| field.name == "operation")
+        .and_then(|field| {
+            etas_types::value_representation::option_parameter(
+                store,
+                &types.facts.known_std_types,
+                field.ty,
+            )
+        })
+    else {
+        return false;
+    };
+    if !matches!(store.get(operation), Some(Type::Nominal(owner))
+        if owner.name == "std.memory.StorageOperationRef" && owner.params.is_empty())
+    {
+        return false;
+    }
+    let Ok(Some(fields)) = etas_types::record_fields_with_applied_params(store, operation) else {
+        return false;
+    };
+    fields.fields.len() == 2
+        && ["key", "fingerprint"].into_iter().all(|name| {
+            fields.fields.iter().any(|field| {
+                field.name == name
+                    && matches!(store.get(field.ty), Some(Type::Primitive(P::String)))
             })
         })
 }

@@ -389,6 +389,9 @@ impl DefinitionDescriptorProjector<'_> {
         &mut self,
         reference: etas_effects::ParameterHandlerScopeRef,
     ) -> Result<Option<ParameterHandlerScopeInfo>, ProjectionError> {
+        if let Some(scope) = self.imported_handler_scopes.get(&reference) {
+            return Ok(Some(scope.clone()));
+        }
         use etas_code::descriptor::{
             DescriptorGraph, DescriptorGraphOffsets, DescriptorNode, StaticEffectArgInfo,
         };
@@ -467,7 +470,10 @@ impl DefinitionDescriptorProjector<'_> {
         self.rows.extend(segment.rows.into_iter().map(Some));
         self.binders.extend(segment.binders);
         self.traces.extend(segment.traces.into_iter().map(Some));
-        Ok(Some(ParameterHandlerScopeInfo::Handle { arms }))
+        let scope = ParameterHandlerScopeInfo::Handle { arms };
+        self.imported_handler_scopes
+            .insert(reference, scope.clone());
+        Ok(Some(scope))
     }
 }
 
@@ -475,6 +481,7 @@ fn concrete_action_trace(trace: &ActionTraceDomain) -> bool {
     let mut pending = vec![trace];
     while let Some(trace) = pending.pop() {
         match trace {
+            ActionTraceDomain::Shared(body) => pending.push(&body.body),
             ActionTraceDomain::Empty => {}
             ActionTraceDomain::Event(event) if event.action.is_action() => {}
             ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
@@ -614,6 +621,26 @@ mod tests {
         );
         assert_eq!(arms[0].completion.result_type(), TypeInfoRef(1));
         let projected_trace = arms[0].trace;
+        let nodes = (
+            projector.types.len(),
+            projector.rows.len(),
+            projector.binders.len(),
+            projector.traces.len(),
+        );
+        let ParameterHandlerScopeInfo::Handle { arms: repeated } = projector
+            .project_external_handler_scope(reference)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated, arms);
+        assert_eq!(
+            nodes,
+            (
+                projector.types.len(),
+                projector.rows.len(),
+                projector.binders.len(),
+                projector.traces.len()
+            )
+        );
         let projected = projector.finish().unwrap();
         assert_eq!(
             original.trace_fingerprint(TraceInfoRef(2)).unwrap(),

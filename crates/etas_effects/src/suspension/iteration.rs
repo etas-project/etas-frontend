@@ -60,10 +60,7 @@ pub(super) fn successors(
     cursor: TypeId,
     node: &mut Node,
 ) {
-    let Some(exits) = context
-        .effects
-        .unit_effects
-        .get(&unit)
+    let Some(exits) = instances::checked_summary(context.effects, unit, context.environment)
         .and_then(|summary| summary.exits.as_ref())
     else {
         node.local.join(SuspensionSummary::UNKNOWN);
@@ -75,8 +72,10 @@ pub(super) fn successors(
             crate::OutcomeAnalysisGap::MissingReturnType
                 | crate::OutcomeAnalysisGap::MissingReturnObservation
         )
-    }) || (exits.exits.is_empty() && !exits.gaps.is_empty())
-    {
+    }) {
+        // Callback completion can be unknown even when its execution is
+        // non-suspending. The invocation graph proves execution separately;
+        // the checked tail projections below prove every returned next value.
         node.local.join(SuspensionSummary::UNKNOWN);
     }
     let mut seen = BTreeSet::new();

@@ -165,8 +165,12 @@ pub(super) fn native_signatures<'a>(
             .effect_registry
             .action_by_name(&qualified.join("."))
             .ok_or_else(|| invalid("external action has no checked registry binding"))?;
+        // An imported effect may be exposed as a namespace alias. Such an
+        // alias has no declaration identity of its own; its checked canonical
+        // path identifies the effect. Keep checking the registry tag against
+        // that declaration before accepting the imported action.
         let owner = identities
-            .symbol(owner)
+            .path(path)
             .ok_or_else(|| ProjectionError::MissingIdentity(path.join(".")))?;
         if identities.effect_tag(reference.tag)? != owner {
             return Err(invalid(

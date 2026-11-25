@@ -49,6 +49,7 @@ fn check_program(
     // Corruption fixtures edit raw HIR; analysis consumes a frozen revision.
     let hir = etas_hir::HirRevision::try_new(hir.clone()).unwrap();
     RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -73,7 +74,7 @@ fn local_only() -> InterpreterSupport {
 }
 
 fn trace_contains_task_start(trace: &ActionTraceDomain, site: etas_hir::HirExprId) -> bool {
-    match trace {
+    match trace.structure() {
         ActionTraceDomain::TaskStart { task_site, .. } => *task_site == site,
         ActionTraceDomain::Seq(parts)
         | ActionTraceDomain::Choice(parts)
@@ -86,7 +87,7 @@ fn trace_contains_task_start(trace: &ActionTraceDomain, site: etas_hir::HirExprI
 }
 
 fn trace_contains_task_await(trace: &ActionTraceDomain, site: etas_hir::HirExprId) -> bool {
-    match trace {
+    match trace.structure() {
         ActionTraceDomain::TaskAwait { task_site } => *task_site == site,
         ActionTraceDomain::TaskStart { body, .. } | ActionTraceDomain::Repeat(body) => {
             trace_contains_task_await(body, site)
@@ -339,12 +340,16 @@ fn has_agentic_escape(row: &EffectRow) -> bool {
 
 fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
     match trace {
-        ActionTraceDomain::Empty => false,
+        ActionTraceDomain::Shared(body) => trace_has_agentic_infer(&body.body),
+        ActionTraceDomain::Recursive { body: None, .. } | ActionTraceDomain::Empty => false,
         ActionTraceDomain::Event(event) => is_agentic_infer_effect(&event.action),
         ActionTraceDomain::Seq(parts)
         | ActionTraceDomain::Choice(parts)
         | ActionTraceDomain::Parallel(parts) => parts.iter().any(trace_has_agentic_infer),
-        ActionTraceDomain::Repeat(inner)
+        ActionTraceDomain::Recursive {
+            body: Some(inner), ..
+        }
+        | ActionTraceDomain::Repeat(inner)
         | ActionTraceDomain::TaskStart { body: inner, .. }
         | ActionTraceDomain::DefaultHandler { body: inner, .. } => trace_has_agentic_infer(inner),
         ActionTraceDomain::UnknownOrder(actions) => actions.iter().any(is_agentic_infer_effect),
@@ -355,7 +360,8 @@ fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
 
 fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEventSource) -> bool {
     match trace {
-        ActionTraceDomain::Empty => false,
+        ActionTraceDomain::Shared(body) => trace_has_agentic_infer_source(&body.body, source),
+        ActionTraceDomain::Recursive { body: None, .. } | ActionTraceDomain::Empty => false,
         ActionTraceDomain::Event(event) => {
             is_agentic_infer_effect(&event.action) && event.source == source
         }
@@ -364,7 +370,10 @@ fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEvent
         | ActionTraceDomain::Parallel(parts) => parts
             .iter()
             .any(|part| trace_has_agentic_infer_source(part, source.clone())),
-        ActionTraceDomain::Repeat(inner)
+        ActionTraceDomain::Recursive {
+            body: Some(inner), ..
+        }
+        | ActionTraceDomain::Repeat(inner)
         | ActionTraceDomain::TaskStart { body: inner, .. }
         | ActionTraceDomain::DefaultHandler { body: inner, .. } => {
             trace_has_agentic_infer_source(inner, source)
@@ -2509,6 +2518,7 @@ tool search(q: string) -> string ![Network];
         action_row: Vec::new(),
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4029,6 +4039,7 @@ flow main() -> unit ![] {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let units = RunEffectPipeline::artifacts(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4096,6 +4107,7 @@ flow helper() -> unit {
 
     let main = flow_item(&hir, "main");
     let plan = RunEffectPipeline::plan(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4115,6 +4127,7 @@ flow helper() -> unit {
 
     assert!(plan.registry.tag_extends(CONSOLE_TAG, FILE_IO_TAG));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4195,6 +4208,7 @@ flow main() -> unit ![Network] {
     let helper = flow_item(&hir, "helper");
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4324,6 +4338,7 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4430,6 +4445,7 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4575,6 +4591,7 @@ flow main() -> unit {
         }],
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4646,6 +4663,7 @@ flow main() -> unit {
         },
     ];
     let missing_anchor_error = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4667,6 +4685,7 @@ flow main() -> unit {
         etas_effects::EffectPipelineError::MissingDiagnosticAnchor { .. }
     ));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -4859,7 +4878,7 @@ flow main() -> unit ![Audit] {
         .item_effects
         .get(&main)
         .expect("main should have a summary");
-    let ActionTraceDomain::Seq(events) = &summary.action_trace else {
+    let ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
         panic!(
             "sequential performs must produce an ordered Seq trace, got {:?}",
             summary.action_trace
@@ -4907,7 +4926,7 @@ flow main(flag: bool) -> unit ![Audit] {
         .item_effects
         .get(&main)
         .expect("main should have a summary");
-    let ActionTraceDomain::Choice(branches) = &summary.action_trace else {
+    let ActionTraceDomain::Choice(branches) = summary.action_trace.structure() else {
         panic!(
             "branch performs must produce a Choice trace, got {:?}",
             summary.action_trace
@@ -4917,7 +4936,7 @@ flow main(flag: bool) -> unit ![Audit] {
 }
 
 #[test]
-fn action_trace_widening_preserves_unknown_order_footprint_for_branch_or_recursive_shapes() {
+fn fixpoint_stabilization_preserves_branch_and_recursive_structure() {
     let approval = Effect::Action(ActionRef {
         tag: APPROVAL_TAG,
         action: APPROVAL_REQUEST_ACTION,
@@ -4939,18 +4958,9 @@ fn action_trace_widening_preserves_unknown_order_footprint_for_branch_or_recursi
         event(memory.clone()),
     ])));
 
-    let widened = trace.stabilize_for_fixpoint(Some(&current));
-
-    let ActionTraceDomain::Widened {
-        actions,
-        parameter_calls,
-    } = widened
-    else {
-        panic!("widening branch/recursive trace must not invent an order: {widened:?}");
-    };
-    assert!(parameter_calls.is_empty(), "{parameter_calls:?}");
-    assert!(actions.contains(&approval), "{actions:?}");
-    assert!(actions.contains(&memory), "{actions:?}");
+    assert_eq!(trace.clone().stabilize_for_fixpoint(Some(&current)), trace);
+    assert!(trace.action_set().contains(&approval));
+    assert!(trace.action_set().contains(&memory));
 }
 
 #[test]
@@ -5153,6 +5163,7 @@ flow main(path: string) -> string ![Workspace.read<_>]
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let pipeline = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -5291,7 +5302,7 @@ flow main() -> unit ![Error<IOError>]
     );
     assert!(
         matches!(
-            &summary.action_trace,
+            summary.action_trace.structure(),
             ActionTraceDomain::Event(event)
                 if matches!(
                     &event.action,
@@ -6085,10 +6096,16 @@ fn trace_spec_structural_site_depth_exhaustion_is_diagnostic() {
 }
 
 #[test]
-fn trace_spec_loop_with_widened_order_remains_fail_closed() {
-    for body in [
-        "while ready limit Iterations(2) { perform Gate.approve(); } perform Gate.request();",
-        "while ready limit Iterations(2) { perform Gate.approve(); perform Gate.request(); }",
+fn ordered_loop_specs_distinguish_a_missing_guard_from_missing_outcome_evidence() {
+    for (body, expected) in [
+        (
+            "while ready { perform Gate.approve(); } perform Gate.request();",
+            EffectDiagnosticCode::TraceSpecRequirementNotDominating,
+        ),
+        (
+            "while ready { perform Gate.approve(); perform Gate.request(); }",
+            EffectDiagnosticCode::IncompleteEffectFacts,
+        ),
     ] {
         let source = format!(
             r#"module app.main;
@@ -6108,10 +6125,10 @@ flow main(ready: bool) -> unit ![Gate.approve, Gate.request] ~ Safe {{ {body} }}
         assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
         let output = check_program(&hir, &types);
         assert!(
-            output.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code
-                    == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
-            }),
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == DiagnosticCode::Effect(expected.clone()) }),
             "{:#?}",
             output.diagnostics
         );
@@ -6662,6 +6679,7 @@ flow main() -> unit ![Console.stdout_write] {
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     fn count_parameter_calls(trace: &ActionTraceDomain, parameter: &str) -> usize {
         match trace {
+            ActionTraceDomain::Shared(body) => count_parameter_calls(&body.body, parameter),
             ActionTraceDomain::ParameterCall {
                 parameter: actual, ..
             } => usize::from(actual == parameter),
@@ -6671,7 +6689,10 @@ flow main() -> unit ![Console.stdout_write] {
                 .iter()
                 .map(|item| count_parameter_calls(item, parameter))
                 .sum(),
-            ActionTraceDomain::Repeat(item)
+            ActionTraceDomain::Recursive {
+                body: Some(item), ..
+            }
+            | ActionTraceDomain::Repeat(item)
             | ActionTraceDomain::TaskStart { body: item, .. }
             | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 count_parameter_calls(item, parameter)
@@ -6682,7 +6703,8 @@ flow main() -> unit ![Console.stdout_write] {
                 .iter()
                 .filter(|call| call.parameter == parameter)
                 .count(),
-            ActionTraceDomain::Empty
+            ActionTraceDomain::Recursive { body: None, .. }
+            | ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
             | ActionTraceDomain::TaskAwait { .. }
             | ActionTraceDomain::UnknownOrder(_) => 0,
@@ -6742,14 +6764,19 @@ flow main() -> unit ![Console.stdout_write] {
     );
     fn count_stdout(trace: &etas_effects::ActionTraceDomain, stdout: &Effect) -> usize {
         match trace {
-            etas_effects::ActionTraceDomain::Empty => 0,
+            etas_effects::ActionTraceDomain::Shared(body) => count_stdout(&body.body, stdout),
+            etas_effects::ActionTraceDomain::Recursive { body: None, .. }
+            | etas_effects::ActionTraceDomain::Empty => 0,
             etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
             etas_effects::ActionTraceDomain::Seq(items)
             | etas_effects::ActionTraceDomain::Choice(items)
             | etas_effects::ActionTraceDomain::Parallel(items) => {
                 items.iter().map(|item| count_stdout(item, stdout)).sum()
             }
-            etas_effects::ActionTraceDomain::Repeat(item)
+            etas_effects::ActionTraceDomain::Recursive {
+                body: Some(item), ..
+            }
+            | etas_effects::ActionTraceDomain::Repeat(item)
             | etas_effects::ActionTraceDomain::TaskStart { body: item, .. }
             | etas_effects::ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 count_stdout(item, stdout)
@@ -6809,7 +6836,7 @@ flow main() -> unit {
     let mut events = 0;
     let mut pending = vec![&summary.action_trace];
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Event(event) => events += usize::from(event.action == stdout),
             ActionTraceDomain::Seq(children) | ActionTraceDomain::Choice(children) => {
                 pending.extend(children)
@@ -10437,181 +10464,20 @@ flow main() -> unit {
 }
 
 #[test]
-fn check_program_reports_missing_while_and_retry_limits() {
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
-        etas_core::SourceId(0),
-        None,
+fn check_program_accepts_plain_while_and_retry() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"
 flow main(ready: bool) -> unit {
-    while ready {
-        break;
-    }
-
-    retry {
-        break;
-    }
-
-    return;
+    while ready { break; }
+    retry { break; }
 }
 "#,
     ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let hir = lower_program(&parsed.value);
     let types = etas_types::check_program(&hir);
     let output = check_program(&hir, &types);
-
-    let missing_limits = output
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| {
-            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::MissingEffectLoopLimit)
-        })
-        .count();
-    assert_eq!(missing_limits, 2, "{:?}", output.diagnostics);
-}
-
-#[test]
-fn check_program_accepts_explicit_while_and_retry_limits() {
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
-        etas_core::SourceId(0),
-        None,
-        r#"
-flow main(ready: bool) -> unit {
-    while ready limit Iterations(1) {
-        break;
-    }
-
-    retry limit Attempts(1) {
-        break;
-    }
-
-    return;
-}
-"#,
-    ));
-    let hir = lower_program(&parsed.value);
-    let types = etas_types::check_program(&hir);
-    let output = check_program(&hir, &types);
-
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::MissingEffectLoopLimit)
-        }),
-        "{:?}",
-        output.diagnostics
-    );
-    assert!(
-        output
-            .facts
-            .requirements
-            .items
-            .values()
-            .any(
-                |requirements| requirements.contains(&RequirementFact::Limit(LimitRequirement {
-                    kind: LimitKind::Iterations,
-                    budget: LimitBudgetKind::Count,
-                    value: Some(LimitValue::Count(1)),
-                }))
-            ),
-        "while limit should record an Iterations count requirement"
-    );
-    assert!(
-        output
-            .facts
-            .requirements
-            .items
-            .values()
-            .any(
-                |requirements| requirements.contains(&RequirementFact::Limit(LimitRequirement {
-                    kind: LimitKind::Attempts,
-                    budget: LimitBudgetKind::Count,
-                    value: Some(LimitValue::Count(1)),
-                }))
-            ),
-        "retry limit should record an Attempts count requirement"
-    );
-}
-
-#[test]
-fn check_program_records_pipeline_stage_limits() {
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
-        etas_core::SourceId(0),
-        None,
-        r#"
-flow Writer(input: string) -> string {
-    input
-}
-
-flow main(topic: string) -> string {
-    topic ~> Writer limit Tokens(4096)
-}
-"#,
-    ));
-    let hir = lower_program(&parsed.value);
-    let types = etas_types::check_program(&hir);
-    let output = check_program(&hir, &types);
-
-    assert!(
-        output
-            .facts
-            .requirements
-            .items
-            .values()
-            .any(
-                |requirements| requirements.contains(&RequirementFact::Limit(LimitRequirement {
-                    kind: LimitKind::Tokens,
-                    budget: LimitBudgetKind::Count,
-                    value: Some(LimitValue::Count(4096)),
-                }))
-            ),
-        "pipeline stage limit should record a Tokens count requirement"
-    );
-}
-
-#[test]
-fn check_program_rejects_user_defined_pipeline_stage_limit_constructor() {
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
-        etas_core::SourceId(0),
-        None,
-        r#"
-flow Tokens(value: i64) -> i64 {
-    value
-}
-
-flow Writer(input: string) -> string {
-    input
-}
-
-flow main(topic: string) -> string {
-    topic ~> Writer limit Tokens(4096)
-}
-"#,
-    ));
-    let hir = lower_program(&parsed.value);
-    let types = etas_types::check_program(&hir);
-    let output = check_program(&hir, &types);
-
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
-        }),
-        "user-defined Tokens(...) must not be accepted as a std runtime limit: {:?}",
-        output.diagnostics
-    );
-    assert!(
-        output
-            .facts
-            .requirements
-            .items
-            .values()
-            .all(
-                |requirements| !requirements.contains(&RequirementFact::Limit(LimitRequirement {
-                    kind: LimitKind::Tokens,
-                    budget: LimitBudgetKind::Count,
-                    value: Some(LimitValue::Count(4096)),
-                }))
-            ),
-        "invalid local constructor must not materialize a Tokens runtime requirement"
-    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }
 
 #[test]

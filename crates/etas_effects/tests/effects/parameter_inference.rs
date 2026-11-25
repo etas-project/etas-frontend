@@ -64,7 +64,7 @@ flow main() -> i32 ![Network] { return twice(() => perform Probe.read()); }
     );
     for name in ["twice", "main"] {
         let summary = &output.facts.item_effects[&flow_item(&hir, name)];
-        let ActionTraceDomain::Seq(events) = &summary.action_trace else {
+        let ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
             panic!(
                 "two calls must preserve an ordered trace: {:?}",
                 summary.action_trace

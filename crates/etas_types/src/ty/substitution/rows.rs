@@ -85,6 +85,9 @@ impl<'a> TypeSubstitutionEngine<'a> {
         &self,
         mut row: EffectRowRef,
     ) -> Result<ExpandedRow, TypeSubstitutionError> {
+        if let (Some(variables), Some(tail)) = (self.variables, &mut row.tail) {
+            *tail = variables.inferred_row(tail).to_owned();
+        }
         if self.is_relocation()
             && let Some(tail) = &row.tail
         {

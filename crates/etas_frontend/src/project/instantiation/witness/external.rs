@@ -24,6 +24,54 @@ impl WitnessResolver<'_> {
             .collect();
         let mut bindings = TypeSubstitutionEngine::existing(substitution.input_store(), &names)
             .with_type_parameters(&parameters);
+        self.parameter_bodies(&signature.generic_params, &mut bindings)
+    }
+
+    pub(in crate::project::instantiation) fn method_bound_bodies(
+        &self,
+        call: &CheckedMethodCallFact,
+        substitution: &mut TypeSubstitutionEngine<'_>,
+    ) -> Result<PackBodies, InstantiationError> {
+        let declaration = self
+            .types
+            .facts
+            .methods
+            .entries()
+            .find(|method| method.target == call.target)
+            .ok_or("external method has no checked declaration")?;
+        let names = call
+            .instantiation
+            .type_bindings
+            .iter()
+            .map(|(name, ty)| Ok((name.clone(), substitution.substitute(*ty)?)))
+            .collect::<Result<HashMap<_, _>, etas_types::TypeSubstitutionError>>()?;
+        let mut parameters = call
+            .owner_bindings
+            .iter()
+            .map(|(parameter, argument)| Ok((*parameter, substitution.substitute(*argument)?)))
+            .collect::<Result<HashMap<_, _>, etas_types::TypeSubstitutionError>>()?;
+        parameters.extend(
+            call.signature
+                .generic_params
+                .iter()
+                .filter_map(|parameter| {
+                    names
+                        .get(&parameter.name)
+                        .map(|ty| (parameter.subject, *ty))
+                }),
+        );
+        let mut bindings = TypeSubstitutionEngine::existing(substitution.input_store(), &names)
+            .with_type_parameters(&parameters);
+        let mut generic_params = declaration.owner_params.clone();
+        generic_params.extend(call.signature.generic_params.iter().cloned());
+        self.parameter_bodies(&generic_params, &mut bindings)
+    }
+
+    fn parameter_bodies(
+        &self,
+        parameters: &[etas_types::CallableGenericParam],
+        bindings: &mut TypeSubstitutionEngine<'_>,
+    ) -> Result<PackBodies, InstantiationError> {
         let mut result = PackBodies {
             bodies: BTreeSet::new(),
             applications: Vec::new(),
@@ -31,7 +79,7 @@ impl WitnessResolver<'_> {
         // A metadata callable receives the selected witness dictionary, including
         // methods captured by returned flows. This does not select other impls or
         // grant invocation authority to the dictionary's members.
-        for parameter in &signature.generic_params {
+        for parameter in parameters {
             if parameter.kind != CallableGenericParamKind::Type {
                 continue;
             }

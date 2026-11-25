@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use etas_code::{CodeFingerprint, descriptor::ValueProjectionStep as Step};
 use etas_hir::{HirItemId, SymbolDef, SymbolId};
@@ -8,21 +8,51 @@ use crate::facts::NativeParameterProjection;
 
 #[derive(Default)]
 pub(super) struct NativeParameterProjectionIndex {
-    by_owner: HashMap<HirItemId, BTreeSet<CodeFingerprint>>,
-    nodes: usize,
+    pub(super) nodes: usize,
+    pub(super) call_inputs: BTreeMap<u32, std::sync::Arc<crate::facts::NativeCallInputs>>,
+    pub(super) input_ids: BTreeMap<CodeFingerprint, u32>,
+    pub(super) joined_inputs: BTreeMap<
+        (
+            Option<crate::EffectUnit>,
+            Option<CodeFingerprint>,
+            etas_hir::HirExprId,
+        ),
+        u32,
+    >,
+    pub(super) input_users: BTreeMap<u32, BTreeSet<CodeFingerprint>>,
 }
 
 impl NativeParameterProjectionIndex {
     pub(super) fn new(projections: &BTreeMap<CodeFingerprint, NativeParameterProjection>) -> Self {
         let mut index = Self::default();
-        for (&id, projection) in projections {
-            index.insert(id, projection.owner, projection.path.len());
+        for (projection_id, projection) in projections {
+            index.insert(Step::nodes(&projection.path));
+            for (id, inputs) in &projection.call_inputs {
+                if index.call_inputs.insert(*id, inputs.clone()).is_none() {
+                    index.insert(inputs.nodes());
+                }
+                index
+                    .input_users
+                    .entry(*id)
+                    .or_default()
+                    .insert(*projection_id);
+                if inputs.joined {
+                    index
+                        .joined_inputs
+                        .insert((inputs.scope, inputs.context, inputs.call), *id);
+                } else {
+                    let bytes = serde_json::to_vec(inputs).expect("checked call inputs serialize");
+                    index.input_ids.insert(
+                        CodeFingerprint::of_bytes("etas.effects.call-inputs.v1", &bytes),
+                        *id,
+                    );
+                }
+            }
         }
         index
     }
 
-    fn insert(&mut self, id: CodeFingerprint, owner: HirItemId, path_length: usize) {
-        self.by_owner.entry(owner).or_default().insert(id);
+    pub(super) fn insert(&mut self, path_length: usize) {
         self.nodes = self.nodes.saturating_add(1 + path_length);
     }
 }
@@ -69,7 +99,11 @@ impl EffectSemantics<'_> {
             root = base;
         }
         if path.is_empty()
-            || path.len() > etas_package_metadata::MAX_METADATA_GRAPH_DEPTH
+            || !Step::well_formed(
+                &path,
+                etas_package_metadata::MAX_METADATA_GRAPH_DEPTH,
+                etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+            )
             || matches!(
                 root,
                 crate::ParameterCallTarget::Projection(_)
@@ -84,9 +118,9 @@ impl EffectSemantics<'_> {
         if !projections.contains_key(&id) {
             let nodes = projections
                 .values()
-                .map(|entry| 1 + entry.path.len())
+                .map(|entry| 1 + Step::nodes(&entry.path))
                 .sum::<usize>();
-            if nodes.saturating_add(1 + path.len())
+            if nodes.saturating_add(1 + Step::nodes(&path))
                 > etas_package_metadata::MAX_METADATA_GRAPH_NODES
             {
                 return None;
@@ -102,25 +136,6 @@ impl EffectSemantics<'_> {
         id: CodeFingerprint,
     ) -> Option<NativeParameterProjection> {
         self.parameter_projections.borrow().get(&id).cloned()
-    }
-
-    pub(super) fn callable_parameter_projections(
-        &self,
-        owner: HirItemId,
-    ) -> Vec<(CodeFingerprint, NativeParameterProjection)> {
-        let index = self.parameter_projection_index.borrow();
-        let projections = self.parameter_projections.borrow();
-        index
-            .by_owner
-            .get(&owner)
-            .into_iter()
-            .flatten()
-            .filter_map(|id| {
-                let projection = &projections[id];
-                (self.type_contains_flow(projection.ty) || self.type_has_parameters(projection.ty))
-                    .then(|| (*id, projection.clone()))
-            })
-            .collect()
     }
 
     pub(crate) fn project_parameter_origins(
@@ -155,14 +170,39 @@ impl EffectSemantics<'_> {
         &self,
         owner: HirItemId,
         parameter: SymbolId,
-        path: Vec<Step>,
+        mut path: Vec<Step>,
     ) -> Result<CodeFingerprint, EffectSpecializationError> {
+        let mut index = 0;
+        while index < path.len() {
+            if let Step::Repeat { alternatives } = &path[index] {
+                if let Some(length) = alternatives.iter().find_map(|alternative| {
+                    path[index + 1..]
+                        .starts_with(alternative)
+                        .then_some(alternative.len())
+                }) {
+                    path.drain(index + 1..index + 1 + length);
+                    continue;
+                }
+                if path.get(index + 1) == Some(&path[index]) {
+                    path.remove(index + 1);
+                    continue;
+                }
+            }
+            index += 1;
+        }
         let invalid = || EffectSpecializationError::InvalidCallableEnvironment {
-            reason: "parameter projection has no checked value contract".into(),
+            reason: format!(
+                "parameter projection has no checked value contract: owner {owner:?}, parameter {parameter:?}, type {:?}, path {path:?}",
+                self.symbol_value_type(parameter)
+            ),
         };
         if !matches!(self.hir.symbols.get(parameter).map(|data| &data.def), Some(SymbolDef::Param { owner: actual, .. }) if *actual == owner)
             || path.is_empty()
-            || path.len() > etas_package_metadata::MAX_METADATA_GRAPH_DEPTH
+            || !Step::well_formed(
+                &path,
+                etas_package_metadata::MAX_METADATA_GRAPH_DEPTH,
+                etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+            )
         {
             return Err(invalid());
         }
@@ -170,17 +210,17 @@ impl EffectSemantics<'_> {
         let paths = identities.entry((owner, parameter)).or_default();
         let id = match paths.get(&path) {
             Some(id) => return Ok(*id),
-            None => {
-                let bytes =
-                    serde_json::to_vec(&(owner, parameter, &path)).map_err(|_| invalid())?;
-                CodeFingerprint::of_bytes("etas.effects.parameter-projection.v1", &bytes)
-            }
+            None => NativeParameterProjection::path_identity(owner, parameter, &path)
+                .map_err(|_| invalid())?,
         };
         if self.parameter_projections.borrow().contains_key(&id) {
             paths.insert(path, id);
             return Ok(id);
         }
-        let ty = self.symbol_value_type(parameter).ok_or_else(invalid)?;
+        let ty = match self.agent_receiver_parameter(owner) {
+            Some((receiver, layout)) if parameter == receiver => layout,
+            _ => self.symbol_value_type(parameter).ok_or_else(invalid)?,
+        };
         let ty = self
             .project_value(ty, &path)
             .map_err(|_| invalid())?
@@ -188,12 +228,32 @@ impl EffectSemantics<'_> {
         // Session-local IDs are retained only with their checked HIR revision.
         // Public metadata exports the scoped root and path, never this ID.
         let mut index = self.parameter_projection_index.borrow_mut();
-        if index.nodes.saturating_add(1 + path.len())
+        if index.nodes.saturating_add(1 + Step::nodes(&path))
             > etas_package_metadata::MAX_METADATA_GRAPH_NODES
         {
-            return Err(invalid());
+            return Err(EffectSpecializationError::InvalidCallableEnvironment {
+                reason: format!(
+                    "parameter projection graph exceeds compiler node budget ({} retained nodes, path length {})",
+                    index.nodes,
+                    path.len()
+                ),
+            });
         }
-        index.insert(id, owner, path.len());
+        index.insert(Step::nodes(&path));
+        let call_inputs = Step::call_inputs(&path)
+            .into_iter()
+            .map(|id| {
+                index
+                    .call_inputs
+                    .get(&id)
+                    .cloned()
+                    .map(|inputs| (id, inputs))
+                    .ok_or_else(invalid)
+            })
+            .collect::<Result<_, _>>()?;
+        for input in Step::call_inputs(&path) {
+            index.input_users.entry(input).or_default().insert(id);
+        }
         paths.insert(path.clone(), id);
         std::sync::Arc::make_mut(&mut self.parameter_projections.borrow_mut()).insert(
             id,
@@ -202,6 +262,7 @@ impl EffectSemantics<'_> {
                 parameter,
                 path,
                 ty,
+                call_inputs,
             },
         );
         Ok(id)

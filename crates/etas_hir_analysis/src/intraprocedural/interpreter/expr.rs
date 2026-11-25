@@ -1,4 +1,6 @@
-use etas_hir::{HirArg, HirElseBranch, HirExpr, HirExprId, HirFieldInit, HirMatchArmBody};
+use etas_hir::{
+    HirArg, HirElseBranch, HirExpr, HirExprId, HirFieldInit, HirMatchArmBody, ResolveResult,
+};
 
 use super::Traversal;
 use crate::intraprocedural::{Control, HandleParts, HandlerParts, HirAnalysisSemantics};
@@ -104,12 +106,12 @@ where
             }
             HirExpr::Handle { body, handler, .. } => {
                 let entry = state.clone();
-                let body_state = self.semantics.begin_handle_body(expr, state);
-                let body_control = self.expr_control(body, body_state)?;
                 let handler_parts = HandlerParts::Expr {
                     expr: handler,
                     control: self.expr_control(handler, entry.clone())?,
                 };
+                let body_state = self.semantics.begin_handle_body(expr, state);
+                let body_control = self.expr_control(body, body_state)?;
                 (self.checkpoint)()?;
                 self.semantics.handle_expr_control(
                     expr,
@@ -137,7 +139,7 @@ where
                             let control = control.try_with_normal_processed(|state| {
                                 self.expr_control(stage.expr, state)
                             })?;
-                            self.exprs_control(stage.limits, control)
+                            Ok(control)
                         })?;
                 self.apply_normal_step(control, |this, state| {
                     this.semantics.stage_compose(expr, span, state)
@@ -149,7 +151,7 @@ where
                     (self.checkpoint)()?;
                     let control = control
                         .try_with_normal_processed(|state| self.expr_control(stage.expr, state))?;
-                    self.exprs_control(stage.limits, control)
+                    Ok(control)
                 })?;
                 self.apply_normal_step(control, |this, state| {
                     this.semantics.pipeline(expr, span, state)
@@ -209,6 +211,13 @@ where
                 HirFieldInit::Named { value, .. } => {
                     control.try_with_normal_processed(|state| self.expr_control(value, state))
                 }
+                HirFieldInit::Shorthand {
+                    resolution: ResolveResult::Resolved(symbol),
+                    span,
+                    ..
+                } => Ok(control.with_normal_processed(|state| {
+                    Control::normal(self.semantics.record_shorthand(symbol, span, state))
+                })),
                 HirFieldInit::Shorthand { .. } => Ok(control),
             }
         })

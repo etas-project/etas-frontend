@@ -58,14 +58,11 @@ impl EffectSemantics<'_> {
             .collect();
         let names = std::collections::HashMap::new();
         let sources = std::collections::HashMap::new();
-        let mut engine = etas_types::TypeSubstitutionEngine::existing_indexed(
-            &self.types.store,
-            self.type_lookup(),
-            &names,
-        )
-        .with_type_parameters(&types)
-        .with_source_parameters(&sources)
-        .with_effect_arguments(&rows);
+        let mut engine = self
+            .type_substitution(&names)
+            .with_type_parameters(&types)
+            .with_source_parameters(&sources)
+            .with_effect_arguments(&rows);
         Ok(RequestInstantiationSummary::action(
             action,
             bindings,

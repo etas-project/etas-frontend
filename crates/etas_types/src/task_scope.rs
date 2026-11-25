@@ -26,7 +26,8 @@ pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
             && matches!(
                 flow.body,
                 HirFlowBody::Runtime {
-                    role: etas_std::StdExecutionRole::ScopeEnter,
+                    role: etas_std::StdExecutionRole::ScopeEnter
+                        | etas_std::StdExecutionRole::ResourceScope,
                     ..
                 }
             )
@@ -34,8 +35,29 @@ pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
             facts.scoped_callbacks.insert(
                 flow.symbol,
                 ScopedCallbackFact {
-                    parameters: vec![1],
+                    parameters: vec![if matches!(
+                        flow.body,
+                        HirFlowBody::Runtime {
+                            role: etas_std::StdExecutionRole::ResourceScope,
+                            ..
+                        }
+                    ) {
+                        0
+                    } else {
+                        1
+                    }],
                     parameter_names: names(hir, &flow.params),
+                    resource_boundaries: if matches!(
+                        flow.body,
+                        HirFlowBody::Runtime {
+                            role: etas_std::StdExecutionRole::ResourceScope,
+                            ..
+                        }
+                    ) {
+                        vec![0]
+                    } else {
+                        Vec::new()
+                    },
                 },
             );
         }
@@ -49,6 +71,16 @@ pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
         }
     }
     loop {
+        // Only forwarding the callback itself carries the resource boundary
+        // obligation. Invoking it inside another boundary's body may consume
+        // its result there and does not make that result escape.
+        let resource_forwarded = hir
+            .exprs
+            .iter()
+            .flat_map(|(call, _)| {
+                resource_arguments(hir, facts, call, facts.checked_method_calls.get(&call))
+            })
+            .collect::<HashSet<_>>();
         let scoped_calls = hir
             .exprs
             .iter()
@@ -104,16 +136,32 @@ pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
             if parameters.is_empty() {
                 continue;
             }
+            let resource_boundaries = parameters
+                .iter()
+                .copied()
+                .filter(|slot| {
+                    uses.get(&flow.params[*slot as usize])
+                        .is_some_and(|occurrences| {
+                            occurrences
+                                .iter()
+                                .all(|expr| resource_forwarded.contains(expr))
+                        })
+                })
+                .collect::<Vec<_>>();
             if facts
                 .scoped_callbacks
                 .get(&flow.symbol)
-                .is_none_or(|known| known.parameters != parameters)
+                .is_none_or(|known| {
+                    known.parameters != parameters
+                        || known.resource_boundaries != resource_boundaries
+                })
             {
                 facts.scoped_callbacks.insert(
                     flow.symbol,
                     ScopedCallbackFact {
                         parameters,
                         parameter_names: names(hir, &flow.params),
+                        resource_boundaries,
                     },
                 );
                 changed = true;
@@ -134,14 +182,48 @@ pub fn arguments(
     call: HirExprId,
     checked: Option<&CheckedMethodCallFact>,
 ) -> Vec<HirExprId> {
+    arguments_for(hir, facts, call, checked, false)
+}
+
+/// Checked callback results crossing a fresh resource boundary. Unlike task
+/// callbacks, these require an owner-relative resource escape proof.
+pub fn resource_arguments(
+    hir: &HirProgram,
+    facts: &TypeFacts,
+    call: HirExprId,
+    checked: Option<&CheckedMethodCallFact>,
+) -> Vec<HirExprId> {
+    arguments_for(hir, facts, call, checked, true)
+}
+
+fn slots(contract: &ScopedCallbackFact, resource: bool) -> &[u32] {
+    if resource {
+        &contract.resource_boundaries
+    } else {
+        &contract.parameters
+    }
+}
+
+fn arguments_for(
+    hir: &HirProgram,
+    facts: &TypeFacts,
+    call: HirExprId,
+    checked: Option<&CheckedMethodCallFact>,
+    resource: bool,
+) -> Vec<HirExprId> {
+    let external = if resource {
+        &facts.external_resource_boundaries
+    } else {
+        &facts.external_scoped_methods
+    };
     if let Some(checked) = checked {
         let slots = match &checked.target {
             crate::method::MethodTarget::Source { symbol, .. } => facts
                 .scoped_callbacks
                 .get(symbol)
-                .map(|fact| &fact.parameters),
+                .map(|fact| slots(fact, resource)),
             crate::method::MethodTarget::External { identity } => {
-                facts.external_scoped_methods.get(identity)
+                external.get(identity).map(Vec::as_slice)
             }
             _ => None,
         };
@@ -161,7 +243,9 @@ pub fn arguments(
             };
             bind_arguments(args, &contract.parameter_names)
                 .into_iter()
-                .filter_map(|(slot, expr)| contract.parameters.contains(&slot).then_some(expr))
+                .filter_map(|(slot, expr)| {
+                    slots(contract, resource).contains(&slot).then_some(expr)
+                })
                 .collect()
         }
         Some(HirExpr::MethodCall {
@@ -177,9 +261,9 @@ pub fn arguments(
                 crate::method::MethodTarget::Source { symbol, .. } => facts
                     .scoped_callbacks
                     .get(symbol)
-                    .map(|contract| &contract.parameters),
+                    .map(|contract| slots(contract, resource)),
                 crate::method::MethodTarget::External { identity } => {
-                    facts.external_scoped_methods.get(identity)
+                    external.get(identity).map(Vec::as_slice)
                 }
                 _ => None,
             };
@@ -293,9 +377,7 @@ fn use_domain(
             HirOwner::Body(body) => match body.kind {
                 HirBodyKind::Lambda(lambda) => return roots.contains(&lambda),
                 HirBodyKind::Flow | HirBodyKind::ImplFlow(_) => return allow_item,
-                HirBodyKind::MatchArm { expr, .. } | HirBodyKind::StageLimit { expr, .. } => {
-                    index.expr_owner.get(&expr).copied()
-                }
+                HirBodyKind::MatchArm { expr, .. } => index.expr_owner.get(&expr).copied(),
                 _ => return false,
             },
             _ => return false,

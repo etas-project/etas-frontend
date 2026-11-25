@@ -256,6 +256,28 @@ impl Parser<'_> {
         }
     }
 
+    /// An action head may begin with the same qualified path as a type.
+    /// Commit the type parse only when its next token is the arm arrow.
+    pub(crate) fn try_handler_type_head(&mut self) -> Option<crate::ast::TypeExpr> {
+        let mut probe = Self {
+            source: self.source,
+            cursor: self.cursor.clone(),
+            diagnostics: Vec::new(),
+            delimiters: self.delimiters.clone(),
+            record_expr_enabled: self.record_expr_enabled,
+            handler_with_enabled: self.handler_with_enabled,
+            suppress_next_handler_with: self.suppress_next_handler_with,
+            body_budget: self.body_budget,
+        };
+        let ty = probe.type_expr();
+        probe.cursor.eat_punct(Punct::FatArrow)?;
+        self.diagnostics.append(&mut probe.diagnostics);
+        self.cursor = probe.cursor;
+        self.delimiters = probe.delimiters;
+        self.body_budget = probe.body_budget;
+        Some(ty)
+    }
+
     pub(crate) fn param_list(&mut self) -> Vec<Param> {
         self.param_list_with_receiver(false)
     }

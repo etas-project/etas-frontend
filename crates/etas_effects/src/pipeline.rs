@@ -29,6 +29,8 @@ use context::{EffectPipelineContext, effect_pipeline};
     etas_core::RetainedSize,
 )]
 pub struct ExternalEffectSummaryMetadata {
+    #[serde(default)]
+    pub body_root: Option<u32>,
     /// Validated portable analysis for this exact declaration, when published.
     #[serde(default)]
     pub callable_contract: Option<ExternalCallableContract>,
@@ -89,6 +91,21 @@ pub struct ExternalCallableValueMetadata {
     pub action_trace: ExternalActionTraceMetadata,
 }
 
+/// Callable payload of a checked declaration default, in its defining scope.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalParameterDefaultMetadata {
+    pub owner_params: Vec<etas_types::CallableGenericParam>,
+    pub reference: etas_code::descriptor::ParameterDefaultInfo,
+    pub graph_key: etas_code::CodeFingerprint,
+    pub graph: etas_package_metadata::CallableValueGraph,
+    pub generics: Vec<(String, etas_types::CallableGenericParamKind)>,
+    pub arity: usize,
+    pub values: Vec<ExternalCallableValueMetadata>,
+    pub objects: Vec<ExternalExistentialValueMetadata>,
+}
+
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
@@ -119,6 +136,17 @@ pub struct ExternalSpecImplementationMetadata {
     pub objects: Vec<ExternalExistentialValueMetadata>,
     pub callable_contract: Option<ExternalCallableContract>,
     pub requirements: ExternalMethodRequirements,
+}
+
+impl ExternalSpecImplementationMetadata {
+    pub(crate) fn checked_body(&self) -> Option<&etas_package_metadata::CallableValueNode> {
+        let [etas_package_metadata::CallableValueSource::Value(root)] =
+            self.graph.sources.as_slice()
+        else {
+            return None;
+        };
+        self.graph.values.get(*root as usize)
+    }
 }
 
 #[derive(
@@ -272,6 +300,7 @@ pub struct ExternalEffectFootprintMetadata {
     pub requested_actions: ExternalEffectRowMetadata,
     pub default_actions: ExternalEffectRowMetadata,
     pub handled_actions: ExternalEffectRowMetadata,
+    pub required_authority: ExternalEffectRowMetadata,
     pub handler_requests: Option<ExternalRequestInstantiationMetadata>,
     pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub behavior: etas_package_metadata::CallableValueBehavior,
@@ -313,6 +342,10 @@ pub enum ExternalActionTraceMetadata {
     Seq(Vec<ExternalActionTraceMetadata>),
     Choice(Vec<ExternalActionTraceMetadata>),
     Repeat(Box<ExternalActionTraceMetadata>),
+    Recursive {
+        id: etas_code::CodeFingerprint,
+        body: Option<Box<ExternalActionTraceMetadata>>,
+    },
     UnknownOrder(Vec<ExternalEffectMetadata>),
     Widened {
         actions: Vec<ExternalEffectMetadata>,
@@ -469,6 +502,7 @@ pub struct ExternalTraceSpecEffectMetadata {
 
 #[derive(Clone, Copy, etas_core::RetainedSize)]
 pub struct EffectPipelineInput<'a> {
+    pub external_defaults: &'a [AnchoredExternalMetadata<ExternalParameterDefaultMetadata>],
     pub source_snapshots: &'a [EffectSourceSnapshot<'a>],
     pub residual_identity: Option<&'a dyn crate::ResidualIdentityProvider>,
     /// Checked canonical projection used to lower residual monitor plans.
@@ -534,6 +568,7 @@ pub(crate) fn validate_source_snapshot_identities(
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectPipelineArtifacts {
+    pub external_defaults: Vec<ExternalParameterDefaultMetadata>,
     pub external_implementations: Vec<ExternalSpecImplementationMetadata>,
     pub registry: std::sync::Arc<EffectRegistry>,
     pub dependency_metadata: DependencyEffectMetadata,
@@ -905,6 +940,7 @@ mod tests {
             ],
         ] {
             let input = EffectPipelineInput {
+                external_defaults: &[],
                 external_implementations: &[],
                 source_snapshots: &snapshots,
                 residual_identity: None,
@@ -943,6 +979,7 @@ mod tests {
         )
         .unwrap();
         let graph = CallableValueGraph {
+            call_inputs: Vec::new(),
             source_projections: Vec::new(),
             parameter_projections: Vec::new(),
             objects: Vec::new(),
@@ -952,6 +989,7 @@ mod tests {
                 residual_checks: vec![reference],
                 handler_requests: Some(Default::default()),
                 behavior: CallableValueBehavior {
+                    suspension: None,
                     determinism: CallableValueDeterminism::Deterministic,
                     independent_determinism: Some(CallableValueDeterminism::Deterministic),
                     host_requirements: vec![],
@@ -991,6 +1029,7 @@ mod tests {
             ),
         }];
         let input = EffectPipelineInput {
+            external_defaults: &[],
             external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
@@ -1033,6 +1072,7 @@ mod tests {
             let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
             let types = TypeOutput::default();
             let input = EffectPipelineInput {
+                external_defaults: &[],
                 source_snapshots: &[],
                 residual_identity: None,
                 trace_monitor_projector: None,
@@ -1078,6 +1118,7 @@ mod tests {
         let types = TypeOutput::default();
         let registry = etas_std::standard_registry();
         let input = EffectPipelineInput {
+            external_defaults: &[],
             external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
@@ -1135,6 +1176,7 @@ mod tests {
         let types = TypeOutput::default();
         let registry = etas_std::standard_registry();
         let input = EffectPipelineInput {
+            external_defaults: &[],
             external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
@@ -1252,6 +1294,7 @@ mod tests {
             let types = TypeOutput::default();
             let registry = etas_std::standard_registry();
             let input = EffectPipelineInput {
+                external_defaults: &[],
                 external_implementations: &[],
                 source_snapshots: &[],
                 residual_identity: None,
@@ -1348,6 +1391,7 @@ mod tests {
         let types = TypeOutput::default();
         let registry = etas_std::standard_registry();
         let input = EffectPipelineInput {
+            external_defaults: &[],
             source_snapshots: &[],
             residual_identity: None,
             trace_monitor_projector: None,

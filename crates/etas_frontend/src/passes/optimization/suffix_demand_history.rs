@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use etas_hir::{
-    HirArg, HirBlockId, HirExpr, HirExprId, HirLiteral, HirPat, HirPatId, HirRevision, HirStmt,
-    HirStmtId, HirTreeChild, ResolveResult, SymbolDef,
+    HirBlockId, HirExpr, HirExprId, HirPat, HirPatId, HirRevision, HirStmt, HirStmtId,
+    HirTreeChild, ResolveResult, SymbolDef,
 };
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult, PassScope,
@@ -107,7 +107,6 @@ fn find_replacements(
             let HirStmt::For {
                 pat,
                 iter,
-                limits,
                 body,
                 span,
             } = &program.stmts[*statement]
@@ -131,7 +130,6 @@ fn find_replacements(
             if !elements
                 .iter()
                 .all(|element| matches!(program.exprs[*element], HirExpr::Literal(_)))
-                || !iteration_limit_covers(program, limits, elements.len())
             {
                 continue;
             }
@@ -174,9 +172,6 @@ fn find_replacements(
 
             let preserved = HashSet::from([last, target]);
             let mut expressions = expression_tree(revision, *iter);
-            for limit in limits {
-                expressions.extend(expression_tree(revision, *limit));
-            }
             expressions.extend(expression_tree(revision, value));
             expressions.retain(|expression| !preserved.contains(expression));
             expressions.sort_unstable_by_key(|expression| expression.0);
@@ -197,37 +192,6 @@ fn find_replacements(
         }
     }
     replacements
-}
-
-fn iteration_limit_covers(
-    program: &etas_hir::HirProgram,
-    limits: &[HirExprId],
-    element_count: usize,
-) -> bool {
-    let [limit] = limits else {
-        return false;
-    };
-    let HirExpr::Call {
-        callee,
-        generic_args,
-        args,
-        ..
-    } = &program.exprs[*limit]
-    else {
-        return false;
-    };
-    let HirExpr::Path(path) = &program.exprs[*callee] else {
-        return false;
-    };
-    let [HirArg::Positional(count)] = args.as_slice() else {
-        return false;
-    };
-    let HirExpr::Literal(HirLiteral::Int { text, .. }) = &program.exprs[*count] else {
-        return false;
-    };
-    generic_args.is_empty()
-        && path.segments.last().map(|segment| segment.name.as_str()) == Some("Iterations")
-        && text.parse::<usize>().expect("checked integer literal") >= element_count
 }
 
 fn expression_tree(revision: &HirRevision, root: HirExprId) -> Vec<HirExprId> {

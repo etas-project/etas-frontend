@@ -21,7 +21,7 @@ pub enum EffectStage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectPipelineError {
     /// The type phase must intern this solved request ABI before analysis resumes.
-    TypeMaterializationRequired(etas_types::Type),
+    TypeMaterializationRequired(Vec<etas_types::Type>),
     InvalidSourceIdentity {
         source: etas_core::SourceId,
         reason: String,

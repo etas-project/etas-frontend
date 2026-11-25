@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn recursive_source_functions_keep_a_finite_ordered_trace_equation() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module app;
+effect Audit { action begin() -> unit; action end() -> unit; }
+flow nested(n: i32) -> unit ![Audit.begin, Audit.end] {
+    if n == 0 { return; }
+    perform Audit.begin();
+    nested(n - 1);
+    perform Audit.end();
+    return;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let trace = &output.facts.item_effects[&flow_item(&hir, "nested")].action_trace;
+    assert!(matches!(
+        trace.structure(),
+        ActionTraceDomain::Recursive { body: Some(_), .. }
+    ));
+    assert_eq!(trace.action_set().len(), 2);
+}
+
+#[test]
 fn trace_analysis_rejects_forged_source_spec_instances() {
     use etas_effects::trace_spec::{
         TraceSpecAnalysisInput, analyze_trace_spec_monitors, materialize_trace_spec_models,

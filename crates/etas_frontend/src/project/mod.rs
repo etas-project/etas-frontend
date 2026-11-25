@@ -1,6 +1,8 @@
 mod callable_application;
 mod callable_graph;
 mod method_requirements;
+mod storage_layout;
+pub use storage_layout::{StorageLayoutDescription, StorageLayoutDescriptionError};
 pub use callable_application::{
     AppliedCallableBehavior, CallableApplicationError, CallableBehaviorError,
     CheckedCallableApplication,

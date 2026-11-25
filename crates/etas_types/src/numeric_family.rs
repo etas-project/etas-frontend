@@ -22,30 +22,60 @@ pub fn primitive(primitive: PrimitiveType) -> bool {
     )
 }
 
-pub fn is_number_spec(facts: &SpecFacts, spec: &CheckedSpecRef) -> bool {
-    let path_is_number = |path: &[String]| path == ["std", "math", "Number"];
-    match spec {
-        CheckedSpecRef::Std(path) => path_is_number(path),
-        CheckedSpecRef::Source(symbol) => facts
-            .std_spec_aliases
-            .get(symbol)
-            .is_some_and(|path| path_is_number(path)),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    Number,
+    Integer,
+    Float,
+}
+
+pub fn spec_family(facts: &SpecFacts, spec: &CheckedSpecRef) -> Option<Family> {
+    let path = match spec {
+        CheckedSpecRef::Std(path) => Some(path),
+        CheckedSpecRef::Source(symbol) => facts.std_spec_aliases.get(symbol),
         CheckedSpecRef::External(identity) => {
-            facts.external_aliases.iter().any(|(symbol, candidate)| {
-                candidate == identity
-                    && facts
-                        .std_spec_aliases
-                        .get(symbol)
-                        .is_some_and(|path| path_is_number(path))
-            })
+            if facts.external_std_specs.contains_key(identity) {
+                Some(&identity.path)
+            } else {
+                facts
+                    .external_aliases
+                    .iter()
+                    .find_map(|(symbol, candidate)| {
+                        (candidate == identity)
+                            .then(|| facts.std_spec_aliases.get(symbol))
+                            .flatten()
+                    })
+            }
         }
-        CheckedSpecRef::Canonical(_) => false,
+        CheckedSpecRef::Canonical(identity) => facts.canonical_std_specs.get(identity),
+    }?;
+    if path.len() != 3 || path[0] != "std" || path[1] != "math" {
+        return None;
+    }
+    match path[2].as_str() {
+        "Number" => Some(Family::Number),
+        "Integer" => Some(Family::Integer),
+        "Float" => Some(Family::Float),
+        _ => None,
     }
 }
 
+pub fn is_number_spec(facts: &SpecFacts, spec: &CheckedSpecRef) -> bool {
+    spec_family(facts, spec) == Some(Family::Number)
+}
+
 pub fn supports(store: &TypeStore, facts: &SpecFacts, ty: TypeId) -> bool {
+    supports_family(store, facts, ty, Family::Number)
+}
+
+pub fn supports_family(store: &TypeStore, facts: &SpecFacts, ty: TypeId, target: Family) -> bool {
     if let Some(Type::Primitive(kind)) = store.get(ty) {
-        return primitive(*kind);
+        return primitive(*kind)
+            && match target {
+                Family::Number => true,
+                Family::Integer => !matches!(kind, PrimitiveType::F32 | PrimitiveType::F64),
+                Family::Float => matches!(kind, PrimitiveType::F32 | PrimitiveType::F64),
+            };
     }
     let Some(Type::Named(name)) = store.get(ty) else {
         return false;
@@ -65,7 +95,9 @@ pub fn supports(store: &TypeStore, facts: &SpecFacts, ty: TypeId) -> bool {
         if !seen.insert(spec.clone()) {
             continue;
         }
-        if is_number_spec(facts, &spec) {
+        if spec_family(facts, &spec)
+            .is_some_and(|family| family == target || target == Family::Number)
+        {
             return true;
         }
         match spec {

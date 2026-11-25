@@ -16,16 +16,16 @@ flow audit_complete(log: string) -> bool {
 flow main() -> string {
     let projection = qualify_projection("memory_entries");
     var audit = "";
-    for stage in ["load", "decode", "validate", "project", "publish"] limit Iterations(5) {
+    for stage in ["load", "decode", "validate", "project", "publish"] {
         audit = append_audit(audit, projection + ":" + stage);
     }
 
     var identifiers = "";
     var metadata = "";
-    for record in ["memory_entries-01", "memory_entries-02", "memory_entries-03", "memory_entries-04", "memory_entries-05", "memory_entries-06", "memory_entries-07", "memory_entries-08"] limit Iterations(8) {
+    for record in ["memory_entries-01", "memory_entries-02", "memory_entries-03", "memory_entries-04", "memory_entries-05", "memory_entries-06", "memory_entries-07", "memory_entries-08"] {
         identifiers = identifiers + record;
     }
-    for descriptor in ["memory_entries-01", "memory_entries-02", "memory_entries-03", "memory_entries-04", "memory_entries-05", "memory_entries-06", "memory_entries-07", "memory_entries-08"] limit Iterations(8) {
+    for descriptor in ["memory_entries-01", "memory_entries-02", "memory_entries-03", "memory_entries-04", "memory_entries-05", "memory_entries-06", "memory_entries-07", "memory_entries-08"] {
         metadata = metadata + descriptor;
     }
 

@@ -45,6 +45,7 @@ impl LowerCtx {
                     );
                     return self.alloc_expr(
                         HirExpr::Record(HirRecordExpr {
+                            injections: None,
                             path: Some(path),
                             generic_args: Vec::new(),
                             span,
@@ -146,6 +147,7 @@ impl LowerCtx {
                 HirExpr::Reflect(Box::new(self.lower_reflection(reflection, scope, item_id)))
             }
             Expr::Record(record) => HirExpr::Record(HirRecordExpr {
+                injections: None,
                 path: record
                     .path
                     .as_ref()
@@ -781,11 +783,6 @@ impl LowerCtx {
     ) -> HirStage {
         HirStage {
             expr: self.lower_expr(&stage.expr, scope, item_id),
-            limits: stage
-                .limits
-                .iter()
-                .map(|limit| self.lower_expr(limit, scope, item_id))
-                .collect(),
             span: stage.span,
         }
     }

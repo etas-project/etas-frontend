@@ -18,7 +18,17 @@ pub(crate) fn take_obligations(
     let (mut obligations, mut validations) = super::existential::take_obligations(ctx);
     for application in std::mem::take(&mut ctx.type_applications) {
         let parameters = match ctx.symbol_fact(application.symbol) {
-            Some(SymbolTypeFact::Agent { .. }) => Vec::new(),
+            Some(SymbolTypeFact::Agent { signature }) => {
+                let Some(parameters) = ctx.type_generics(signature.component) else {
+                    validations.push(ValidationRequest::Diagnostic {
+                        code: TypeDiagnosticCode::IncompleteTypeFacts,
+                        span: application.span,
+                        message: "agent type application is missing its checked generic declaration".into(),
+                    });
+                    continue;
+                };
+                parameters.clone()
+            }
             Some(SymbolTypeFact::TypeAlias { params, .. }) => params.clone(),
             Some(SymbolTypeFact::Flow { signature })
                 if ctx.symbols.canonical_symbol(ctx.hir, application.symbol)

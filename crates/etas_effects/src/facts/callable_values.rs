@@ -27,6 +27,11 @@ pub enum CallableGenericParameter {
         scope: etas_package_metadata::CallableValueScope,
         position: u32,
     },
+    /// Checked binder identity retained when portable method evidence crosses
+    /// a callable's local generic interface.
+    TypeParameter {
+        subject: etas_types::TypeId,
+    },
 }
 
 #[derive(
@@ -121,6 +126,45 @@ pub struct NativeParameterProjection {
     pub parameter: SymbolId,
     pub path: Vec<etas_code::descriptor::ValueProjectionStep>,
     pub ty: etas_types::TypeId,
+    #[serde(default)]
+    pub call_inputs: BTreeMap<u32, std::sync::Arc<NativeCallInputs>>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct NativeCallInputs {
+    pub call: HirExprId,
+    /// Lexical instance of a native application equation; portable imports
+    /// retain immutable recipes until their own graph equations are rebound.
+    #[serde(default)]
+    pub scope: Option<crate::EffectUnit>,
+    /// Stable application frame, distinct from the shared callable template.
+    #[serde(default)]
+    pub context: Option<CodeFingerprint>,
+    /// Body equations join alternatives at the checked application site.
+    /// Contextual equations store derived evaluations; portable recipes are
+    /// immutable, content-addressed values.
+    #[serde(default)]
+    pub joined: bool,
+    pub arguments: Vec<NativeCallArgument>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct NativeCallArgument {
+    pub name: Option<String>,
+    pub sources: BTreeSet<CallableValueOrigin>,
+    pub projections: Vec<NativeArgumentProjection>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct NativeArgumentProjection {
+    pub path: Vec<etas_code::descriptor::ValueProjectionStep>,
+    pub sources: BTreeSet<CallableValueOrigin>,
 }
 
 /// A parameter selector in an imported contract. Its input is supplied by the
@@ -144,9 +188,17 @@ impl ExternalParameterProjection {
 
 impl NativeParameterProjection {
     pub fn identity(&self) -> Result<CodeFingerprint, serde_json::Error> {
+        Self::path_identity(self.owner, self.parameter, &self.path)
+    }
+
+    pub fn path_identity(
+        owner: HirItemId,
+        parameter: SymbolId,
+        path: &[etas_code::descriptor::ValueProjectionStep],
+    ) -> Result<CodeFingerprint, serde_json::Error> {
         Ok(CodeFingerprint::of_bytes(
             "etas.effects.parameter-projection.v1",
-            &serde_json::to_vec(&(self.owner, self.parameter, &self.path))?,
+            &serde_json::to_vec(&(owner, parameter, path))?,
         ))
     }
 }
@@ -191,8 +243,32 @@ impl MetadataSpecMethodDefinition {
     etas_core::RetainedSize,
 )]
 pub struct CallableEnvironmentId {
+    #[serde(default)]
+    pub scope: Option<CodeFingerprint>,
     pub origin: CodeFingerprint,
     pub application: CodeFingerprint,
+    /// The original lexical application retained when this frame is rebound.
+    /// Definition templates and executed invocations keep distinct identities
+    /// without accumulating a hash of the intervening call history.
+    #[serde(default)]
+    pub instance: Option<CodeFingerprint>,
+    /// Fully substituted checked generics, independent of invocation history.
+    #[serde(default)]
+    pub generic_context: Option<CodeFingerprint>,
+}
+
+impl CallableEnvironmentId {
+    pub(crate) fn lexical_instance(self) -> CodeFingerprint {
+        self.instance.unwrap_or_else(|| {
+            CodeFingerprint::of_parts(
+                "etas.effects.lexical-frame-instance.v1",
+                [
+                    self.origin.as_bytes().as_slice(),
+                    self.application.as_bytes().as_slice(),
+                ],
+            )
+        })
+    }
 }
 
 #[derive(
@@ -279,14 +355,40 @@ pub enum CallableReferenceAnalysis {
 )]
 pub struct CallableEnvironment {
     pub owner: HirItemId,
+    /// Creation identity carried across invocations. Argument equations belong
+    /// to the frame, rather than recursively becoming part of its identity.
+    #[serde(default)]
+    pub invocation_origin: Option<CodeFingerprint>,
+    /// Contributions to a shared invocation frame, indexed by the stable input
+    /// equation. Refining one equation must not overwrite another caller.
+    #[serde(default)]
+    pub invocation_inputs:
+        BTreeMap<CodeFingerprint, BTreeMap<ParameterCallTarget, BTreeSet<CallableValueOrigin>>>,
     pub parameters: BTreeMap<ParameterCallTarget, BTreeSet<CallableValueOrigin>>,
     pub generics: BTreeMap<CallableGenericParameter, CallableGenericValue>,
 }
 
 impl CallableEnvironment {
+    pub(crate) fn generic_identity(
+        generics: &BTreeMap<CallableGenericParameter, CallableGenericValue>,
+    ) -> Option<CodeFingerprint> {
+        if generics.is_empty() {
+            return None;
+        }
+        let bytes = serde_json::to_vec(&generics.iter().collect::<Vec<_>>())
+            .expect("checked generic context serializes");
+        Some(CodeFingerprint::of_bytes(
+            "etas.effects.frame-generics.v1",
+            &bytes,
+        ))
+    }
+
     pub(crate) fn join_assign(&mut self, other: &Self) -> Result<bool, &'static str> {
         if self.owner != other.owner {
             return Err("callable environment has conflicting checked owners");
+        }
+        if self.invocation_origin != other.invocation_origin {
+            return Err("callable environment has conflicting invocation origins");
         }
         let mut changed = false;
         for (parameter, value) in &other.generics {
@@ -308,5 +410,38 @@ impl CallableEnvironment {
             changed |= before != entry.len();
         }
         Ok(changed)
+    }
+}
+
+impl NativeCallInputs {
+    /// Persist the checked equation identity, not its session-local table slot.
+    pub(crate) fn equation_identity(&self) -> CodeFingerprint {
+        if self.joined {
+            let bytes = serde_json::to_vec(&(self.scope, self.context, self.call))
+                .expect("checked input equation serializes");
+            CodeFingerprint::of_bytes("etas.effects.joined-call-inputs.v1", &bytes)
+        } else {
+            let bytes = serde_json::to_vec(self).expect("checked input recipe serializes");
+            CodeFingerprint::of_bytes("etas.effects.call-inputs.v1", &bytes)
+        }
+    }
+
+    pub(crate) fn nodes(&self) -> usize {
+        self.arguments.iter().fold(0usize, |count, argument| {
+            count
+                .saturating_add(
+                    1 + argument.name.as_ref().map_or(0, String::len) + argument.sources.len(),
+                )
+                .saturating_add(
+                    argument
+                        .projections
+                        .iter()
+                        .map(|projection| {
+                            1 + etas_code::descriptor::ValueProjectionStep::work(&projection.path)
+                                + projection.sources.len()
+                        })
+                        .sum::<usize>(),
+                )
+        })
     }
 }

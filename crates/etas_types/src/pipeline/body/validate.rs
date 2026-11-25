@@ -9,6 +9,29 @@ mod writable_place;
 
 pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &BodyPipelineState) {
     tool_reference::validate(ctx, state);
+    if let Some(receiver) = ctx.hir.member_tool_receiver(state.item) {
+        let field_bases = state
+            .provisional
+            .expr_types
+            .keys()
+            .filter_map(|expr| match ctx.hir.exprs.get(*expr) {
+                Some(etas_hir::HirExpr::Field { base, .. }) => Some(*base),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        for expr in state.provisional.expr_types.keys() {
+            if let Some(etas_hir::HirExpr::Path(path)) = ctx.hir.exprs.get(*expr)
+                && path.resolution == etas_hir::ResolveResult::Resolved(receiver)
+                && !field_bases.contains(expr)
+            {
+                ctx.diagnostics.push(Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    path.span,
+                    "use a member tool's self snapshot through its stored fields",
+                ));
+            }
+        }
+    }
     for failure in &state.solver_report.failures {
         ctx.diagnostics.push(diagnostic_for_solver_failure(failure));
     }

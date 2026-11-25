@@ -9,7 +9,7 @@ use crate::{
     facts::{CallableEnvironment, CallableGenericParameter, CallableGenericValue},
 };
 use etas_package_metadata::{CallableValueSource, ExistentialWitnessTarget};
-use etas_types::{Type, TypeSubstitutionEngine, method::MethodTarget};
+use etas_types::{Type, method::MethodTarget};
 
 fn invalid(reason: &str) -> EffectSpecializationError {
     EffectSpecializationError::InvalidCallableEnvironment {
@@ -42,6 +42,8 @@ impl EffectSemantics<'_> {
         let packed = match source.environment {
             Some(environment) => self.callable_environment(environment)?,
             None => CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: input.snapshot.owner,
                 parameters: Default::default(),
                 generics: Default::default(),
@@ -67,9 +69,7 @@ impl EffectSemantics<'_> {
             }
         }
         let rows = self.type_row_arguments(&rows, Some(packed.owner))?;
-        let mut substitution =
-            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &names)
-                .with_effect_arguments(&rows);
+        let mut substitution = self.type_substitution(&names).with_effect_arguments(&rows);
         let source_type = substitution.substitute(checked.source_type)?;
         let mut selected = None;
         for witness in &checked.witnesses {

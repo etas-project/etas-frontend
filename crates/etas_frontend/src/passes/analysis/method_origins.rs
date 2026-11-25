@@ -72,7 +72,21 @@ impl Pass<ProjectContext> for BindMethodOriginsPass {
             );
         };
         let mut origins = HashMap::new();
-        if !signatures.facts.external_methods.is_empty()
+        if (!signatures.facts.external_methods.is_empty()
+            || (hir.hir.source_standard_types
+                && [
+                    etas_std::SOURCE_VALUE_EQUALITY_METHOD,
+                    etas_std::SOURCE_STORAGE_VIEW,
+                    etas_std::SOURCE_STORAGE_BUILD,
+                ]
+                .into_iter()
+                .any(|name| {
+                    signatures
+                        .facts
+                        .methods
+                        .member(name)
+                        .any(|(_, method)| !method.public)
+                })))
             && signatures.facts.methods.entries().any(|method| {
                 matches!(
                     method.target,

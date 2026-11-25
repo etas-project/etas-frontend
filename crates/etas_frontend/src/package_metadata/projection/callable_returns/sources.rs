@@ -104,7 +104,9 @@ impl Builder<'_, '_> {
                                         _ => return Ok(None),
                                     };
                                     self.target_parameter(target, scope)?
-                                        .map(|root| self.with_projection(root, &projection.path))
+                                        .map(|root| {
+                                            self.with_projection(root, &projection.path, scope)
+                                        })
                                         .transpose()
                                 })
                                 .collect::<Result<Option<Vec<_>>, PackageMetadataError>>()?;
@@ -300,8 +302,21 @@ impl Builder<'_, '_> {
         instance: Instance,
         scope: CallableValueScope,
     ) -> Result<u32, PackageMetadataError> {
-        if let Some(index) = self.units.get(&instance) {
-            return Ok(*index);
+        if let Some(index) = self.units.get(&instance).copied() {
+            let previous = *self
+                .parents
+                .get(&index)
+                .ok_or_else(|| invalid("shared callable has no lexical parent"))?;
+            let parent = self.common_scope(previous, scope)?;
+            if parent != previous {
+                self.parents.insert(index, parent);
+                if self.values[index as usize].is_some() {
+                    // Shared captures belong to the common lexical ancestor of
+                    // their uses. Re-project any node lowered before this lift.
+                    self.pending.push(Pending::Native(index, instance));
+                }
+            }
+            return Ok(index);
         }
         if self.values.len() >= etas_package_metadata::MAX_METADATA_GRAPH_NODES {
             return Err(invalid("callable value graph exceeds metadata node budget"));
@@ -329,6 +344,41 @@ impl Builder<'_, '_> {
             });
         self.pending.push(Pending::Native(index, instance));
         Ok(index)
+    }
+
+    fn common_scope(
+        &self,
+        left: CallableValueScope,
+        mut right: CallableValueScope,
+    ) -> Result<CallableValueScope, PackageMetadataError> {
+        let mut ancestors = BTreeSet::new();
+        let mut current = left;
+        loop {
+            if !ancestors.insert(current) {
+                return Err(invalid("callable lexical parents are cyclic"));
+            }
+            current = match current {
+                CallableValueScope::Root => break,
+                CallableValueScope::Value(index) => *self
+                    .parents
+                    .get(&index)
+                    .ok_or_else(|| invalid("callable lexical parent is missing"))?,
+            };
+        }
+        let mut visited = BTreeSet::new();
+        while visited.insert(right) {
+            if ancestors.contains(&right) {
+                return Ok(right);
+            }
+            right = match right {
+                CallableValueScope::Root => break,
+                CallableValueScope::Value(index) => *self
+                    .parents
+                    .get(&index)
+                    .ok_or_else(|| invalid("callable lexical parent is missing"))?,
+            };
+        }
+        Err(invalid("callable lexical parents have no common root"))
     }
 }
 

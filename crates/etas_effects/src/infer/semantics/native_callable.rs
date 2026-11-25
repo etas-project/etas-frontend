@@ -230,16 +230,21 @@ impl EffectSemantics<'_> {
         if parameters.is_empty() && generics.is_empty() {
             return Ok(LatentSource::Unit(unit));
         }
-        let id = CallableEnvironmentId {
-            origin: self.callable_environment_site(value)?,
-            application: self.callable_environment_site(application)?,
-        };
         let owner = state
             .owner
             .ok_or_else(|| invalid("captured callable has no current checked owner"))?;
+        let id = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(owner)?),
+            origin: self.callable_environment_site(value)?,
+            application: self.callable_environment_site(application)?,
+        };
         self.record_callable_environment(
             id,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner,
                 parameters,
                 generics,
@@ -283,6 +288,18 @@ impl EffectSemantics<'_> {
             .collect::<TraceArgumentBindings>();
         let mut invocation_state = EffectState::for_unit(unit);
         invocation_state.owner = Some(snapshot.owner);
+        invocation_state.application = Some(Self::callable_invocation_context(environment));
+        let mut symbolic_parameters = self
+            .unit_params(unit)
+            .ok_or_else(|| invalid("captured callable has no checked parameter interface"))?
+            .into_iter()
+            .map(ParameterCallTarget::Native)
+            .collect::<BTreeSet<_>>();
+        if mode == CallableSummaryMode::Descriptor
+            && matches!(unit, EffectUnit::AnonymousFlow { .. })
+        {
+            symbolic_parameters.extend(self.lexical_callable_parameters(unit)?);
+        }
         self.bind_spec_method_arguments(
             &template,
             &mut bindings,
@@ -293,12 +310,32 @@ impl EffectSemantics<'_> {
                 parameters: Some(&type_parameters),
                 rows: &rows,
             },
-            &mut BTreeSet::new(),
+            &mut symbolic_parameters,
+            true,
         )?;
         if mode == CallableSummaryMode::Descriptor {
             let remap = |sources: &mut BTreeSet<crate::CallableReturnSource>| -> Result<(), EffectSpecializationError> {
                 let mapped = sources.iter().map(|source| {
                     use crate::CallableReturnSource as S;
+                    if let S::Projection(id) = source {
+                        let projection = self.parameter_projection(*id).ok_or_else(|| invalid("returned callback projection is missing"))?;
+                        let target = ParameterCallTarget::Projection(*id);
+                        let actual_application = !projection.call_inputs.is_empty();
+                        if bindings.contains_key(&target) || bindings.contains_key(&ParameterCallTarget::Native(projection.parameter)) {
+                            if let Some(binding) = self.trace_argument(target, "captured returned payload", &bindings, &invocation_state)?
+                                && (actual_application || matches!(&binding, TraceArgumentBinding::Origins(origins) if !origins.iter().any(|origin| matches!(origin, LatentSource::Unavailable { .. }))))
+                            {
+                                let origins = if let Some(application) = projection.call_inputs.values().next().map(|inputs| inputs.call) {
+                                    self.trace_argument_origins_at(&binding, &invocation_state, application)?
+                                } else if let TraceArgumentBinding::ProjectedOrigins { sources, path } = &binding {
+                                    self.descriptor_projected_origins(sources, path, &invocation_state).ok_or_else(|| invalid("captured returned payload has no checked selected origins"))?
+                                } else { self.trace_argument_origins(&binding, &invocation_state)? };
+                                let origins = origins.into_iter().collect::<Vec<_>>();
+                                return self.returned_callable_sources(&invocation_state, &origins)
+                                    .ok_or_else(|| invalid(&format!("captured callback result {id} has unavailable checked origins: {:?}", origins.iter().take(8).collect::<Vec<_>>())));
+                            }
+                        }
+                    }
                     let mut source = source.clone();
                     let captured = match &mut source {
                         S::Captured { environment, .. } | S::Existential { environment, .. } => Some(environment),
@@ -316,9 +353,9 @@ impl EffectSemantics<'_> {
                             },
                         )?;
                     }
-                    Ok(source)
-                }).collect::<Result<BTreeSet<_>, EffectSpecializationError>>()?;
-                *sources = mapped;
+                    Ok(BTreeSet::from([source]))
+                }).collect::<Result<Vec<_>, EffectSpecializationError>>()?;
+                *sources = mapped.into_iter().flatten().collect();
                 Ok(())
             };
             if let Some(exits) = &mut template.exits {
@@ -342,6 +379,15 @@ impl EffectSemantics<'_> {
                 }
             }
         }
+        // The suspension and metadata passes consume the same checked capture
+        // facts; retain projected invocation bindings resolved above.
+        let mut captured_facts = self.callable_environment(environment)?;
+        for (target, binding) in &bindings {
+            if let TraceArgumentBinding::Origins(origins) = binding {
+                captured_facts.parameters.insert(*target, origins.clone());
+            }
+        }
+        self.record_callable_environment(environment, captured_facts)?;
         let bindings = bindings
             .into_iter()
             .map(|(target, binding)| match binding {
@@ -351,16 +397,6 @@ impl EffectSemantics<'_> {
                 )),
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let own_parameters = self
-            .unit_params(unit)
-            .ok_or_else(|| invalid("captured callable has no checked parameter interface"))?;
-        let mut symbolic_parameters = own_parameters
-            .into_iter()
-            .map(ParameterCallTarget::Native)
-            .collect::<BTreeSet<_>>();
-        if mode == CallableSummaryMode::Descriptor {
-            symbolic_parameters.extend(self.lexical_callable_parameters(unit)?);
-        }
         Ok(CallableSummaryPlan::Captured(
             CallableSummaryInstantiation {
                 template,

@@ -3,10 +3,7 @@ use std::collections::BTreeSet;
 use etas_code::descriptor::ValueProjectionStep as Step;
 use etas_hir::{HirAnnotationArg, HirHandlerArmId, HirItem, HirPatId, SymbolId};
 
-use super::{
-    engine::{EffectSemantics, annotation_name},
-    shared::*,
-};
+use super::{engine::EffectSemantics, shared::*};
 
 pub(super) enum ModelToolSource {
     Item(HirItemId),
@@ -135,7 +132,7 @@ impl EffectSemantics<'_> {
     pub(super) fn tool_invocation_agent(
         &self,
         expr: HirExprId,
-    ) -> Result<Option<HirItemId>, String> {
+    ) -> Result<Option<(HirItemId, HirItemId)>, String> {
         let Some(context) = self.tool_invocation_context(expr)? else {
             return Ok(None);
         };
@@ -148,7 +145,7 @@ impl EffectSemantics<'_> {
             .facts
             .agent_methods
             .get(method)
-            .map(|method| Some(method.agent))
+            .map(|method| Some((method.agent, method.body)))
             .ok_or_else(|| "tool invocation context has no checked method".into())
     }
 
@@ -166,14 +163,13 @@ impl EffectSemantics<'_> {
                 return self.portable_agent_tool_summary(method, span);
             }
         };
-        let agent = self
+        let method = self
             .types
             .facts
             .agent_methods
             .get(method)
-            .ok_or("tool invocation context has no checked method")?
-            .agent;
-        self.agent_tool_choices(agent, span)
+            .ok_or("tool invocation context has no checked method")?;
+        self.agent_tool_choices(method.agent, method.body, span)
     }
 
     fn portable_agent_tool_summary(
@@ -280,10 +276,15 @@ impl EffectSemantics<'_> {
         Ok(())
     }
 
-    fn agent_tool_choices(&self, agent: HirItemId, span: Span) -> Result<EffectSummary, String> {
+    fn agent_tool_choices(
+        &self,
+        agent: HirItemId,
+        method: HirItemId,
+        span: Span,
+    ) -> Result<EffectSummary, String> {
         let mut choices = EffectSummary::local();
         for tool in self
-            .agent_model_tools(agent)
+            .agent_model_tools(agent, method)
             .ok_or("agent tool surface is missing checked facts")?
         {
             let tool = match tool {
@@ -301,13 +302,14 @@ impl EffectSemantics<'_> {
         }
         Ok(choices)
     }
-    pub(super) fn agent_model_tools(&self, agent: HirItemId) -> Option<Vec<ModelToolSource>> {
+    pub(super) fn agent_model_tools(
+        &self,
+        agent: HirItemId,
+        method: HirItemId,
+    ) -> Option<Vec<ModelToolSource>> {
         let mut tools = Vec::new();
         let mut symbols = BTreeSet::new();
-        for annotation in self.hir.item_annotations.get(&agent).into_iter().flatten() {
-            if annotation_name(annotation) != "tools" {
-                continue;
-            }
+        if let Some(annotation) = self.hir.agent_tools_annotation(agent, method) {
             for arg in &annotation.args {
                 let value = match arg {
                     HirAnnotationArg::Positional { value, .. } => *value,
@@ -380,9 +382,31 @@ impl EffectSemantics<'_> {
             ],
         });
         summary.record_requested_action(effect.clone());
+        let infer = self
+            .types
+            .facts
+            .action_signatures
+            .get(&fact.action_symbol)?;
+        let [context, output] = infer.generic_params.as_slice() else {
+            return None;
+        };
+        let [prompt, _] = infer.params.as_slice() else {
+            return None;
+        };
+        summary.handler_requests = crate::RequestInstantiationSummary::action(
+            effect.clone(),
+            vec![
+                (context.name.clone(), controller.context),
+                (output.name.clone(), fact.output),
+            ],
+            etas_types::ActionRequestSignature {
+                params: vec![*prompt, fact.schema],
+                output: fact.output,
+            },
+        );
         summary.record_default_handled_action(effect.clone());
         summary.record_action_trace_event(effect.clone(), span, crate::ActionEventSource::Perform);
-        let tool_choices = self.agent_tool_choices(fact.agent, span).ok()?;
+        let tool_choices = self.agent_tool_choices(fact.agent, fact.owner, span).ok()?;
         let signature = self
             .registry
             .compiler_action(self.std_registry, etas_std::CompilerActionRole::AgentStep)?;

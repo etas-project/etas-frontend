@@ -116,7 +116,7 @@ fn assert_owner_effects(source: &str, entries: &[&str]) {
         let expected = [owner.clone(), local.clone()].into_iter().collect();
         assert_eq!(summary.escaping_effects.effects, expected, "{name}");
         assert_eq!(summary.requested_actions.effects, expected, "{name}");
-        let ActionTraceDomain::Seq(events) = &summary.action_trace else {
+        let ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
             panic!("ordered calls for {name}: {:?}", summary.action_trace);
         };
         assert!(
@@ -156,7 +156,7 @@ fn method_chains_follow_checked_bodies_and_keep_effect_trace_order() {
             .collect();
         assert_eq!(summary.escaping_effects.effects, expected);
         assert_eq!(summary.requested_actions.effects, expected);
-        let ActionTraceDomain::Seq(events) = &summary.action_trace else {
+        let ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
             panic!(
                 "expected the selected bodies' sequential trace: {:?}",
                 summary.action_trace

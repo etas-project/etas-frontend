@@ -44,6 +44,9 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Option<Vec<LatentSource>> {
+        if self.checked_empty_store_projection(expr) {
+            return Some(Vec::new());
+        }
         if self.types.facts.existential_packs.contains_key(&expr) {
             return Some(vec![
                 self.existential_pack_origin(state, expr)
@@ -76,9 +79,13 @@ impl EffectSemantics<'_> {
         // These are previous-round origins for this lexical call site, not a
         // substitute for checking the invoked callable's complete behavior.
         let known_call_result = (self.context.view().index().expr_item.get(&expr).copied()
-            == state.owner)
-            .then(|| self.call_results.value_sources(expr))
-            .flatten();
+            == state.owner
+            && !matches!(
+                self.hir.exprs.get(expr),
+                Some(HirExpr::Path(_) | HirExpr::Field { .. } | HirExpr::Index { .. })
+            ))
+        .then(|| self.checked_value_sources(expr))
+        .flatten();
         if let Some(sources) = state.local_latent_values.value_sources(expr) {
             if sources.iter().all(|source| matches!(source, LatentSource::Unavailable { expr: missing } if *missing == expr))
                 && let Some(known) = known_call_result {
@@ -338,37 +345,40 @@ impl EffectSemantics<'_> {
         &self,
         state: &mut EffectState,
         pat: HirPatId,
-        sources: Vec<LatentSource>,
+        sources: Option<Vec<LatentSource>>,
         value: Option<HirExprId>,
     ) -> Result<(), &'static str> {
-        use etas_code::descriptor::ValueProjectionStep as Step;
         for (symbol, path) in self.pattern_projection_bindings(pat)? {
-            let selected = if path
-                .iter()
-                .any(|step| matches!(step, Step::TupleElement(_)))
-            {
+            let selected = if !path.is_empty() {
                 value
                     .and_then(|value| self.projected_sources(value, &path, state))
-                    .or_else(|| self.project_parameter_origins(sources.iter().copied(), &path))
+                    .or_else(|| {
+                        sources.as_ref().and_then(|sources| {
+                            self.project_parameter_origins(sources.iter().copied(), &path)
+                        })
+                    })
                     .map(|sources| sources.into_iter().collect::<Vec<_>>())
-                    .unwrap_or_else(|| sources.clone())
+                    .or_else(|| sources.clone())
             } else {
                 sources.clone()
             };
-            if self.symbol_type_contains_flow(symbol)
-                || self
-                    .symbol_value_type(symbol)
-                    .is_some_and(|ty| self.type_has_parameters(ty))
-                || self
-                    .symbol_value_type(symbol)
-                    .is_some_and(|ty| self.symbolic_contract_value(ty, &selected))
+            if let Some(selected) = selected
+                && (self.symbol_type_contains_flow(symbol)
+                    || self
+                        .symbol_value_type(symbol)
+                        .is_some_and(|ty| self.type_has_parameters(ty))
+                    || self
+                        .symbol_value_type(symbol)
+                        .is_some_and(|ty| self.symbolic_contract_value(ty, &selected)))
             {
                 state
                     .local_latent_values
                     .record_symbol_sources(symbol, selected);
-                if let Some(value) = value {
-                    self.record_symbol_projections(state, symbol, value, &path);
-                }
+            }
+            // A generic sibling may have no complete root summary while this
+            // field already has a checked callback origin. Retain that proof.
+            if let Some(value) = value {
+                self.record_symbol_projections(state, symbol, value, &path);
             }
         }
         Ok(())
@@ -739,7 +749,7 @@ impl EffectSemantics<'_> {
             return false;
         }
         self.flow_type_for_expr(expr)
-            .is_some_and(|flow| flow.effects.is_none())
+            .is_some_and(|flow| flow.declared_effects().is_none())
     }
 
     pub(crate) fn is_projected_flow_value(&self, expr: HirExprId) -> bool {

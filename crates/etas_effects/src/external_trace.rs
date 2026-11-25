@@ -125,6 +125,20 @@ fn lower(
         effect.is_action().then_some(effect)
     };
     Some(match trace {
+        ExternalActionTraceMetadata::Recursive { id, body } => ActionTraceDomain::Recursive {
+            id: *id,
+            body: match body {
+                Some(body) => Some(Box::new(lower(
+                    body,
+                    span,
+                    resolve,
+                    target,
+                    depth + 1,
+                    remaining,
+                )?)),
+                None => None,
+            },
+        },
         ExternalActionTraceMetadata::Empty => ActionTraceDomain::Empty,
         ExternalActionTraceMetadata::DefaultHandler { guards, body } => {
             if guards.is_empty() {

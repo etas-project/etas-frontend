@@ -1,7 +1,70 @@
 use super::*;
 use crate::facts::specs::ExternalSpecIdentity;
 
-type ActiveObligations = HashSet<(TypeId, CheckedSpecRef, Vec<TypeId>)>;
+#[derive(Default)]
+struct ActiveObligations {
+    keys: HashSet<(TypeId, CheckedSpecRef, Vec<TypeId>)>,
+    schemas: std::collections::BTreeMap<
+        crate::data_admission::Contract,
+        std::rc::Rc<crate::data_admission::Schema>,
+    >,
+}
+
+impl ActiveObligations {
+    fn insert(&mut self, key: (TypeId, CheckedSpecRef, Vec<TypeId>)) -> bool {
+        self.keys.insert(key)
+    }
+    fn remove(&mut self, key: &(TypeId, CheckedSpecRef, Vec<TypeId>)) {
+        self.keys.remove(key);
+    }
+    fn schema(
+        &mut self,
+        store: &TypeStore,
+        facts: &SpecFacts,
+        kind: crate::data_admission::Contract,
+    ) -> std::rc::Rc<crate::data_admission::Schema> {
+        self.schemas
+            .entry(kind)
+            .or_insert_with(|| {
+                std::rc::Rc::new(crate::data_admission::Schema::build(store, facts, kind))
+            })
+            .clone()
+    }
+}
+
+pub(super) fn source_type_satisfies(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    symbol: etas_hir::SymbolId,
+    args: &[TypeId],
+) -> bool {
+    source_satisfies_inner(
+        store,
+        facts,
+        ty,
+        symbol,
+        args,
+        &mut ActiveObligations::default(),
+    )
+}
+
+pub(super) fn structural_std_satisfies(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    path: &[String],
+    args: &[TypeId],
+) -> bool {
+    std_satisfies_inner(
+        store,
+        facts,
+        ty,
+        path,
+        args,
+        &mut ActiveObligations::default(),
+    )
+}
 
 pub(super) fn canonical_type_satisfies(
     store: &TypeStore,
@@ -10,7 +73,14 @@ pub(super) fn canonical_type_satisfies(
     spec: &etas_code::DefinitionKey,
     args: &[TypeId],
 ) -> bool {
-    canonical_type_satisfies_inner(store, facts, ty, spec, args, &mut HashSet::new())
+    canonical_type_satisfies_inner(
+        store,
+        facts,
+        ty,
+        spec,
+        args,
+        &mut ActiveObligations::default(),
+    )
 }
 
 fn canonical_type_satisfies_inner(
@@ -24,19 +94,34 @@ fn canonical_type_satisfies_inner(
     if spec.kind() != etas_code::DefinitionKind::Spec {
         return false;
     }
+    if crate::active_agent::is_active_spec(facts, &CheckedSpecRef::Canonical(spec.clone())) {
+        return args.is_empty() && crate::active_agent::supports(store, facts, ty);
+    }
+    if let Some(family) =
+        crate::numeric_family::spec_family(facts, &CheckedSpecRef::Canonical(spec.clone()))
+    {
+        return args.is_empty() && crate::numeric_family::supports_family(store, facts, ty, family);
+    }
     let key = (ty, CheckedSpecRef::Canonical(spec.clone()), args.to_vec());
     if !visited.insert(key.clone()) {
         return false;
     }
     let result = canonical_arguments_satisfy(store, facts, spec, args, visited)
-        && evidence_satisfies_inner(
+        && (evidence_satisfies_inner(
             store,
             facts,
             ty,
             &CheckedSpecRef::Canonical(spec.clone()),
             args,
             visited,
-        );
+        ) || automatic_data(
+            store,
+            facts,
+            ty,
+            &CheckedSpecRef::Canonical(spec.clone()),
+            args,
+            visited,
+        ));
     visited.remove(&key);
     result
 }
@@ -127,7 +212,14 @@ pub(super) fn type_satisfies(
     spec: &ExternalSpecIdentity,
     args: &[TypeId],
 ) -> bool {
-    type_satisfies_inner(store, facts, ty, spec, args, &mut HashSet::new())
+    type_satisfies_inner(
+        store,
+        facts,
+        ty,
+        spec,
+        args,
+        &mut ActiveObligations::default(),
+    )
 }
 
 fn type_satisfies_inner(
@@ -138,22 +230,34 @@ fn type_satisfies_inner(
     args: &[TypeId],
     visited: &mut ActiveObligations,
 ) -> bool {
-    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::External(spec.clone())) {
-        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    if crate::active_agent::is_active_spec(facts, &CheckedSpecRef::External(spec.clone())) {
+        return args.is_empty() && crate::active_agent::supports(store, facts, ty);
+    }
+    if let Some(family) =
+        crate::numeric_family::spec_family(facts, &CheckedSpecRef::External(spec.clone()))
+    {
+        return args.is_empty() && crate::numeric_family::supports_family(store, facts, ty, family);
     }
     let key = (ty, CheckedSpecRef::External(spec.clone()), args.to_vec());
     if !visited.insert(key.clone()) {
         return false;
     }
     let result = external_arguments_satisfy(store, facts, spec, args, visited)
-        && evidence_satisfies_inner(
+        && (evidence_satisfies_inner(
             store,
             facts,
             ty,
             &CheckedSpecRef::External(spec.clone()),
             args,
             visited,
-        );
+        ) || automatic_data(
+            store,
+            facts,
+            ty,
+            &CheckedSpecRef::External(spec.clone()),
+            args,
+            visited,
+        ));
     visited.remove(&key);
     result
 }
@@ -234,8 +338,11 @@ fn source_satisfies_inner(
     args: &[TypeId],
     visited: &mut ActiveObligations,
 ) -> bool {
-    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Source(spec)) {
-        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    if crate::active_agent::is_active_spec(facts, &CheckedSpecRef::Source(spec)) {
+        return args.is_empty() && crate::active_agent::supports(store, facts, ty);
+    }
+    if let Some(family) = crate::numeric_family::spec_family(facts, &CheckedSpecRef::Source(spec)) {
+        return args.is_empty() && crate::numeric_family::supports_family(store, facts, ty, family);
     }
     match normalize(facts, CheckedSpecRef::Source(spec)) {
         CheckedSpecRef::External(identity) => {
@@ -252,7 +359,8 @@ fn source_satisfies_inner(
         return false;
     }
     let result = source_arguments_satisfy(store, facts, spec, args, visited)
-        && evidence_satisfies_inner(store, facts, ty, &target, args, visited);
+        && (evidence_satisfies_inner(store, facts, ty, &target, args, visited)
+            || automatic_data(store, facts, ty, &target, args, visited));
     visited.remove(&key);
     result
 }
@@ -320,8 +428,13 @@ fn std_satisfies_inner(
     args: &[TypeId],
     visited: &mut ActiveObligations,
 ) -> bool {
-    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Std(spec.to_vec())) {
-        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    if crate::active_agent::is_active_spec(facts, &CheckedSpecRef::Std(spec.to_vec())) {
+        return args.is_empty() && crate::active_agent::supports(store, facts, ty);
+    }
+    if let Some(family) =
+        crate::numeric_family::spec_family(facts, &CheckedSpecRef::Std(spec.to_vec()))
+    {
+        return args.is_empty() && crate::numeric_family::supports_family(store, facts, ty, family);
     }
     let target = CheckedSpecRef::Std(spec.to_vec());
     let key = (ty, target.clone(), args.to_vec());
@@ -342,9 +455,120 @@ fn std_satisfies_inner(
                 .is_some_and(|path| path == spec)
                 && type_same(store, implementation.self_type, ty)
                 && args_match(store, &implementation.args, args)
-        });
+        })
+        || automatic_data(store, facts, ty, &target, args, visited);
     visited.remove(&key);
     result
+}
+
+fn contract_reference(facts: &SpecFacts, kind: crate::data_admission::Contract) -> CheckedSpecRef {
+    let path = match kind {
+        crate::data_admission::Contract::Equality => {
+            vec!["std".into(), "collections".into(), "Eq".into()]
+        }
+        crate::data_admission::Contract::StorageData => {
+            vec!["std".into(), "memory".into(), "StorageData".into()]
+        }
+        crate::data_admission::Contract::StorageKey => {
+            vec!["std".into(), "memory".into(), "StorageKey".into()]
+        }
+    };
+    if let Some(identity) = facts
+        .external_std_specs
+        .keys()
+        .find(|identity| identity.path == path)
+    {
+        CheckedSpecRef::External(identity.clone())
+    } else if let Some((identity, _)) =
+        facts
+            .canonical_std_specs
+            .iter()
+            .find(|(identity, selected)| {
+                **selected == path && facts.canonical.signatures.contains_key(*identity)
+            })
+    {
+        CheckedSpecRef::Canonical(identity.clone())
+    } else {
+        CheckedSpecRef::Std(path)
+    }
+}
+
+fn data_query(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    kind: crate::data_admission::Contract,
+    active: &mut ActiveObligations,
+) -> bool {
+    match contract_reference(facts, kind) {
+        CheckedSpecRef::Source(symbol) => {
+            source_satisfies_inner(store, facts, ty, symbol, &[], active)
+        }
+        CheckedSpecRef::External(identity) => {
+            type_satisfies_inner(store, facts, ty, &identity, &[], active)
+        }
+        CheckedSpecRef::Canonical(identity) => {
+            canonical_type_satisfies_inner(store, facts, ty, &identity, &[], active)
+        }
+        CheckedSpecRef::Std(path) => std_satisfies_inner(store, facts, ty, &path, &[], active),
+    }
+}
+
+fn automatic_data(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    target: &CheckedSpecRef,
+    args: &[TypeId],
+    active: &mut ActiveObligations,
+) -> bool {
+    use crate::data_admission::Contract;
+    if !args.is_empty() {
+        return false;
+    }
+    let Some(kind) = crate::data_admission::contract(facts, target) else {
+        return false;
+    };
+    if kind == Contract::StorageKey {
+        return data_query(store, facts, ty, Contract::StorageData, active)
+            && data_query(store, facts, ty, Contract::Equality, active);
+    }
+    if crate::numeric_family::supports_family(
+        store,
+        facts,
+        ty,
+        if kind == Contract::Equality {
+            crate::numeric_family::Family::Integer
+        } else {
+            crate::numeric_family::Family::Number
+        },
+    ) {
+        return true;
+    }
+    active
+        .schema(store, facts, kind)
+        .supports(ty, |demand| data_query(store, facts, demand, kind, active))
+}
+
+pub(super) fn structural_contract_satisfied(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    kind: crate::data_admission::Contract,
+) -> bool {
+    let mut active = ActiveObligations::default();
+    let check = |kind, active: &mut ActiveObligations| {
+        active.schema(store, facts, kind).supports(ty, |demand| {
+            demand != ty && data_query(store, facts, demand, kind, active)
+        })
+    };
+    match kind {
+        crate::data_admission::Contract::StorageKey => {
+            check(crate::data_admission::Contract::StorageData, &mut active)
+                && check(crate::data_admission::Contract::Equality, &mut active)
+        }
+        kind => check(kind, &mut active),
+    }
 }
 
 pub(super) fn evidence_satisfies(
@@ -354,7 +578,14 @@ pub(super) fn evidence_satisfies(
     target: &CheckedSpecRef,
     args: &[TypeId],
 ) -> bool {
-    evidence_satisfies_inner(store, facts, ty, target, args, &mut HashSet::new())
+    evidence_satisfies_inner(
+        store,
+        facts,
+        ty,
+        target,
+        args,
+        &mut ActiveObligations::default(),
+    )
 }
 
 fn evidence_satisfies_inner(
@@ -579,7 +810,13 @@ pub(super) fn checked_implementation_bounds(
     parameters: &[crate::CallableGenericParam],
     bindings: &HashMap<TypeId, TypeId>,
 ) -> bool {
-    implementation_bounds(store, facts, parameters, bindings, &mut HashSet::new())
+    implementation_bounds(
+        store,
+        facts,
+        parameters,
+        bindings,
+        &mut ActiveObligations::default(),
+    )
 }
 
 pub(super) fn entails(
@@ -597,7 +834,7 @@ pub(super) fn entails(
         args,
         target,
         expected,
-        &mut HashSet::new(),
+        &mut ActiveObligations::default(),
     )
 }
 

@@ -40,7 +40,7 @@ flow append_audit(log: string, event: string) -> string { return log + "|" + eve
 
 flow build_audit(name: string) -> string {
     var audit = "";
-    for stage in ["identify", "authorize", "scope", "decide", "verify"] limit Iterations(5) {
+    for stage in ["identify", "authorize", "scope", "decide", "verify"] {
         audit = append_audit(audit, name + ":" + stage);
     }
     return audit;

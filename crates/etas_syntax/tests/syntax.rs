@@ -970,7 +970,7 @@ fn parses_optional_semicolon_after_block_statements() {
     let parsed = parse_program(source(
         r#"
 flow main(values: Array<string>) -> unit {
-  for value in values limit Iterations(8) {
+  for value in values {
     if value == "" {
       return;
     };
@@ -978,7 +978,7 @@ flow main(values: Array<string>) -> unit {
   while false {
     return;
   };
-  retry limit Attempts(1) {
+  retry {
     return;
   };
   return;
@@ -1248,15 +1248,15 @@ flow normalize<T>(title: string) -> string ![] ~ Publish
     _ => title,
   }
 
-  for item in items limit Iterations(10) {
+  for item in items {
     continue;
   }
 
-  while ready limit Iterations(1) {
+  while ready {
     break;
   }
 
-  retry limit Attempts(2) {
+  retry {
     resume title;
   }
 
@@ -1269,7 +1269,7 @@ flow normalize<T>(title: string) -> string ![] ~ Publish
   };
 
   let pipeline = Researcher | Writer | Publisher;
-  let result = brief ~> ProductManager ~> Engineer limit Tokens(12000);
+  let result = brief ~> ProductManager ~> Engineer;
   return normalize(title);
 }
 "#;
@@ -1537,7 +1537,7 @@ flow expressions() {
   let lambda = input => input;
   let typed = map<string>(list);
   let draft = Writer.run(topic);
-  let out = topic ~> Researcher ~> Writer limit Tokens(4096);
+  let out = topic ~> Researcher ~> Writer;
   out
 }
 "#,

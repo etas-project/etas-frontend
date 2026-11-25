@@ -14,6 +14,7 @@ where
         state: S::Domain,
     ) -> Result<Control<S::Domain>, E> {
         (self.checkpoint)()?;
+        let state = self.semantics.enter_block(block, state);
         let block = self.context().program().blocks[block].clone();
         let mut control = Control::normal(state);
         for stmt in block.stmts {

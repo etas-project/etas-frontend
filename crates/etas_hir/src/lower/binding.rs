@@ -236,16 +236,28 @@ impl LowerCtx {
         action: &str,
         span: Span,
     ) -> Option<SymbolId> {
-        let owner = effect.path.segments.last()?.name.as_str();
-        let qualified = format!("{owner}.{action}");
-        if !self.effect_ref_resolves_to_standard_owner(effect, owner) {
+        let ResolveResult::Resolved(owner_symbol) = effect.path.resolution else {
             return None;
-        }
-
-        let key = {
+        };
+        let SymbolDef::ImportAlias { path, .. } = &self.symbols.get(owner_symbol)?.def else {
+            return None;
+        };
+        let owner = self.std_registry.lookup_qualified(path)?;
+        let StdDecl::Effect(decl) = &owner.decl else {
+            return None;
+        };
+        let owner_name = decl.name.as_str();
+        let qualified = format!("{owner_name}.{action}");
+        let mut action_path = owner.qualified_path.clone();
+        action_path.push(action.to_owned());
+        let key = if let Some(symbol) = self.std_registry.lookup_qualified(&action_path)
+            && symbol.kind == StdSymbolKind::EffectAction
+        {
+            symbol.id
+        } else {
             let mut actions = self.std_registry.symbols().filter(|symbol| {
                 symbol.kind == StdSymbolKind::EffectAction
-                    && matches!(&symbol.decl, StdDecl::EffectAction(decl) if decl.owner == owner && decl.name == action)
+                    && matches!(&symbol.decl, StdDecl::EffectAction(decl) if decl.owner == owner_name && decl.name == action)
             });
             let key = actions.next()?.id;
             if actions.next().is_some() {
@@ -272,26 +284,6 @@ impl LowerCtx {
         self.std_action_aliases.insert(key, symbol);
         self.hir.standard_action_targets.insert(symbol, key);
         Some(symbol)
-    }
-
-    fn effect_ref_resolves_to_standard_owner(
-        &self,
-        effect: &crate::HirEffectRef,
-        owner: &str,
-    ) -> bool {
-        let ResolveResult::Resolved(symbol) = effect.path.resolution else {
-            return false;
-        };
-        let Some(symbol) = self.symbols.get(symbol) else {
-            return false;
-        };
-        match &symbol.def {
-            SymbolDef::ImportAlias { path, .. } => {
-                matches!(self.std_registry.lookup_qualified(path).map(|symbol| &symbol.decl),
-                    Some(StdDecl::Effect(decl)) if decl.name == owner)
-            }
-            _ => false,
-        }
     }
 
     pub(super) fn resolve_path(

@@ -16,16 +16,16 @@ flow audit_complete(log: string) -> bool {
 flow main() -> string {
     let projection = qualify_projection("mcp_inventory");
     var audit = "";
-    for stage in ["load", "decode", "validate", "project", "publish"] limit Iterations(5) {
+    for stage in ["load", "decode", "validate", "project", "publish"] {
         audit = append_audit(audit, projection + ":" + stage);
     }
 
     var identifiers = "";
     var metadata = "";
-    for record in ["mcp_inventory-01", "mcp_inventory-02", "mcp_inventory-03", "mcp_inventory-04", "mcp_inventory-05", "mcp_inventory-06", "mcp_inventory-07", "mcp_inventory-08"] limit Iterations(8) {
+    for record in ["mcp_inventory-01", "mcp_inventory-02", "mcp_inventory-03", "mcp_inventory-04", "mcp_inventory-05", "mcp_inventory-06", "mcp_inventory-07", "mcp_inventory-08"] {
         identifiers = identifiers + record;
     }
-    for descriptor in ["mcp_inventory-01", "mcp_inventory-02", "mcp_inventory-03", "mcp_inventory-04", "mcp_inventory-05", "mcp_inventory-06", "mcp_inventory-07", "mcp_inventory-08"] limit Iterations(8) {
+    for descriptor in ["mcp_inventory-01", "mcp_inventory-02", "mcp_inventory-03", "mcp_inventory-04", "mcp_inventory-05", "mcp_inventory-06", "mcp_inventory-07", "mcp_inventory-08"] {
         metadata = metadata + descriptor;
     }
 

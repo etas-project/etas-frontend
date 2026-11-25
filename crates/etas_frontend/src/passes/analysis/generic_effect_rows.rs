@@ -139,8 +139,59 @@ impl Pass<ProjectContext> for MaterializeGenericEffectRowsPass {
         if let Err(error) = materialize_effect_row_instantiations(types, &patches) {
             return reject(context, error.call, error.to_string());
         }
-        if !patches.is_empty() {
+        let mut inferred_rows =
+            std::collections::BTreeMap::<String, (HirExprId, etas_effects::EffectRow)>::new();
+        for (value, latent) in &effects.facts.latent_effects {
+            let Some(etas_types::Type::Function(flow)) = types.store.get(latent.flow_type) else {
+                return PassResult::failed("checked latent flow has no function type");
+            };
+            let Some(row) = flow.effects.as_ref().filter(|row| row.is_inferred_lambda()) else {
+                continue;
+            };
+            let entry = inferred_rows
+                .entry(row.tail.as_ref().unwrap().clone())
+                .or_insert_with(|| (*value, etas_effects::EffectRow::empty()));
+            entry.0 = entry.0.min(*value);
+            entry.1.union_assign(&latent.inferred);
+        }
+        let mut lambda_rows = std::collections::HashMap::new();
+        for (name, (value, inferred)) in inferred_rows {
+            let owner = index.expr_item[&value];
+            let solved = match instantiation::checked_row(
+                &inferred,
+                &artifacts.registry,
+                instantiation::signature(&types.facts, owner),
+                std::iter::empty(),
+            ) {
+                Ok(row) => row,
+                Err(reason) => return reject(context, value, reason),
+            };
+            lambda_rows.insert(name, solved);
+        }
+        let lambda_rows_completed =
+            match etas_types::materialize_lambda_effect_rows(types, &lambda_rows) {
+                Ok(changed) => changed,
+                Err(error) => return reject(context, error.call, error.to_string()),
+            };
+        let mut captures = effects
+            .facts
+            .try_captures
+            .iter()
+            .map(|(expression, capture)| etas_types::ResolvedTryCapture {
+                expression: *expression,
+                error: capture.captured_error,
+            })
+            .collect::<Vec<_>>();
+        captures.sort_by_key(|capture| capture.expression);
+        let completed = match etas_types::materialize_try_captures(types, &captures) {
+            Ok(changed) => changed,
+            Err(error) => return reject(context, error.call, error.to_string()),
+        };
+        if !patches.is_empty() || completed || lambda_rows_completed {
             let facts = std::sync::Arc::make_mut(&mut effects.facts);
+            for (expression, capture) in &mut facts.try_captures {
+                capture.result_type = types.facts.try_facts[expression].result_type;
+            }
             for (value, latent) in &mut facts.latent_effects {
                 let Some(ty) = types.facts.expr_types.get(value) else {
                     return PassResult::failed(

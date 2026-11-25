@@ -275,10 +275,14 @@ fn select(
         let ast::Item::Impl(decl) = &item.item else {
             return Err(RetainedBodyError::MissingBody);
         };
-        let Some(ast::ImplItem::Flow(flow)) = decl.items.get(member) else {
-            return Err(RetainedBodyError::MissingBody);
+        return match decl.items.get(member) {
+            Some(ast::ImplItem::Flow(flow)) => flow_body(&flow.body),
+            Some(ast::ImplItem::Tool(tool)) => match &tool.body {
+                ast::ToolBody::Source(body) => flow_body(body),
+                _ => Err(RetainedBodyError::MissingBody),
+            },
+            _ => Err(RetainedBodyError::MissingBody),
         };
-        return flow_body(&flow.body);
     }
     match &item.item {
         ast::Item::Flow(flow) => flow_body(&flow.body),

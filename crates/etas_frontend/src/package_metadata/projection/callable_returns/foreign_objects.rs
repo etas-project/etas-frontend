@@ -180,7 +180,20 @@ impl Builder<'_, '_> {
                         }
                         let scope = self.object_scope(instance, parameter.scope)?;
                         payload_sources.insert(CallableValueSource::Parameter(
-                            self.foreign_parameter(instance.source.graph, *parameter, scope)?,
+                            self.foreign_parameter(
+                                ForeignInstance {
+                                    source: etas_effects::MetadataCallableSource {
+                                        graph: instance.source.graph,
+                                        value: 0,
+                                        environment: instance.source.environment,
+                                        analysis:
+                                            etas_effects::CallableAnalysisKind::CheckedRevision,
+                                    },
+                                    root: instance.root,
+                                },
+                                *parameter,
+                                scope,
+                            )?,
                         ));
                     }
                 }

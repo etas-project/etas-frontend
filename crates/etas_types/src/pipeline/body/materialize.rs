@@ -129,6 +129,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .expr_types
         .extend(state.provisional.expr_types);
     ctx.signature_facts
+        .type_refs
+        .extend(state.provisional.selector_type_refs);
+    ctx.signature_facts
         .trusted_literals
         .extend(state.provisional.trusted_literals);
     ctx.signature_facts
@@ -474,8 +477,12 @@ fn apply_solver_substitutions(
 ) -> Result<(), crate::TypeSubstitutionError> {
     let substitutions = state.solver_report.substitutions.clone();
     let named_substitutions = state.solver_report.named_substitutions.clone();
-    if substitutions.iter().next().is_none() && named_substitutions.is_empty() {
+    if substitutions.is_empty() && named_substitutions.is_empty() {
         return Ok(());
+    }
+
+    for ty in ordered_values_mut(&mut state.provisional.selector_type_refs) {
+        *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
     }
 
     for fact in ordered_values_mut(&mut state.solver_report.std_intrinsic_calls) {
@@ -739,6 +746,10 @@ fn substitute_agent_signature(
     signature: &mut crate::AgentSignature,
 ) -> Result<(), crate::TypeSubstitutionError> {
     signature.component = substitute_type(ctx, substitutions, named, signature.component)?;
+    signature.state = signature
+        .state
+        .map(|state| substitute_type(ctx, substitutions, named, state))
+        .transpose()?;
     signature.definition_type = signature
         .definition_type
         .map(|ty| substitute_type(ctx, substitutions, named, ty))

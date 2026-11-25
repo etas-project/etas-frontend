@@ -66,11 +66,13 @@ pub fn collect_std_actions(ctx: &mut TypePipelineContext<'_>, state: &mut Signat
     for symbol in ctx.hir.symbols.iter() {
         let std_symbol = match &symbol.def {
             SymbolDef::ImportAlias { path, .. } => registry.lookup_qualified(path),
-            SymbolDef::Synthetic { reason: SyntheticSymbolReason::QualifiedEffectAction } => {
-                symbol.name.split_once('.').and_then(|(owner, action)| registry.symbols().find(|candidate| {
-                    matches!(&candidate.decl, StdDecl::EffectAction(decl) if decl.owner == owner && decl.name == action)
-                }))
-            }
+            SymbolDef::Synthetic {
+                reason: SyntheticSymbolReason::QualifiedEffectAction,
+            } => ctx
+                .hir
+                .standard_action_targets
+                .get(&symbol.id)
+                .and_then(|target| registry.symbol(*target)),
             _ => None,
         };
         let Some(std_symbol) =

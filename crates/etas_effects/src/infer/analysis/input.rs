@@ -48,6 +48,8 @@ impl<'a> EffectSourceSnapshots<'a> {
 
 #[derive(Clone)]
 pub struct EffectAnalysisInput<'a> {
+    pub external_defaults:
+        &'a [AnchoredExternalMetadata<crate::ExternalParameterDefaultMetadata>],
     pub external_parameter_projections: std::sync::Arc<
         std::collections::BTreeMap<
             etas_code::CodeFingerprint,

@@ -102,6 +102,72 @@ pub fn collect_agent_methods(
             },
         );
     }
+    // Stateful declarations use ordinary impl resolution. Retain their method
+    // identity here as well for inference, reflection and protected selectors.
+    let active = state
+        .item_signatures
+        .iter()
+        .filter_map(|(item, signature)| match signature {
+            ItemSignature::Agent(signature) if signature.state.is_some() => {
+                Some((signature.component, *item))
+            }
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut owned = state
+        .type_impl_methods
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    owned.sort_by_key(|method| method.symbol);
+    for method in owned {
+        let component = match ctx.interner.store().get(method.self_type) {
+            Some(Type::Applied { constructor, .. }) => crate::TypeId(constructor.0),
+            _ => method.self_type,
+        };
+        let Some(&agent) = active.get(&component) else {
+            continue;
+        };
+        let Some(HirItem::Flow(flow)) = ctx.hir.items.get(method.body) else {
+            continue;
+        };
+        if flow.receiver_mode == etas_hir::HirReceiverMode::None {
+            continue;
+        }
+        let Some(ItemSignature::Flow(callable)) = state.item_signatures.get(&method.body).cloned()
+        else {
+            continue;
+        };
+        let callable_type = ctx.interner.intern(Type::Function(FlowType {
+            input: callable.params.clone(),
+            output: callable.output,
+            effects: callable.effects.clone(),
+        }));
+        let symbol = ctx
+            .hir
+            .symbols
+            .get(method.symbol)
+            .expect("checked impl method symbol");
+        state.agent_methods.insert(
+            method.symbol,
+            crate::facts::signatures::AgentMethodSignature {
+                context_type: ctx
+                    .interner
+                    .intern(Type::AgentContext(method.symbol.into())),
+                private_to: (symbol.visibility == etas_hir::Visibility::Private)
+                    .then_some(symbol.defining_module),
+                inherent: method.inherent,
+                agent,
+                component,
+                symbol: method.symbol,
+                body: method.body,
+                implementation: Some(method.implementation),
+                name: method.name,
+                callable_type,
+                callable,
+            },
+        );
+    }
     let agents = state
         .item_signatures
         .iter()

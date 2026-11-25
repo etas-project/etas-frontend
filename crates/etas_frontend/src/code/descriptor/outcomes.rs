@@ -450,6 +450,7 @@ fn finite_trace_paths(
     while let Some(step) = pending.pop() {
         *budget = budget.checked_sub(1)?;
         match step {
+            Step::Visit(Trace::Shared(body)) => pending.push(Step::Visit(&body.body)),
             Step::Visit(Trace::Empty) => values.push(BTreeSet::from([vec![]])),
             Step::Visit(Trace::DefaultHandler { body, .. }) => pending.push(Step::Visit(body)),
             Step::Visit(Trace::Event(event)) => {
@@ -471,7 +472,12 @@ fn finite_trace_paths(
             Step::Visit(Trace::Parallel(_) | Trace::TaskStart { .. } | Trace::TaskAwait { .. }) => {
                 return None;
             }
-            Step::Visit(Trace::Repeat(_) | Trace::UnknownOrder(_) | Trace::Widened { .. }) => {
+            Step::Visit(
+                Trace::Recursive { .. }
+                | Trace::Repeat(_)
+                | Trace::UnknownOrder(_)
+                | Trace::Widened { .. },
+            ) => {
                 return None;
             }
             Step::Sequence(length) => {

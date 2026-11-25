@@ -23,7 +23,11 @@ impl EffectSemantics<'_> {
             .get(identity)
             .and_then(|index| *index)
             .and_then(|index| self.external_implementations.get(index))
-            .ok_or_else(|| invalid("external method has no unique checked behavior graph"))?;
+            .ok_or_else(|| {
+                invalid(&format!(
+                    "external method {identity:?} has no unique checked behavior graph"
+                ))
+            })?;
         let [CallableValueSource::Value(root)] = implementation.graph.sources.as_slice() else {
             return Err(invalid(
                 "external implementation does not own its callable root",
@@ -69,7 +73,7 @@ impl EffectSemantics<'_> {
         )
     }
 
-    pub(super) fn capture_external_method(
+    pub(in crate::infer::semantics) fn capture_external_method(
         &self,
         identity: &etas_code::MethodId,
         signature: &etas_types::CallableSignature,
@@ -167,7 +171,31 @@ impl EffectSemantics<'_> {
                 );
             }
         }
+        for (target, origins) in &snapshot.parameters {
+            let Some((crate::ParameterCallTarget::Interface(position), path)) =
+                self.parameter_projection_target(*target)
+            else {
+                continue;
+            };
+            let target = self
+                .intern_external_parameter_projection(
+                    crate::ParameterCallTarget::Graph {
+                        graph: graph.graph_key,
+                        parameter: etas_package_metadata::CallableValueParameter {
+                            scope,
+                            position,
+                            projection: None,
+                        },
+                    },
+                    path,
+                )
+                .ok_or_else(|| invalid("external method capture has no checked projection"))?;
+            parameters.insert(target, origins.clone());
+        }
         let environment = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: None,
             origin: etas_code::CodeFingerprint::of_parts(
                 "etas.effects.external-method-application.v1",
                 [
@@ -180,16 +208,46 @@ impl EffectSemantics<'_> {
         self.record_callable_environment(
             environment,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: snapshot.owner,
                 parameters,
                 generics,
             },
         )?;
+        let call = self
+            .capture_sites
+            .borrow()
+            .get(&invocation.application)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                invalid("external method application has no checked expression identity")
+            })?;
+        let state = super::super::state::EffectState {
+            owner: Some(snapshot.owner),
+            ..Default::default()
+        };
+        let environment = self
+            .bind_metadata_environment(
+                super::super::metadata_callable::MetadataCallBindings {
+                    key: Some(graph.graph_key),
+                    scope,
+                    environment: Some(environment),
+                    arguments: &[],
+                    generics: &[],
+                    type_bindings: &[],
+                    effect_row_bindings: &[],
+                },
+                &state,
+                call,
+            )?
+            .2;
         let source = crate::MetadataCallableSource {
             analysis: crate::CallableAnalysisKind::CheckedRevision,
             graph: graph.graph_key,
             value,
-            environment: Some(environment),
+            environment,
         };
         self.discovered_external_method_sources
             .borrow_mut()

@@ -563,6 +563,7 @@ impl AstDump for ImplItem {
     fn dump(&self, f: &mut AstDumpWriter) {
         match self {
             Self::Flow(flow) => flow.dump(f),
+            Self::Tool(tool) => tool.dump(f),
             Self::Action(action) => action.dump(f),
             Self::Error(span) => f.line("ErrorImplItem", *span, Vec::new()),
         }
@@ -694,6 +695,9 @@ impl AstDump for ast::ToolDecl {
         push_path_field(f, &mut fields, "path", &self.path);
         push_type_params(f, &mut fields, &self.type_params);
         f.node("ToolDecl", self.span, fields, |f| {
+            for annotation in &self.annotations {
+                annotation.dump(f);
+            }
             for param in &self.params {
                 param.dump(f);
             }
@@ -727,7 +731,12 @@ impl AstDump for ast::ToolBody {
 
 impl AstDump for ast::AgentDecl {
     fn dump(&self, f: &mut AstDumpWriter) {
-        f.node("AgentDecl", self.span, name_fields(f, &self.name), |f| {
+        let mut fields = name_fields(f, &self.name);
+        push_type_params(f, &mut fields, &self.type_params);
+        f.node("AgentDecl", self.span, fields, |f| {
+            if let Some(state) = &self.state {
+                state.dump(f);
+            }
             for param in &self.params {
                 param.dump(f);
             }
@@ -944,7 +953,12 @@ impl AstDump for ast::FieldDecl {
         if let Some(visibility) = self.visibility {
             fields.push(format!("visibility={visibility:?}"));
         }
-        f.node("FieldDecl", self.span, fields, |f| self.ty.dump(f));
+        f.node("FieldDecl", self.span, fields, |f| {
+            for annotation in &self.annotations {
+                annotation.dump(f);
+            }
+            self.ty.dump(f);
+        });
     }
 }
 
@@ -1073,24 +1087,15 @@ impl AstDump for Stmt {
             Self::For(stmt) => f.node("ForStmt", stmt.span, Vec::new(), |f| {
                 stmt.pattern.dump(f);
                 f.node("Iter", stmt.iter.span(), Vec::new(), |f| stmt.iter.dump(f));
-                for limit in &stmt.limits {
-                    f.node("Limit", limit.span(), Vec::new(), |f| limit.dump(f));
-                }
                 stmt.body.dump(f);
             }),
             Self::While(stmt) => f.node("WhileStmt", stmt.span, Vec::new(), |f| {
                 f.node("Condition", stmt.condition.span(), Vec::new(), |f| {
                     stmt.condition.dump(f)
                 });
-                for limit in &stmt.limits {
-                    f.node("Limit", limit.span(), Vec::new(), |f| limit.dump(f));
-                }
                 stmt.body.dump(f);
             }),
             Self::Retry(stmt) => f.node("RetryStmt", stmt.span, Vec::new(), |f| {
-                for limit in &stmt.limits {
-                    f.node("Limit", limit.span(), Vec::new(), |f| limit.dump(f));
-                }
                 stmt.body.dump(f);
             }),
             Self::Resume(stmt) => f.node("ResumeStmt", stmt.span, Vec::new(), |f| {
@@ -1521,9 +1526,6 @@ impl AstDump for ast::PipelineStage {
     fn dump(&self, f: &mut AstDumpWriter) {
         f.node("PipelineStage", self.span, Vec::new(), |f| {
             self.expr.dump(f);
-            for limit in &self.limits {
-                f.node("Limit", limit.span(), Vec::new(), |f| limit.dump(f));
-            }
         });
     }
 }

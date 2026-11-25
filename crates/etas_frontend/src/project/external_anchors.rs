@@ -13,6 +13,15 @@ pub(crate) struct ExternalImportAnchorIndex {
 }
 
 impl ExternalImportAnchorIndex {
+    pub(crate) fn add_constructor_bindings(&mut self, hir: &etas_hir::HirProgram) {
+        for binding in &hir.constructor_external_bindings {
+            self.insert_item(
+                ExternalPackageId(binding.package),
+                binding.path.clone(),
+                binding.span,
+            );
+        }
+    }
     pub(crate) fn add_standard_library(
         &mut self,
         package: ExternalPackageId,

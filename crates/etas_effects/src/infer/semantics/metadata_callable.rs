@@ -69,6 +69,8 @@ impl EffectSemantics<'_> {
             })
             .collect::<Result<_, _>>()?;
         let environment = crate::facts::CallableEnvironment {
+            invocation_origin: None,
+            invocation_inputs: Default::default(),
             owner: state
                 .owner
                 .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
@@ -79,6 +81,11 @@ impl EffectSemantics<'_> {
             return Ok(None);
         }
         let id = crate::facts::CallableEnvironmentId {
+            generic_context: crate::facts::CallableEnvironment::generic_identity(
+                &environment.generics,
+            ),
+            instance: None,
+            scope: Some(self.callable_environment_scope(environment.owner)?),
             origin: graph,
             application: self.callable_environment_site(application)?,
         };
@@ -95,6 +102,20 @@ impl EffectSemantics<'_> {
         &[crate::ExternalExistentialValueMetadata],
         Span,
     )> {
+        if let Some(default) = self
+            .external_defaults
+            .iter()
+            .find(|default| default.graph_key == key)
+        {
+            return (default.graph.values.len() == default.values.len()
+                && default.graph.objects.len() == default.objects.len())
+            .then_some((
+                &default.graph,
+                &default.values,
+                &default.objects,
+                default.span,
+            ));
+        }
         if let Some(index) = self.implementation_graphs.get(&key) {
             if self.frozen_graphs.contains_key(&key)
                 || self.metadata_callables.contains_key(&key)
@@ -262,9 +283,23 @@ impl EffectSemantics<'_> {
                     },
                     span,
                     &types,
-                    &self
-                        .metadata_evidence_generics(source)
-                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
+                    &node
+                        .generic_params
+                        .iter()
+                        .map(|parameter| {
+                            (
+                                parameter.name.clone(),
+                                match parameter.kind {
+                                    etas_package_metadata::GenericParamKind::Type => {
+                                        etas_types::CallableGenericParamKind::Type
+                                    }
+                                    etas_package_metadata::GenericParamKind::Effect => {
+                                        etas_types::CallableGenericParamKind::Effect
+                                    }
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>(),
                 )?;
             }
         }
@@ -300,6 +335,21 @@ impl EffectSemantics<'_> {
             || source.environment.is_some())
             && self.implementation_graphs.contains_key(&source.graph)
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)];
+        let applied_inputs = environment.as_ref().is_some_and(|environment| {
+            (0..node.params.len()).all(|position| {
+                environment
+                    .parameters
+                    .contains_key(&crate::ParameterCallTarget::Graph {
+                        graph: source.graph,
+                        parameter: etas_package_metadata::CallableValueParameter {
+                            scope: CallableValueScope::Value(source.value),
+                            position: position as u32,
+                            projection: None,
+                        },
+                    })
+            })
+        });
+        let applied_implementation = applied_implementation || applied_inputs;
         let mut own_parameters = node
             .parameter_bindings
             .iter()
@@ -322,8 +372,8 @@ impl EffectSemantics<'_> {
                     .parameters
                     .iter()
                     .filter(|(target, _)| is_captured_parameter(**target, source, &scopes)
-                        || (applied_implementation && matches!(target, crate::ParameterCallTarget::Graph { graph, parameter }
-                            if *graph == source.graph && parameter.scope == CallableValueScope::Value(source.value))))
+                        || (applied_implementation && matches!(self.parameter_projection_target(**target).map_or(**target, |(root, _)| root), crate::ParameterCallTarget::Graph { graph, parameter }
+                            if graph == source.graph && parameter.scope == CallableValueScope::Value(source.value))))
                     .map(|(target, sources)| {
                         (
                             *target,
@@ -334,6 +384,7 @@ impl EffectSemantics<'_> {
             });
         let invocation_state = EffectState {
             owner: environment.as_ref().map(|environment| environment.owner),
+            application: source.environment.map(Self::callable_invocation_context),
             ..EffectState::default()
         };
         self.bind_spec_method_arguments(
@@ -349,7 +400,17 @@ impl EffectSemantics<'_> {
                 rows: &rows,
             },
             &mut own_parameters,
+            true,
         )?;
+        if let Some(id) = source.environment {
+            let mut captured_facts = self.callable_environment(id)?;
+            for (target, binding) in &bindings {
+                if let super::specialize::TraceArgumentBinding::Origins(origins) = binding {
+                    captured_facts.parameters.insert(*target, origins.clone());
+                }
+            }
+            self.record_callable_environment(id, captured_facts)?;
+        }
         let bindings = bindings
             .into_iter()
             .map(|(target, binding)| match binding {
@@ -438,12 +499,7 @@ impl EffectSemantics<'_> {
                     found.insert(LatentSource::Metadata(source));
                 }
                 CallableValueSource::Parameter(parameter) => {
-                    let origins = environment
-                        .parameters
-                        .get(&crate::ParameterCallTarget::Graph {
-                            graph: key,
-                            parameter: *parameter,
-                        })
+                    let origins = self.metadata_parameter_origins(key, *parameter, &environment, environment_id, state, output)?
                         .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
                             reason: format!("returned metadata parameter {parameter:?} has no captured value origins"),
                         })?;
@@ -511,35 +567,58 @@ impl EffectSemantics<'_> {
     ) -> Option<BTreeSet<LatentSource>> {
         let (_, node, _) = self.metadata_callable(source)?;
         if !node.params.is_empty() {
-            return None;
+            let environment = source
+                .environment
+                .and_then(|id| self.callable_environment(id).ok())?;
+            if (0..node.params.len()).any(|position| {
+                !environment
+                    .parameters
+                    .contains_key(&crate::ParameterCallTarget::Graph {
+                        graph: source.graph,
+                        parameter: etas_package_metadata::CallableValueParameter {
+                            scope: CallableValueScope::Value(source.value),
+                            position: position as u32,
+                            projection: None,
+                        },
+                    })
+            }) {
+                return None;
+            }
         }
-        let (sources, suffix) = if path.is_empty() {
-            (node.returned_sources.as_ref()?, &[][..])
+        let mut selected = if path.is_empty() {
+            Vec::new()
         } else {
-            let projection = node
-                .returned_projections
-                .iter()
-                .filter(|projection| path.starts_with(&projection.path))
-                .max_by_key(|projection| projection.path.len())?;
-            (projection.sources.as_ref()?, &path[projection.path.len()..])
-        };
-        let found = self
-            .metadata_value_sources(
-                MetadataCallBindings {
-                    key: Some(source.graph),
-                    scope: CallableValueScope::Value(source.value),
-                    environment: source.environment,
-                    arguments: &[],
-                    generics: &[],
-                    type_bindings: &[],
-                    effect_row_bindings: &[],
-                },
-                sources,
-                state,
-                application,
+            super::return_projection::returned_positions(
+                node.returned_projections
+                    .iter()
+                    .map(|projection| (projection.path.as_slice(), &projection.sources)),
+                path,
             )
-            .ok()?;
-        self.project_value_origins(&found, suffix, state, application)
+        };
+        if selected.is_empty() {
+            selected.push((&node.returned_sources, path.to_vec()));
+        }
+        let mut result = BTreeSet::new();
+        for (sources, suffix) in selected {
+            let found = self
+                .metadata_value_sources(
+                    MetadataCallBindings {
+                        key: Some(source.graph),
+                        scope: CallableValueScope::Value(source.value),
+                        environment: source.environment,
+                        arguments: &[],
+                        generics: &[],
+                        type_bindings: &[],
+                        effect_row_bindings: &[],
+                    },
+                    sources.as_ref()?,
+                    state,
+                    application,
+                )
+                .ok()?;
+            result.extend(self.project_value_origins(&found, &suffix, state, application)?);
+        }
+        Some(result)
     }
 
     pub(super) fn record_applied_metadata_method_returns(
@@ -625,7 +704,7 @@ impl EffectSemantics<'_> {
             .record_value_sources(call, sources);
     }
 
-    fn bind_metadata_environment(
+    pub(super) fn bind_metadata_environment(
         &self,
         context: MetadataCallBindings<'_>,
         state: &EffectState,
@@ -644,6 +723,8 @@ impl EffectSemantics<'_> {
         let mut environment = match context.environment {
             Some(id) => self.callable_environment(id)?,
             None => crate::facts::CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: state
                     .owner
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
@@ -688,7 +769,36 @@ impl EffectSemantics<'_> {
             );
         }
         for (position, argument) in context.arguments.iter().enumerate() {
-            let Some(expr) = argument else { continue };
+            let Some(expr) = argument else {
+                if let Some(binding) = self.default_argument_binding(output, position, state)? {
+                    let root = crate::ParameterCallTarget::Graph {
+                        graph: key,
+                        parameter: etas_package_metadata::CallableValueParameter {
+                            projection: None,
+                            scope: context.scope,
+                            position: position as u32,
+                        },
+                    };
+                    environment
+                        .parameters
+                        .insert(root, self.trace_argument_origins(&binding, state)?);
+                    if let super::specialize::TraceArgumentBinding::InputData { argument, .. } =
+                        binding
+                    {
+                        for projection in &argument.projections {
+                            let target = self
+                                .intern_external_parameter_projection(root, projection.path.clone())
+                                .ok_or(
+                                    EffectSpecializationError::InvalidCallableParameterInterface,
+                                )?;
+                            environment
+                                .parameters
+                                .insert(target, projection.sources.clone());
+                        }
+                    }
+                }
+                continue;
+            };
             let origins = self.trace_argument_origins(
                 &super::specialize::TraceArgumentBinding::Expression(*expr),
                 state,
@@ -704,6 +814,38 @@ impl EffectSemantics<'_> {
                 },
                 origins,
             );
+            if let Some(paths) = self
+                .types
+                .facts
+                .expr_types
+                .get(expr)
+                .and_then(|ty| self.value_payload_paths(*ty))
+            {
+                for path in paths {
+                    if path.is_empty() {
+                        continue;
+                    }
+                    let root = crate::ParameterCallTarget::Graph {
+                        graph: key,
+                        parameter: etas_package_metadata::CallableValueParameter {
+                            projection: None,
+                            scope: context.scope,
+                            position: position as u32,
+                        },
+                    };
+                    let target = self
+                        .intern_external_parameter_projection(root, path.clone())
+                        .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
+                    let origins = self.trace_argument_origins(
+                        &super::specialize::TraceArgumentBinding::ProjectedExpression {
+                            expr: *expr,
+                            path,
+                        },
+                        state,
+                    )?;
+                    environment.parameters.insert(target, origins);
+                }
+            }
         }
         let (graph, _, _, _) = self
             .callable_graph(key)
@@ -719,8 +861,7 @@ impl EffectSemantics<'_> {
                     .arguments
                     .get(parameter.position as usize)
                     .copied()
-                    .flatten()
-                    .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
+                    .flatten();
                 let path = graph
                     .projection_path(parameter)
                     .map_err(
@@ -729,6 +870,84 @@ impl EffectSemantics<'_> {
                         },
                     )?
                     .to_vec();
+                let structural = path
+                    .iter()
+                    .take_while(|step| {
+                        etas_code::descriptor::ValueProjectionStep::call_inputs(
+                            std::slice::from_ref(step),
+                        )
+                        .is_empty()
+                            && !matches!(
+                                step,
+                                etas_code::descriptor::ValueProjectionStep::CallResult
+                            )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let Some(expr) = expr else {
+                    if structural.len() != path.len() && structural.is_empty() {
+                        continue;
+                    }
+                    let Some(mut binding) =
+                        self.default_argument_binding(output, parameter.position as usize, state)?
+                    else {
+                        return Err(EffectSpecializationError::InvalidCallableParameterInterface);
+                    };
+                    let selected = if structural.len() != path.len() {
+                        &structural
+                    } else {
+                        &path
+                    };
+                    if let super::specialize::TraceArgumentBinding::InputData { path, .. } =
+                        &mut binding
+                    {
+                        *path = selected.clone();
+                    }
+                    let origins = self.trace_argument_origins(&binding, state)?;
+                    let target = if structural.len() != path.len() {
+                        self.intern_external_parameter_projection(
+                            crate::ParameterCallTarget::Graph {
+                                graph: key,
+                                parameter: etas_package_metadata::CallableValueParameter {
+                                    projection: None,
+                                    ..parameter
+                                },
+                            },
+                            structural,
+                        )
+                        .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?
+                    } else {
+                        crate::ParameterCallTarget::Graph {
+                            graph: key,
+                            parameter,
+                        }
+                    };
+                    environment.parameters.insert(target, origins);
+                    continue;
+                };
+                if structural.len() != path.len() {
+                    if !structural.is_empty() {
+                        let root = crate::ParameterCallTarget::Graph {
+                            graph: key,
+                            parameter: etas_package_metadata::CallableValueParameter {
+                                projection: None,
+                                ..parameter
+                            },
+                        };
+                        let target = self
+                            .intern_external_parameter_projection(root, structural.clone())
+                            .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
+                        let sources = self.trace_argument_origins(
+                            &super::specialize::TraceArgumentBinding::ProjectedExpression {
+                                expr,
+                                path: structural,
+                            },
+                            state,
+                        )?;
+                        environment.parameters.insert(target, sources);
+                    }
+                    continue;
+                }
                 let origins = self.trace_argument_origins(
                     &super::specialize::TraceArgumentBinding::ProjectedExpression { expr, path },
                     state,
@@ -757,12 +976,42 @@ impl EffectSemantics<'_> {
                 )
             });
             let id = crate::facts::CallableEnvironmentId {
+                generic_context: crate::facts::CallableEnvironment::generic_identity(
+                    &environment.generics,
+                ),
+                instance: None,
+                scope: Some(self.callable_environment_scope(environment.owner)?),
                 origin,
                 application,
             };
             self.record_callable_environment(id, environment.clone())?;
             Some(id)
         };
+        if environment_id.is_some() {
+            for parameter in graph
+                .parameter_references()
+                .into_iter()
+                .filter(|parameter| parameter.projection.is_some())
+            {
+                if let Some(sources) = self.metadata_parameter_origins(
+                    key,
+                    parameter,
+                    &environment,
+                    environment_id,
+                    state,
+                    output,
+                )? {
+                    environment.parameters.insert(
+                        crate::ParameterCallTarget::Graph {
+                            graph: key,
+                            parameter,
+                        },
+                        sources,
+                    );
+                }
+            }
+            self.record_callable_environment(environment_id.unwrap(), environment.clone())?;
+        }
         Ok((key, environment, environment_id))
     }
 
@@ -794,7 +1043,7 @@ impl EffectSemantics<'_> {
             .collect::<Vec<_>>();
         let (call_types, call_rows) = self.checked_call_generic_values(site.call, state)?;
         let arguments = self.call_argument_slots(site, node.params.len())?;
-        if !generics.is_empty() {
+        {
             source.environment = self
                 .bind_metadata_environment(
                     MetadataCallBindings {
@@ -818,13 +1067,10 @@ impl EffectSemantics<'_> {
         let type_parameters = self.metadata_environment_type_parameters(source)?;
         let substitutions = types.iter().cloned().collect();
         let type_rows = self.type_row_arguments(&rows, state.owner)?;
-        let mut substitution = etas_types::TypeSubstitutionEngine::existing_indexed(
-            &self.types.store,
-            self.type_lookup(),
-            &substitutions,
-        )
-        .with_type_parameters(&type_parameters)
-        .with_effect_arguments(&type_rows);
+        let mut substitution = self
+            .type_substitution(&substitutions)
+            .with_type_parameters(&type_parameters)
+            .with_effect_arguments(&type_rows);
         let params = checked
             .params
             .iter()
@@ -865,7 +1111,18 @@ impl EffectSemantics<'_> {
                 },
             })
             .collect::<Vec<_>>();
-        let bindings = self.call_trace_bindings(site, &targets)?;
+        let mut bindings = self.call_trace_bindings(site, &targets, state)?;
+        if let Some(id) = source.environment {
+            for (target, sources) in self.callable_environment(id)?.parameters {
+                if matches!(target, crate::ParameterCallTarget::Graph { graph, parameter } if graph == source.graph && parameter.projection.is_some())
+                {
+                    bindings.insert(
+                        target,
+                        super::specialize::TraceArgumentBinding::Origins(sources),
+                    );
+                }
+            }
+        }
         let inferred = self.inferred_callback_parameters(&targets, &params)?;
         let template = summary.action_trace.clone();
         self.merge_parameter_call_summaries(&mut summary, &template, &bindings, state, &inferred)
@@ -953,7 +1210,7 @@ fn metadata_trace_mentions_parameter(
         match trace {
             ActionTrace::ParameterCall { parameter: etas_package_metadata::CallableRequestTarget::Parameter(name) } if name == label => return true,
             ActionTrace::Seq(parts) | ActionTrace::Choice(parts) => pending.extend(parts),
-            ActionTrace::Repeat(part) => pending.push(part),
+            ActionTrace::Recursive { body: Some(part), .. } | ActionTrace::Repeat(part) => pending.push(part),
             ActionTrace::Widened {
                 parameter_calls, ..
             } if parameter_calls.iter().any(|parameter| matches!(parameter, etas_package_metadata::CallableRequestTarget::Parameter(name) if name == label)) => return true,

@@ -66,6 +66,11 @@ pub struct EffectMaterializationInputs {
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    /// A checked member contract fixes behavior; implementation dispatch is
+    /// still supplied by the typed generic application, independently of trace.
+    #[serde(default)]
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub contract_method_calls: HashMap<HirExprId, ()>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub source_call_arguments: HashMap<
         HirExprId,
@@ -140,6 +145,11 @@ pub struct EffectFacts {
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    /// A checked member contract fixes behavior; implementation dispatch is
+    /// still supplied by the typed generic application, independently of trace.
+    #[serde(default)]
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub contract_method_calls: HashMap<HirExprId, ()>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub source_call_arguments: HashMap<
         HirExprId,

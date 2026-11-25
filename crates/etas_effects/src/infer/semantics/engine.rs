@@ -18,6 +18,10 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(super) external_defaults:
+        &'a [crate::AnchoredExternalMetadata<crate::ExternalParameterDefaultMetadata>],
+    pub(super) loop_traces: crate::infer::ordered_trace::LoopTraces,
+    pub(super) trace_equations: crate::infer::recursive_trace::TraceEquations,
     pub(crate) external_parameter_projections: std::cell::RefCell<
         std::sync::Arc<
             std::collections::BTreeMap<
@@ -83,6 +87,9 @@ pub(crate) struct EffectSemantics<'a> {
         >,
     >,
     pub(crate) callable_environment_nodes: std::cell::Cell<usize>,
+    pub(super) capture_sites: std::cell::RefCell<
+        std::collections::BTreeMap<etas_code::CodeFingerprint, Option<HirExprId>>,
+    >,
     pub(crate) parameter_projections: std::cell::RefCell<
         std::sync::Arc<
             std::collections::BTreeMap<
@@ -91,6 +98,10 @@ pub(crate) struct EffectSemantics<'a> {
             >,
         >,
     >,
+    pub(super) call_input_substitution:
+        std::cell::RefCell<super::call_input_substitution::InputSubstitution>,
+    pub(super) projection_evaluation:
+        std::cell::RefCell<super::return_projection::ProjectionEvaluation>,
     pub(super) parameter_projection_index:
         std::cell::RefCell<super::parameter_projection::NativeParameterProjectionIndex>,
     pub(super) type_queries: std::rc::Rc<super::type_queries::EffectTypeQueries>,
@@ -101,6 +112,8 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) global_values: std::sync::Arc<super::state::LatentEnv>,
     pub(crate) call_results: std::sync::Arc<super::state::LatentEnv>,
     pub(crate) discovered_call_results: std::cell::RefCell<super::state::LatentEnv>,
+    pub(crate) checked_read_expressions:
+        std::collections::BTreeMap<EffectUnit, std::collections::BTreeSet<HirExprId>>,
     pub(crate) discovered_global_values: super::state::LatentEnv,
     pub(crate) latent_type_shapes:
         std::sync::Arc<std::sync::OnceLock<super::latent_shape::LatentTypeShapes>>,
@@ -162,6 +175,7 @@ impl<'a> EffectSemantics<'a> {
             std::sync::Arc::new(super::argument_values::ArgumentWrites::build(hir, None).unwrap());
         let mut semantics = Self::from_input(
             crate::infer::analysis::EffectAnalysisInput {
+                external_defaults: &[],
                 spec_unit_targets: Default::default(),
                 spec_method_targets: Default::default(),
                 external_implementations: &[],
@@ -199,6 +213,7 @@ impl<'a> EffectSemantics<'a> {
         type_queries: std::rc::Rc<super::type_queries::EffectTypeQueries>,
     ) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
+            external_defaults,
             spec_unit_targets,
             spec_method_targets,
             external_implementations,
@@ -224,6 +239,7 @@ impl<'a> EffectSemantics<'a> {
             memory_provenance,
         } = input;
         let mut semantics = Self {
+            external_defaults,
             spec_unit_targets,
             discovered_spec_unit_targets: Default::default(),
             spec_method_targets,
@@ -271,6 +287,11 @@ impl<'a> EffectSemantics<'a> {
                     .sum(),
             ),
             callable_environments: std::cell::RefCell::new(callable_environments),
+            capture_sites: Default::default(),
+            loop_traces: Default::default(),
+            trace_equations: Default::default(),
+            call_input_substitution: Default::default(),
+            projection_evaluation: Default::default(),
             parameter_projection_index: std::cell::RefCell::new(
                 super::parameter_projection::NativeParameterProjectionIndex::new(
                     &parameter_projections,
@@ -284,6 +305,7 @@ impl<'a> EffectSemantics<'a> {
             global_values,
             call_results,
             discovered_call_results: Default::default(),
+            checked_read_expressions: Default::default(),
             discovered_global_values: Default::default(),
             latent_type_shapes: Default::default(),
             lambda_capture_references: Default::default(),
@@ -370,12 +392,12 @@ impl<'a> EffectSemantics<'a> {
             std::sync::Arc::unwrap_or_clone(self.external_parameter_projections.into_inner());
         self.inputs.parameter_projections =
             std::sync::Arc::unwrap_or_clone(self.parameter_projections.into_inner());
-        self.diagnostic_materialization_errors.extend(
-            self.requested_types
-                .into_inner()
-                .into_iter()
-                .map(crate::EffectPipelineError::TypeMaterializationRequired),
-        );
+        let requested_types = self.requested_types.into_inner();
+        if !requested_types.is_empty() {
+            self.diagnostic_materialization_errors.push(
+                crate::EffectPipelineError::TypeMaterializationRequired(requested_types),
+            );
+        }
         (
             self.inputs,
             self.diagnostics,
@@ -896,6 +918,7 @@ mod tests {
     #[test]
     pub(crate) fn external_summary_import_root_matches_multi_segment_prefix() {
         let summary = crate::ExternalEffectSummaryMetadata {
+            body_root: None,
             callable_contract: None,
             behavior: None,
             handler_requests: None,

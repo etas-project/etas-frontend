@@ -112,13 +112,10 @@ impl EffectSemantics<'_> {
                 .flat_map(|fact| fact.effect_row_bindings.iter().cloned())
                 .collect();
             let names = std::collections::HashMap::new();
-            let row = match etas_types::TypeSubstitutionEngine::existing_indexed(
-                &self.types.store,
-                self.type_lookup(),
-                &names,
-            )
-            .with_effect_arguments(&rows)
-            .substitute_effect_row(row.clone())
+            let row = match self
+                .type_substitution(&names)
+                .with_effect_arguments(&rows)
+                .substitute_effect_row(row.clone())
             {
                 Ok(row) => row,
                 Err(error) => return self.incomplete_at(span, error.to_string(), state),
@@ -145,6 +142,41 @@ impl EffectSemantics<'_> {
                 span,
                 ActionEventSource::Perform,
             );
+            // This is a backend contract for the checked std action; its
+            // public signature and default Error row remain source-owned.
+            let native_action = match &effect {
+                Effect::Action(action) => Some(action),
+                Effect::AppliedAction(instance) => Some(&instance.action),
+                _ => None,
+            };
+            let observed_default = native_action.is_some_and(|action| {
+                [
+                    "std.effects.Random.entropy",
+                    "std.effects.Clock.now",
+                    "std.effects.Clock.monotonic",
+                    "std.effects.Clock.sleep",
+                ]
+                .into_iter()
+                .any(|name| self.registry.action_by_name(name).as_ref() == Some(action))
+            });
+            let authority = match self.filesystem_open_authority(&effect, args) {
+                Ok(authority) => authority,
+                Err(reason) => return self.incomplete_at(span, reason, state),
+            };
+            if observed_default || authority.is_some() {
+                let mut native = crate::EffectSummary::local();
+                if observed_default {
+                    native.require_runtime(crate::RuntimeRequirementReason::RuntimeHandler);
+                    native.determinism = crate::Determinism::NonDeterministic;
+                    native.independent_determinism = Some(crate::Determinism::NonDeterministic);
+                }
+                if let Some(authority) = authority {
+                    native.requirements = authority;
+                }
+                if let Err(reason) = performed.record_default_behavior(effect.clone(), &native) {
+                    return self.incomplete_at(span, reason, state);
+                }
+            }
             if let Err(reason) = performed.record_default_handler_effects(effect.clone(), row) {
                 return self.incomplete_at(span, reason, state);
             }
@@ -162,6 +194,9 @@ impl EffectSemantics<'_> {
             performed.refresh_default_behavior();
         }
         state.summary.seq_assign(&performed);
+        if let Err(error) = self.record_resumed_request_sources(expr, &effect, args, &mut state) {
+            self.mark_incomplete_at(span, error.to_string(), &mut state);
+        }
         self.inputs.performed_actions.insert(
             expr,
             PerformedActionFact {
@@ -276,7 +311,7 @@ impl EffectSemantics<'_> {
     ) -> Option<&crate::EffectActionSig> {
         match action.action_symbol {
             ResolveResult::Resolved(symbol) => self.registry.action(symbol).or_else(|| {
-                self.standard_action_signature_for_synthetic(action, symbol)
+                self.standard_action_signature_for_synthetic(symbol)
                     .or_else(|| self.external_action_signature_for_synthetic(action, symbol))
             }),
             _ => None,
@@ -294,35 +329,36 @@ impl EffectSemantics<'_> {
                 action: sig.id,
             });
         }
-        self.standard_action_ref_from_resolved_synthetic(action, symbol)
+        self.standard_action_ref_from_resolved_synthetic(symbol)
             .or_else(|| self.external_action_ref_from_resolved_synthetic(action, symbol))
     }
 
     fn standard_action_signature_for_synthetic(
         &self,
-        action: &ResolvedActionRef,
         symbol: etas_hir::SymbolId,
     ) -> Option<&crate::EffectActionSig> {
-        let action_ref = self.standard_action_ref_from_resolved_synthetic(action, symbol)?;
+        let action_ref = self.standard_action_ref_from_resolved_synthetic(symbol)?;
         self.registry.action_signature(&action_ref)
     }
 
     fn standard_action_ref_from_resolved_synthetic(
         &self,
-        action: &ResolvedActionRef,
         symbol: etas_hir::SymbolId,
     ) -> Option<ActionRef> {
         if !is_synthetic_standard_action(self.hir, symbol) {
             return None;
         }
-        let owner = action
-            .effect
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.name.as_str())?;
+        let target = self.hir.standard_action_targets.get(&symbol)?;
+        let symbol = self.std_registry.symbol(*target)?;
+        let etas_std::StdDecl::EffectAction(declaration) = &symbol.decl else {
+            return None;
+        };
         self.registry
-            .action_by_name(&format!("{owner}.{}", action.action))
+            .action_by_name(&symbol.qualified_path.join("."))
+            .or_else(|| {
+                self.registry
+                    .action_by_name(&format!("{}.{}", declaration.owner, declaration.name))
+            })
     }
 
     fn external_action_signature_for_synthetic(
@@ -700,9 +736,7 @@ impl EffectSemantics<'_> {
         match arg {
             HirEffectArg::Type(ty) => self.types.facts.type_refs.get(ty).copied(),
             HirEffectArg::Path(path) => {
-                let ResolveResult::Resolved(symbol) = path.resolution else {
-                    return None;
-                };
+                let symbol = self.type_symbols.resolved_type_symbol(self.hir, path)?;
                 let data = self.hir.symbols.get(symbol)?;
                 match self
                     .type_symbols

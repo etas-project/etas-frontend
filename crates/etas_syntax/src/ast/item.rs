@@ -364,6 +364,7 @@ impl ImplTarget {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ImplItem {
     Flow(Box<FlowDecl>),
+    Tool(Box<ToolDecl>),
     Action(Box<EffectActionDecl>),
     Error(Span),
 }
@@ -489,6 +490,7 @@ pub enum DeclarationConformanceTarget {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ToolDecl {
+    pub annotations: Vec<Annotation>,
     pub visibility: Visibility,
     pub path: Path,
     pub type_params: Vec<TypeParam>,
@@ -520,6 +522,8 @@ impl ToolBody {
 pub struct AgentDecl {
     pub visibility: Visibility,
     pub name: Name,
+    pub type_params: Vec<TypeParam>,
+    pub state: Option<TypeExpr>,
     pub params: Vec<Param>,
     pub output_type: Option<TypeExpr>,
     pub effects: Option<EffectRow>,

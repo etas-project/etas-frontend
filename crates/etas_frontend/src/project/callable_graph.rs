@@ -310,6 +310,7 @@ fn effect_footprint(
         requested_actions: row(&value.requested_actions, resolver)?,
         default_actions: row(&value.default_actions, resolver)?,
         handled_actions: row(&value.handled_actions, resolver)?,
+        required_authority: row(&value.required_authority, resolver)?,
         handler_requests: value
             .handler_requests
             .as_ref()
@@ -424,6 +425,13 @@ fn trace(
                 .map(|part| trace(part, resolver))
                 .collect::<Result<_, _>>()?,
         ),
+        metadata::ActionTrace::Recursive { id, body } => T::Recursive {
+            id: *id,
+            body: body
+                .as_ref()
+                .map(|body| trace(body, resolver).map(Box::new))
+                .transpose()?,
+        },
         metadata::ActionTrace::Repeat(part) => T::Repeat(Box::new(trace(part, resolver)?)),
         metadata::ActionTrace::UnknownOrder(actions) => T::UnknownOrder(
             actions

@@ -166,6 +166,51 @@ impl TypeSymbolIndex {
         }
     }
 
+    pub fn resolved_type_symbol(
+        &self,
+        hir: &HirProgram,
+        path: &etas_hir::ResolvedPath,
+    ) -> Option<SymbolId> {
+        match &path.resolution {
+            ResolveResult::Resolved(symbol) => Some(*symbol),
+            ResolveResult::PartiallyResolved(partial)
+                if partial.resolved_prefix.is_none()
+                    && partial.reason
+                        == etas_hir::PartialResolutionReason::PackageResolverRequired =>
+            {
+                self.canonical_path(hir, &partial.remaining)
+            }
+            ResolveResult::PartiallyResolved(partial) => {
+                let symbol = hir.symbols.get(partial.resolved_prefix?)?;
+                let mut target = match &symbol.def {
+                    SymbolDef::ImportAlias { path, .. } => path.clone(),
+                    SymbolDef::Module { module } => hir
+                        .modules_arena
+                        .get(*module)?
+                        .name
+                        .as_ref()?
+                        .segments
+                        .iter()
+                        .map(|part| part.name.clone())
+                        .collect(),
+                    _ => return None,
+                };
+                target.extend(partial.remaining.iter().cloned());
+                self.canonical_path(hir, &target)
+            }
+            ResolveResult::Unresolved => {
+                let (prefix, remaining) = path.segments.split_first()?;
+                self.canonical_import_path(
+                    hir,
+                    path.span.source,
+                    &prefix.name,
+                    remaining.iter().map(|part| part.name.clone()),
+                )
+            }
+            ResolveResult::Ambiguous(_) => None,
+        }
+    }
+
     pub fn canonical_path(&self, hir: &HirProgram, path: &[String]) -> Option<SymbolId> {
         let symbol = self.canonical_paths.get(path).copied()?;
         self.canonical_symbol(hir, symbol)

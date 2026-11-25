@@ -25,7 +25,10 @@ pub(super) fn validate(
                     } => pending.extend(parameter_calls),
                     ProjectExternalActionTraceInput::Seq(parts)
                     | ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
-                    ProjectExternalActionTraceInput::Repeat(part)
+                    ProjectExternalActionTraceInput::Recursive {
+                        body: Some(part), ..
+                    }
+                    | ProjectExternalActionTraceInput::Repeat(part)
                     | ProjectExternalActionTraceInput::DefaultHandler { body: part, .. } => {
                         traces.push(part)
                     }
@@ -42,7 +45,11 @@ pub(super) fn validate(
                     .and_then(|effects| effects.behavior.as_ref()),
                 &mut pending,
             );
-            if let Some(graph) = &summary.returned_callables {
+            for graph in summary
+                .callable_body
+                .iter()
+                .chain(&summary.returned_callables)
+            {
                 graph_targets(graph, &mut pending);
             }
         }

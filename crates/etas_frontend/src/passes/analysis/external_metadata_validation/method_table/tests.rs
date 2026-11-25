@@ -44,6 +44,7 @@ fn in_memory_method_metadata_must_reference_its_checked_descriptor_binders() {
             descriptors: public.definition_descriptors.map(std::sync::Arc::new),
         }],
         external_public_metadata: vec![crate::ProjectExternalPublicMetadataInput {
+            constructor_contracts: public.constructor_contracts,
             scoped_callbacks: public.scoped_callbacks,
             package,
             methods: public.methods,

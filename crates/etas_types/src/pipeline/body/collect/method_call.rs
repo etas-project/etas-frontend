@@ -67,7 +67,8 @@ pub fn collect_method_call<E>(
 
 pub(super) fn has_bindable_method<E>(ctx: &BodyCollectContext<'_, '_, E>, method: &str) -> bool {
     ctx.ctx.methods().member(method).any(|(_, entry)| {
-        matches!(entry.receiver, MethodReceiver::Value { .. })
+        (matches!(entry.receiver, MethodReceiver::Value { .. })
+            || matches!(entry.owner, crate::method::MethodOwner::Agent(_)))
             && !matches!(entry.target, crate::method::MethodTarget::Standard { .. })
     })
 }
@@ -167,7 +168,9 @@ pub(super) fn collect_selected<E>(
     let mut candidate_hints = Vec::with_capacity(entries.len());
     for (index, entry) in entries {
         if binding.is_some()
-            && (!matches!(entry.receiver, MethodReceiver::Value { .. })
+            && (!(matches!(entry.receiver, MethodReceiver::Value { .. })
+                || (entry.receiver.is_updating()
+                    && matches!(entry.owner, crate::method::MethodOwner::Agent(_))))
                 || matches!(entry.target, crate::method::MethodTarget::Standard { .. }))
         {
             continue;
@@ -268,7 +271,9 @@ pub(super) fn collect_selected<E>(
         };
         let mut ty = ctx.ctx.interner.intern(Type::Function(flow.clone()));
         if binding.is_some() {
-            let MethodReceiver::Value { slot } = entry.receiver else {
+            let (MethodReceiver::Value { slot } | MethodReceiver::Updating { slot }) =
+                entry.receiver
+            else {
                 unreachable!()
             };
             let receiver = flow.input[slot as usize];
@@ -401,9 +406,9 @@ pub(super) fn collect_selected<E>(
 }
 
 fn common_inputs(candidates: &[Option<Vec<TypeId>>]) -> Option<Vec<TypeId>> {
-    let first = candidates.first()?.as_ref()?.clone();
-    candidates
-        .iter()
-        .all(|candidate| candidate.as_ref() == Some(&first))
-        .then_some(first)
+    // A candidate whose argument names/arity cannot bind will be rejected by
+    // selection. It must not erase context supplied by the viable candidates.
+    let mut bound = candidates.iter().filter_map(Option::as_ref);
+    let first = bound.next()?.clone();
+    bound.all(|inputs| *inputs == first).then_some(first)
 }

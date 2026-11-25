@@ -33,6 +33,7 @@ pub(in crate::package_metadata::projection) fn behavior(
         InterpreterSupport::Rejected(_) => return None,
     };
     Some(CallableValueBehavior {
+        suspension: None,
         determinism: determinism(summary.determinism),
         independent_determinism: summary.independent_determinism.map(determinism),
         host_requirements: host,

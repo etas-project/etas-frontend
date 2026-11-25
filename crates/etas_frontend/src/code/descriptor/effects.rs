@@ -126,10 +126,14 @@ impl DefinitionDescriptorProjector<'_> {
                     (definition, arguments)
                 }
             };
-            bounds.push(SpecInfo {
+            let bound = SpecInfo {
                 definition,
                 arguments,
-            });
+            };
+            // Source and std references can resolve to the same contract.
+            if !bounds.contains(&bound) {
+                bounds.push(bound);
+            }
         }
         Ok(bounds)
     }

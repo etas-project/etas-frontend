@@ -10,7 +10,10 @@ use crate::{
 };
 
 pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Option<TypeId> {
-    let is_path_type = matches!(ctx.hir.types[ty], HirType::Path { .. });
+    let is_path_type = matches!(
+        ctx.hir.types[ty],
+        HirType::Path { .. } | HirType::Metadata { .. }
+    );
     if !is_path_type && let Some(existing) = ctx.type_ref(ty) {
         return match ctx.instantiate_annotation_type(existing) {
             Ok(lowered) => {
@@ -30,6 +33,58 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
         };
     }
     let lowered = match ctx.hir.types[ty].clone() {
+        HirType::Metadata {
+            ty: template,
+            parameters,
+            span,
+        } => {
+            let input = match super::external::package_type_input(&template) {
+                Ok(input) => input,
+                Err(error) => {
+                    ctx.diagnostics.push(Diagnostic::type_check(
+                        TypeDiagnosticCode::IncompleteTypeFacts,
+                        span,
+                        error.message,
+                    ));
+                    return None;
+                }
+            };
+            let lowered = super::external::lower_external_type(ctx, span, &input);
+            let named = parameters
+                .into_iter()
+                .filter_map(|parameter| {
+                    Some((
+                        ctx.hir.symbols.get(parameter)?.name.clone(),
+                        ctx.bound_type_parameter(parameter)?,
+                    ))
+                })
+                .collect();
+            let lowered =
+                match crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &named, None)
+                    .substitute(lowered)
+                {
+                    Ok(lowered) => lowered,
+                    Err(error) => {
+                        ctx.diagnostics.push(Diagnostic::type_check(
+                            TypeDiagnosticCode::IncompleteTypeFacts,
+                            span,
+                            error.to_string(),
+                        ));
+                        return None;
+                    }
+                };
+            match ctx.instantiate_annotation_type(lowered) {
+                Ok(lowered) => lowered,
+                Err(error) => {
+                    ctx.diagnostics.push(Diagnostic::type_check(
+                        TypeDiagnosticCode::IncompleteTypeFacts,
+                        span,
+                        error.to_string(),
+                    ));
+                    return None;
+                }
+            }
+        }
         HirType::Existential { bounds, span } => {
             let bounds = super::existential::bounds(ctx, &bounds)?;
             let ty = ctx.interner.intern(Type::Existential { bounds });
@@ -441,7 +496,11 @@ fn lower_declared_path(
             if let Some(fact) = fact {
                 return match fact {
                     crate::SymbolTypeFact::Agent { signature } => {
-                        apply_declared_type_args(ctx, signature.component, Vec::new(), args)
+                        let params = match ctx.interner.store().get(signature.component) {
+                            Some(Type::Nominal(nominal)) => nominal.params.clone(),
+                            _ => Vec::new(),
+                        };
+                        apply_declared_type_args(ctx, signature.component, params, args)
                     }
                     crate::SymbolTypeFact::TypeAlias { target, params } => apply_alias_type(
                         ctx,
@@ -492,7 +551,7 @@ pub(crate) fn agent_context_ref(
 ) -> Option<crate::AgentContextRef> {
     if let Some(symbol) = resolved_source_type_symbol(ctx, path)
         .and_then(|symbol| ctx.symbols.canonical_symbol(ctx.hir, symbol))
-        && ctx.hir.agent_methods.contains_key(&symbol)
+        && (ctx.hir.agent_methods.contains_key(&symbol) || ctx.agent_method(symbol).is_some())
     {
         return Some(symbol.into());
     }
@@ -506,6 +565,15 @@ pub(crate) fn agent_context_ref(
         .symbols
         .canonical_symbol(ctx.hir, partial.resolved_prefix?)?;
     if let Some(method) = ctx.hir.agent_method(owner, name) {
+        return Some(method.symbol.into());
+    }
+    let facts = ctx
+        .signature_base
+        .map_or(&ctx.signature_facts, |base| &base.facts);
+    if let Some(SymbolDef::Item { item }) = ctx.hir.symbols.get(owner).map(|symbol| &symbol.def)
+        && let Some(crate::ItemSignature::Agent(agent)) = facts.item_signatures.get(item)
+        && let Some(method) = facts.agent_method(agent.component, name)
+    {
         return Some(method.symbol.into());
     }
     let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
@@ -526,43 +594,7 @@ pub(crate) fn resolved_source_type_symbol(
     ctx: &TypePipelineContext<'_>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<etas_hir::SymbolId> {
-    match &path.resolution {
-        ResolveResult::Resolved(symbol) => Some(*symbol),
-        ResolveResult::PartiallyResolved(partial)
-            if partial.resolved_prefix.is_none()
-                && partial.reason == etas_hir::PartialResolutionReason::PackageResolverRequired =>
-        {
-            ctx.symbols.canonical_path(ctx.hir, &partial.remaining)
-        }
-        ResolveResult::PartiallyResolved(partial) => {
-            let prefix = partial.resolved_prefix?;
-            let symbol = ctx.hir.symbols.get(prefix)?;
-            let SymbolDef::ImportAlias {
-                path: target_path, ..
-            } = &symbol.def
-            else {
-                return None;
-            };
-            let mut target_path = target_path.clone();
-            target_path.extend(partial.remaining.iter().cloned());
-            ctx.symbols.canonical_path(ctx.hir, &target_path)
-        }
-        ResolveResult::Unresolved => unresolved_import_alias_type_symbol(ctx, path),
-        ResolveResult::Ambiguous(_) => None,
-    }
-}
-
-fn unresolved_import_alias_type_symbol(
-    ctx: &TypePipelineContext<'_>,
-    path: &etas_hir::ResolvedPath,
-) -> Option<etas_hir::SymbolId> {
-    let (prefix, remaining) = path.segments.split_first()?;
-    ctx.symbols.canonical_import_path(
-        ctx.hir,
-        path.span.source,
-        &prefix.name,
-        remaining.iter().map(|segment| segment.name.clone()),
-    )
+    ctx.symbols.resolved_type_symbol(ctx.hir, path)
 }
 
 fn apply_alias_type(

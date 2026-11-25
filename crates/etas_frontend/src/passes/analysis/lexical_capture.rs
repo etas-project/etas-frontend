@@ -94,18 +94,27 @@ pub(crate) fn stateful_items(
     Ok(stateful)
 }
 
-/// Diagnose source-visible scope transfers. Opaque higher-order environments
-/// retain the same runtime binding ownership checks at their actual boundary.
+pub(super) type CaptureLayouts =
+    HashMap<etas_hir::HirExprId, etas_hir_analysis::closures::ClosureCaptureLayout>;
+
+/// Diagnose transfers of local mutable bindings across their owning scope.
 pub(crate) fn escape_diagnostics(
     hir: &HirRevision,
     types: &TypeFacts,
+    layouts: &CaptureLayouts,
 ) -> Result<Vec<etas_core::Diagnostic>, String> {
     use etas_hir::{HirNodeRef, HirOwner, HirStmt};
-    let layouts = etas_hir_analysis::closures::analyze_runtime_captures(&hir.view())?;
     let scopes = etas_hir_analysis::closures::ClosureScopes::build(&hir.scopes)?;
     let view = hir.view();
     let mut diagnostics = Vec::new();
-    let origins = |expr| retained_mutable_bindings(hir, types, &layouts, expr);
+    let origins = |expr| {
+        retained_bindings(hir, layouts, expr, |symbol| {
+            matches!(
+                types.symbol_types.get(&symbol),
+                Some(SymbolTypeFact::Local { mutable: true, .. })
+            )
+        })
+    };
     let declaration = |symbol| match hir.symbols.get(symbol).map(|symbol| &symbol.def) {
         Some(SymbolDef::Local { binding, .. }) => Some(*binding),
         _ => None,
@@ -204,9 +213,7 @@ fn capture_activation(
             HirOwner::Body(body) => match body.kind {
                 HirBodyKind::Lambda(expr) => return Some(CaptureActivation::Lambda(expr)),
                 HirBodyKind::HandlerArm(arm) => return Some(CaptureActivation::Handler(arm)),
-                HirBodyKind::MatchArm { .. } | HirBodyKind::StageLimit { .. } => {
-                    *index.body_owner.get(&body)?
-                }
+                HirBodyKind::MatchArm { .. } => *index.body_owner.get(&body)?,
                 _ => return Some(CaptureActivation::Item(body.item)),
             },
             HirOwner::Stmt(stmt) => *index.block_owner.get(index.stmt_block.get(&stmt)?)?,
@@ -218,11 +225,11 @@ fn capture_activation(
     }
 }
 
-fn retained_mutable_bindings(
+pub(super) fn retained_bindings(
     hir: &HirRevision,
-    types: &TypeFacts,
-    layouts: &HashMap<etas_hir::HirExprId, etas_hir_analysis::closures::ClosureCaptureLayout>,
+    layouts: &CaptureLayouts,
     expr: etas_hir::HirExprId,
+    retains: impl Fn(etas_hir::SymbolId) -> bool,
 ) -> HashSet<etas_hir::SymbolId> {
     use etas_hir::{HirFieldInit, HirStmt};
     enum Value {
@@ -252,10 +259,7 @@ fn retained_mutable_bindings(
             Value::Expr(expr) if expressions.insert(expr) => match &hir.exprs[expr] {
                 HirExpr::Lambda { .. } | HirExpr::Handler { .. } => {
                     for symbol in &layouts[&expr].captures {
-                        if matches!(
-                            types.symbol_types.get(symbol),
-                            Some(SymbolTypeFact::Local { mutable: true, .. })
-                        ) {
+                        if retains(*symbol) {
                             retained.insert(*symbol);
                         } else {
                             pending.push(Value::Binding(*symbol));
@@ -295,6 +299,32 @@ fn retained_mutable_bindings(
                 }
                 HirExpr::Block(block) => {
                     pending.extend(hir.blocks[*block].final_expr.map(Value::Expr))
+                }
+                HirExpr::If {
+                    then_block,
+                    else_branch,
+                    ..
+                } => {
+                    pending.extend(hir.blocks[*then_block].final_expr.map(Value::Expr));
+                    match else_branch {
+                        Some(etas_hir::HirElseBranch::If(expr)) => pending.push(Value::Expr(*expr)),
+                        Some(etas_hir::HirElseBranch::Block(block)) => {
+                            pending.extend(hir.blocks[*block].final_expr.map(Value::Expr))
+                        }
+                        None => {}
+                    }
+                }
+                HirExpr::Match { arms, .. } => {
+                    for arm in arms {
+                        match arm.body {
+                            etas_hir::HirMatchArmBody::Expr(expr) => {
+                                pending.push(Value::Expr(expr))
+                            }
+                            etas_hir::HirMatchArmBody::Block(block) => {
+                                pending.extend(hir.blocks[block].final_expr.map(Value::Expr))
+                            }
+                        }
+                    }
                 }
                 _ => (),
             },

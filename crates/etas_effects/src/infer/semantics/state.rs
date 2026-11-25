@@ -107,9 +107,14 @@ impl LatentEnv {
 pub(crate) struct EffectState {
     pub(crate) unit: Option<EffectUnit>,
     pub(crate) owner: Option<HirItemId>,
+    pub(crate) application: Option<etas_code::CodeFingerprint>,
     pub(crate) summary: EffectSummary,
     pub(crate) local_latent_values: LatentEnv,
     pub(crate) local_latent_containers: LatentEnv,
+    pub(crate) agent_state: BTreeMap<
+        (HirExprId, Vec<etas_code::descriptor::ValueProjectionStep>),
+        BTreeSet<LatentSource>,
+    >,
     pub(crate) handler_depth: usize,
     pub(crate) latent_definition_depth: usize,
     pub(crate) resume_count: usize,
@@ -145,6 +150,7 @@ impl PartialOrder for EffectState {
     fn less_equal(&self, other: &Self) -> bool {
         option_less_equal(&self.unit, &other.unit)
             && option_less_equal(&self.owner, &other.owner)
+            && option_less_equal(&self.application, &other.application)
             && self.summary.less_equal(&other.summary)
             && self
                 .local_latent_values
@@ -152,6 +158,7 @@ impl PartialOrder for EffectState {
             && self
                 .local_latent_containers
                 .less_equal(&other.local_latent_containers)
+            && map_set_less_equal(&self.agent_state, &other.agent_state)
             && self.handler_depth == other.handler_depth
             && self.latent_definition_depth == other.latent_definition_depth
             && self.resume_count <= other.resume_count
@@ -178,8 +185,10 @@ impl JoinSemiLattice for EffectState {
         changed |= self.exits.join_assign(&other.exits);
         let unit_conflict = option_conflict(self.unit, other.unit);
         let owner_conflict = option_conflict(self.owner, other.owner);
+        let application_conflict = option_conflict(self.application, other.application);
         changed |= join_option(&mut self.unit, other.unit);
         changed |= join_option(&mut self.owner, other.owner);
+        changed |= join_option(&mut self.application, other.application);
         changed |= self.summary.join_branch(&other.summary);
         changed |= self
             .local_latent_values
@@ -187,11 +196,19 @@ impl JoinSemiLattice for EffectState {
         changed |= self
             .local_latent_containers
             .join_assign(&other.local_latent_containers);
+        for (slot, incoming) in &other.agent_state {
+            changed |= !self.agent_state.contains_key(slot);
+            let origins = self.agent_state.entry(slot.clone()).or_default();
+            let before = origins.len();
+            origins.extend(incoming);
+            changed |= origins.len() != before;
+        }
         let resumes = self.resume_count.max(other.resume_count);
         changed |= resumes != self.resume_count;
         self.resume_count = resumes;
         if unit_conflict
             || owner_conflict
+            || application_conflict
             || self.handler_depth != other.handler_depth
             || self.latent_definition_depth != other.latent_definition_depth
         {
@@ -214,9 +231,11 @@ impl EffectState {
     fn is_bottom_like(&self) -> bool {
         self.unit.is_none()
             && self.owner.is_none()
+            && self.application.is_none()
             && self.summary == EffectSummary::default()
             && self.local_latent_values == LatentEnv::default()
             && self.local_latent_containers == LatentEnv::default()
+            && self.agent_state.is_empty()
             && self.handler_depth == 0
             && self.latent_definition_depth == 0
             && self.resume_count == 0

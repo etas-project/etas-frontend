@@ -60,14 +60,72 @@ flow second() -> unit ![] { return; }
 }
 
 #[test]
+fn invocation_input_equations_keep_separate_contributions_to_a_shared_frame() {
+    with_semantics(|semantics, owner, parameter, first, second, _, call| {
+        let site = semantics.callable_environment_site(call).unwrap();
+        let id = CallableEnvironmentId {
+            generic_context: None,
+            instance: Some(site),
+            scope: None,
+            origin: site,
+            application: site,
+        };
+        let target = ParameterCallTarget::Native(parameter);
+        let first_input = CodeFingerprint::of_bytes("test.input-equation", b"first");
+        let second_input = CodeFingerprint::of_bytes("test.input-equation", b"second");
+        let snapshot = |source| CallableEnvironment {
+            owner,
+            invocation_origin: Some(site),
+            invocation_inputs: Default::default(),
+            generics: Default::default(),
+            parameters: [(target, [LatentSource::Unit(source)].into())].into(),
+        };
+        semantics
+            .record_invocation_environment(id, first_input, snapshot(first))
+            .unwrap();
+        semantics
+            .record_invocation_environment(id, second_input, snapshot(second))
+            .unwrap();
+        assert_eq!(
+            semantics.callable_environment(id).unwrap().parameters[&target],
+            [LatentSource::Unit(first), LatentSource::Unit(second)].into()
+        );
+        semantics
+            .record_invocation_environment(id, first_input, snapshot(second))
+            .unwrap();
+        let frame = semantics.callable_environment(id).unwrap();
+        assert_eq!(
+            frame.parameters[&target],
+            [LatentSource::Unit(second)].into()
+        );
+        assert_eq!(frame.invocation_inputs.len(), 2);
+        let bytes =
+            bincode::serde::encode_to_vec(&(id, &frame), bincode::config::standard()).unwrap();
+        let ((restored_id, restored), consumed): (
+            (CallableEnvironmentId, CallableEnvironment),
+            usize,
+        ) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(restored_id, id);
+        assert_eq!(restored, frame);
+        assert_eq!(semantics.callable_environments.borrow().len(), 1);
+    });
+}
+
+#[test]
 fn captured_environment_snapshots_are_copy_on_write_and_owner_checked() {
     with_semantics(|semantics, owner, parameter, first, second, lambda, _| {
         let site = semantics.callable_environment_site(lambda).unwrap();
         let id = CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: site,
             application: site,
         };
         let snapshot = |owner, source| CallableEnvironment {
+            invocation_origin: None,
+            invocation_inputs: Default::default(),
             owner,
             generics: Default::default(),
             parameters: [(
@@ -107,10 +165,15 @@ fn a_new_known_origin_does_not_erase_an_unproved_capture_branch() {
     with_semantics(|semantics, owner, parameter, first, _, lambda, call| {
         let site = semantics.callable_environment_site(lambda).unwrap();
         let id = CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: site,
             application: site,
         };
         let snapshot = |origin| CallableEnvironment {
+            invocation_origin: None,
+            invocation_inputs: Default::default(),
             owner,
             generics: BTreeMap::new(),
             parameters: [(ParameterCallTarget::Native(parameter), [origin].into())].into(),
@@ -135,11 +198,16 @@ fn conflicting_generic_capture_bindings_fail_without_mutating_the_saved_environm
         use crate::facts::{CallableGenericParameter, CallableGenericValue};
         let site = semantics.callable_environment_site(lambda).unwrap();
         let id = CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: site,
             application: site,
         };
         let key = CallableGenericParameter::Native { owner, position: 0 };
         let snapshot = |ty| CallableEnvironment {
+            invocation_origin: None,
+            invocation_inputs: Default::default(),
             owner,
             parameters: Default::default(),
             generics: [(key, CallableGenericValue::Type(ty))].into(),
@@ -173,6 +241,9 @@ fn cyclic_capture_references_are_relocated_by_a_finite_worklist() {
     with_semantics(|semantics, owner, parameter, _, _, lambda, call| {
         let site = semantics.callable_environment_site(lambda).unwrap();
         let id = CallableEnvironmentId {
+            generic_context: None,
+            instance: None,
+            scope: None,
             origin: site,
             application: site,
         };
@@ -183,6 +254,8 @@ fn cyclic_capture_references_are_relocated_by_a_finite_worklist() {
             .record_callable_environment(
                 id,
                 CallableEnvironment {
+                    invocation_origin: None,
+                    invocation_inputs: Default::default(),
                     owner,
                     generics: Default::default(),
                     parameters: [(

@@ -1250,6 +1250,7 @@ fn validate_clauses(
 
 fn action_span(trace: &ActionTraceDomain, action: &Effect) -> Option<Span> {
     match trace {
+        ActionTraceDomain::Shared(body) => action_span(&body.body, action),
         ActionTraceDomain::Event(event) if &event.action == action => Some(event.span),
         ActionTraceDomain::Seq(parts)
         | ActionTraceDomain::Choice(parts)
@@ -1264,7 +1265,8 @@ fn action_span(trace: &ActionTraceDomain, action: &Effect) -> Option<Span> {
         | ActionTraceDomain::ParameterCall { .. }
         | ActionTraceDomain::TaskAwait { .. }
         | ActionTraceDomain::UnknownOrder(_)
-        | ActionTraceDomain::Widened { .. } => None,
+        | ActionTraceDomain::Widened { .. }
+        | ActionTraceDomain::Recursive { .. } => None,
     }
 }
 
@@ -1297,6 +1299,7 @@ mod tests {
         assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
         let std_registry = etas_std::standard_registry();
         let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+            external_defaults: &[],
             external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
@@ -1388,6 +1391,7 @@ mod tests {
         assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
         let std_registry = etas_std::standard_registry();
         let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+            external_defaults: &[],
             external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,

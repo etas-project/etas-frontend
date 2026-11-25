@@ -138,13 +138,7 @@ impl EffectSemantics<'_> {
                 open: equations.first().and_then(|(_, actual)| actual.open),
             });
             for (fixed, actual) in &equations {
-                if fixed.open.is_some()
-                    || actual.open != result.open
-                    || fixed
-                        .effects
-                        .iter()
-                        .any(|effect| !actual.effects.contains(effect))
-                {
+                if fixed.open.is_some() || actual.open != result.open {
                     return Err(incompatible());
                 }
                 for effect in actual.effects.iter() {
@@ -156,7 +150,14 @@ impl EffectSemantics<'_> {
             for (fixed, actual) in &equations {
                 let mut combined = fixed.clone();
                 combined.union_assign(&result);
-                if combined != *actual {
+                // Callback rows are upper bounds. A callback need not perform
+                // every fixed effect (a pure job is valid for Error<X>, E),
+                // and different jobs may use different subsets of inferred E.
+                if actual
+                    .effects
+                    .iter()
+                    .any(|effect| !combined.effects.contains(effect))
+                {
                     return Err(incompatible());
                 }
             }
@@ -358,6 +359,7 @@ impl EffectSemantics<'_> {
                 rows: &effect_row_bindings,
             },
             &mut BTreeSet::new(),
+            false,
         )?;
         self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
@@ -462,6 +464,14 @@ impl EffectSemantics<'_> {
         }
         self.solve_callback_completion(&mut specialized, &trace_bindings, &type_bindings, state)?;
         self.forward_callback_outcomes(&mut specialized, &trace_bindings, &param_targets, state)?;
+        if !type_bindings.is_empty()
+            || !effect_row_bindings.is_empty()
+            || bindings.iter().any(|(_, argument)| {
+                self.expr_type_contains_flow(*argument) || self.expr_type_has_parameters(*argument)
+            })
+        {
+            crate::infer::recursive_trace::defer_context(&mut specialized, site.call);
+        }
         Ok(specialized)
     }
 
@@ -552,12 +562,9 @@ impl EffectSemantics<'_> {
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 owner,
                 source_memory_place: None,
-                types: etas_types::TypeSubstitutionEngine::existing_indexed(
-                    &self.types.store,
-                    self.type_lookup(),
-                    &names,
-                )
-                .with_type_parameters(type_parameters),
+                types: self
+                    .type_substitution(&names)
+                    .with_type_parameters(type_parameters),
             },
             summary,
         )
@@ -581,11 +588,7 @@ impl EffectSemantics<'_> {
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 owner: None,
                 source_memory_place: Some(place),
-                types: etas_types::TypeSubstitutionEngine::existing_indexed(
-                    &self.types.store,
-                    self.type_lookup(),
-                    &empty_names,
-                ),
+                types: self.type_substitution(&empty_names),
             },
             summary,
         )
@@ -661,17 +664,17 @@ impl EffectSemantics<'_> {
     ) -> Result<Effect, EffectSpecializationError> {
         match effect {
             Effect::AppliedAction(mut action) => {
-                let signature = self
+                let selectors = self
                     .registry
-                    .action_signature(&action.action)
-                    .filter(|signature| signature.effect_args.len() == action.args.len())
+                    .action_selectors(&action.action)
+                    .filter(|selectors| selectors.len() == action.args.len())
                     .ok_or_else(|| {
                         EffectSpecializationError::InvalidActionSignature(action.action.clone())
                     })?;
                 action.args = action
                     .args
                     .into_iter()
-                    .zip(&signature.effect_args)
+                    .zip(selectors)
                     .map(|(arg, kind)| {
                         self.specialize_effect_arg(arg, kind, bindings, type_bindings)
                     })
@@ -885,7 +888,10 @@ impl EffectSemantics<'_> {
         name: &str,
     ) -> Result<bool, etas_types::TypeSubstitutionError> {
         match trace {
-            ActionTraceDomain::Empty => Ok(false),
+            ActionTraceDomain::Shared(body) => {
+                self.action_trace_contains_named_type(&body.body, name)
+            }
+            ActionTraceDomain::Empty | ActionTraceDomain::Recursive { body: None, .. } => Ok(false),
             ActionTraceDomain::Event(event) => self.effect_contains_named_type(&event.action, name),
             ActionTraceDomain::ParameterCall { .. } => Ok(false),
             ActionTraceDomain::Seq(items)
@@ -898,7 +904,10 @@ impl EffectSemantics<'_> {
                 }
                 Ok(false)
             }
-            ActionTraceDomain::Repeat(item)
+            ActionTraceDomain::Recursive {
+                body: Some(item), ..
+            }
+            | ActionTraceDomain::Repeat(item)
             | ActionTraceDomain::TaskStart { body: item, .. }
             | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 self.action_trace_contains_named_type(item, name)

@@ -184,6 +184,7 @@ macro_rules! effect_expressions {
         $apply!(
             handled_body_requests,
             native_call_targets,
+            contract_method_calls,
             source_call_arguments,
             dynamic_call_sources,
             iteration_call_sources,

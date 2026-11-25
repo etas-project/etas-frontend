@@ -2,6 +2,28 @@ use crate::{NumericLiteralKind, PrimitiveType, Type, TypeId, TypeStore};
 
 const ETAS_POINTER_BITS: u32 = 64;
 
+pub(super) fn validate_with_facts(
+    store: &TypeStore,
+    facts: &crate::SpecFacts,
+    kind: NumericLiteralKind,
+    text: &str,
+    ty: TypeId,
+) -> Result<(), String> {
+    if matches!(store.get(ty), Some(Type::Named(name)) if name.source_parameter.is_some())
+        && crate::numeric_family::supports(store, facts, ty)
+    {
+        // A Number body must be valid for every permitted instantiation,
+        // including unsigned integers and floats. These integer constants are
+        // exact in the entire closed numeric family.
+        if kind == NumericLiteralKind::Integer {
+            checked_integer_literal(text, PrimitiveType::I8)?;
+            return checked_integer_literal(text, PrimitiveType::U8).map(|_| ());
+        }
+        return Err("a Number literal must be representable in every numeric member".into());
+    }
+    validate(store, kind, text, ty)
+}
+
 /// A validated integer value, independent of the source radix and separators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CheckedIntegerLiteral {

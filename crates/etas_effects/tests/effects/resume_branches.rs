@@ -10,7 +10,7 @@ fn mutually_exclusive_resume_branches_are_single_use() {
         "let nested = handler { Solver.ask() => { resume 9; } }; resume 1;",
         "if cached { resume 1; } resume 2;",
         "if cached { finish 1; } resume 2;",
-        "while cached limit Iterations(2) { resume 1; } resume 2;",
+        "while cached { resume 1; } resume 2;",
         "match cached { true => { resume 1; }, false => {} } resume 2;",
         "if cached { resume 1; resume 2; } else { resume 3; }",
     ] {

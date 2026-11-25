@@ -31,18 +31,36 @@ impl<'a> ScopedGenericArguments<'a> {
 }
 
 impl EffectSemantics<'_> {
+    fn metadata_owner_parameters(
+        &self,
+        graph: etas_code::CodeFingerprint,
+    ) -> Option<(&[CallableGenericParam], usize)> {
+        if let Some(method) = self
+            .implementation_graphs
+            .get(&graph)
+            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
+        {
+            return Some((&method.owner_params, 0));
+        }
+        self.external_defaults
+            .iter()
+            .find(|default| default.graph_key == graph)
+            .map(|default| {
+                (
+                    default.owner_params.as_slice(),
+                    default.generics.len() - default.owner_params.len(),
+                )
+            })
+    }
+
     pub(super) fn metadata_environment_type_parameters(
         &self,
         source: crate::MetadataCallableSource,
     ) -> Result<std::collections::HashMap<TypeId, TypeId>, EffectSpecializationError> {
-        let Some(method) = self
-            .implementation_graphs
-            .get(&source.graph)
-            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
-        else {
+        let Some((owner_params, offset)) = self.metadata_owner_parameters(source.graph) else {
             return Ok(Default::default());
         };
-        if method.owner_params.is_empty() {
+        if owner_params.is_empty() {
             return Ok(Default::default());
         }
         let snapshot = source
@@ -52,15 +70,14 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
                 reason: "metadata method owner has no captured type arguments".into(),
             })?;
-        method
-            .owner_params
+        owner_params
             .iter()
             .enumerate()
             .map(|(position, parameter)| {
                 let key = Parameter::Graph {
                     graph: source.graph,
                     scope: etas_package_metadata::CallableValueScope::Root,
-                    position: position as u32,
+                    position: (offset + position) as u32,
                 };
                 match snapshot.generics.get(&key) {
                     Some(Value::Type(argument)) => Ok((parameter.subject, *argument)),
@@ -88,7 +105,10 @@ impl EffectSemantics<'_> {
         let (_, node, _) = self
             .metadata_callable(source)
             .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
-        if node.generic_bindings.is_empty() {
+        let owner_parameters = self.metadata_owner_parameters(source.graph);
+        if node.generic_bindings.is_empty()
+            && owner_parameters.is_none_or(|(parameters, _)| parameters.is_empty())
+        {
             return Ok((vec![], vec![]));
         }
         let environment = source
@@ -97,6 +117,35 @@ impl EffectSemantics<'_> {
             .transpose()?;
         let mut types = vec![];
         let mut rows = vec![];
+        if let Some((parameters, offset)) = owner_parameters {
+            for (position, parameter) in parameters.iter().enumerate() {
+                if node
+                    .generic_bindings
+                    .iter()
+                    .any(|binding| binding.label == parameter.name)
+                {
+                    continue;
+                }
+                let key = Parameter::Graph {
+                    graph: source.graph,
+                    scope: etas_package_metadata::CallableValueScope::Root,
+                    position: (offset + position) as u32,
+                };
+                let value = environment
+                    .as_ref()
+                    .and_then(|environment| environment.generics.get(&key))
+                    .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata method owner has no checked generic capture binding"
+                            .into(),
+                    })?;
+                match value {
+                    Value::Type(ty) => types.push((parameter.name.clone(), *ty)),
+                    Value::EffectRow(row) | Value::EffectRowFromCall { row, .. } => {
+                        rows.push((parameter.name.clone(), row.clone()))
+                    }
+                }
+            }
+        }
         for binding in &node.generic_bindings {
             let key = Parameter::Graph {
                 graph: source.graph,
@@ -361,12 +410,9 @@ impl EffectSemantics<'_> {
         } = arguments;
         let substitution = types.iter().cloned().collect();
         let row_arguments = self.type_row_arguments(rows, owner)?;
-        let mut engine = etas_types::TypeSubstitutionEngine::existing_indexed(
-            &self.types.store,
-            self.type_lookup(),
-            &substitution,
-        )
-        .with_effect_arguments(&row_arguments);
+        let mut engine = self
+            .type_substitution(&substitution)
+            .with_effect_arguments(&row_arguments);
         if let Some(parameters) = parameters {
             engine = engine.with_type_parameters(parameters);
         }

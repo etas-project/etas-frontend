@@ -102,3 +102,25 @@ flow main() -> string ![] {
         MethodTarget::Source { .. }
     ));
 }
+
+#[test]
+fn unrelated_associated_method_arity_keeps_existential_argument_context() {
+    let checked = check(
+        r#"
+spec Named { flow name(self) -> string ![]; }
+type Label = string;
+impl Label ~ Named { flow name(self) -> string ![] { return "label"; } }
+type Scope = {};
+impl Scope {
+    flow enter(value: ? ~ Named, suffix: string) -> string ![] {
+        return value.name() + suffix;
+    }
+}
+type Other = {};
+impl Other { flow enter(value: i32) -> i32 ![] { return value; } }
+flow main() -> string ![] { return Scope.enter(Label("example"), "!"); }
+"#,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    assert_eq!(checked.facts.existential_packs.len(), 1);
+}

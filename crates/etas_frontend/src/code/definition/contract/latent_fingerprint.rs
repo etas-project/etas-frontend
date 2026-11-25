@@ -145,6 +145,14 @@ impl Fingerprinter<'_> {
         ] {
             parts.push(self.row(row)?);
         }
+        if !footprint.required_authority.effects.is_empty()
+            || footprint.required_authority.tail.is_some()
+        {
+            parts.push(combine(
+                "etas.code.host-authority.v1",
+                [self.row(&footprint.required_authority)?],
+            ));
+        }
         parts.push(match &footprint.handler_requests {
             Some(requests) => combine(
                 "etas.code.latent-request-instances.v1",
@@ -430,6 +438,13 @@ impl Fingerprinter<'_> {
                     parts.sort_unstable();
                 }
                 (if choice { "choice" } else { "sequence" }, parts)
+            }
+            T::Recursive { id, body } => {
+                let mut parts = vec![*id];
+                if let Some(body) = body {
+                    parts.push(self.trace(body)?);
+                }
+                ("recursive", parts)
             }
             T::Repeat(part) => ("repeat", vec![self.trace(part)?]),
             T::UnknownOrder(actions) | T::Widened { actions, .. } => {

@@ -2,6 +2,9 @@ use crate::{CallableSignature, TypeId};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecFacts {
+    pub active_agents: std::collections::BTreeSet<TypeId>,
+    #[serde(default)]
+    pub data_declarations: crate::data_admission::Declarations,
     pub checked_impls: Vec<CheckedSpecImplementationFact>,
     #[serde(default)]
     pub canonical: CanonicalSpecFacts,
@@ -24,6 +27,10 @@ pub struct SpecFacts {
     pub std_impls: Vec<CheckedStdSpecImplFact>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_spec_aliases: std::collections::HashMap<etas_hir::SymbolId, Vec<String>>,
+    #[serde(default)]
+    pub canonical_std_specs: std::collections::BTreeMap<etas_code::DefinitionKey, Vec<String>>,
+    pub external_std_specs:
+        std::collections::BTreeMap<ExternalSpecIdentity, etas_code::DefinitionKey>,
 }
 
 #[derive(
@@ -169,7 +176,7 @@ impl RelocatedSpecFacts {
             .chain(
                 self.std_impls
                     .iter()
-                    .map(|implementation| (&implementation.generic_params, false)),
+                    .map(|implementation| (&implementation.generic_params, true)),
             )
             .chain(
                 self.checked_impls
@@ -205,9 +212,9 @@ impl RelocatedSpecFacts {
                         }
                         CheckedSpecRef::Std(_) => {}
                         CheckedSpecRef::Source(symbol) if native_owner => {
-                            // Checked implementations belong to this target
-                            // program. Their bounds may name its real source
-                            // declarations, unlike portable canonical facts.
+                            // Checked and native-standard implementations belong
+                            // to this target program. Validate their source bounds
+                            // against its declarations; canonical facts stay portable.
                             if existing.spec_signatures.get(symbol).is_none_or(|target| {
                                 target.kind != SpecKind::TypeSpec
                                     || target.param_names.len() != bound.args.len()
@@ -366,6 +373,8 @@ pub struct ExternalSpecImplFact {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecFacts {
+    #[serde(default)]
+    pub std_identities: std::collections::BTreeMap<ExternalSpecIdentity, etas_code::DefinitionKey>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub impls: Vec<ExternalSpecImplFact>,

@@ -146,7 +146,7 @@ flow main(input: string) -> string {
     }
   };
 
-  let result = input ~> Writer limit Tokens(1);
+  let result = input ~> Writer;
   return lambda(result);
 }
 "#,
@@ -180,12 +180,6 @@ flow main(input: string) -> string {
                 .iter()
                 .any(|kind| matches!(kind, HirBodyKind::MatchArm { .. })),
             "TreeView must index match arm bodies"
-        );
-        assert!(
-            body_kinds
-                .iter()
-                .any(|kind| matches!(kind, HirBodyKind::StageLimit { .. })),
-            "TreeView must index stage limit bodies"
         );
 
         let semantic_units =

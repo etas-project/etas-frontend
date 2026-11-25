@@ -337,16 +337,13 @@ fn visit_stmt<'a>(stmt: &'a ast::Stmt, work: &mut Vec<AstWork<'a>>) {
         }
         ast::Stmt::For(stmt) => {
             work.push(AstWork::Expr(&stmt.iter));
-            work.extend(stmt.limits.iter().map(AstWork::Expr));
             work.push(AstWork::Block(&stmt.body));
         }
         ast::Stmt::While(stmt) => {
             work.push(AstWork::Expr(&stmt.condition));
-            work.extend(stmt.limits.iter().map(AstWork::Expr));
             work.push(AstWork::Block(&stmt.body));
         }
         ast::Stmt::Retry(stmt) => {
-            work.extend(stmt.limits.iter().map(AstWork::Expr));
             work.push(AstWork::Block(&stmt.body));
         }
         ast::Stmt::Resume(stmt) => work.extend(stmt.value.as_ref().map(AstWork::Expr)),
@@ -448,14 +445,12 @@ fn visit_expr<'a>(
         ast::Expr::StageCompose(compose) => {
             for stage in &compose.stages {
                 work.push(AstWork::Expr(&stage.expr));
-                work.extend(stage.limits.iter().map(AstWork::Expr));
             }
         }
         ast::Expr::Pipeline(pipeline) => {
             work.push(AstWork::Expr(&pipeline.input));
             for stage in &pipeline.stages {
                 work.push(AstWork::Expr(&stage.expr));
-                work.extend(stage.limits.iter().map(AstWork::Expr));
             }
         }
         ast::Expr::Field(field) => work.push(AstWork::Expr(&field.receiver)),

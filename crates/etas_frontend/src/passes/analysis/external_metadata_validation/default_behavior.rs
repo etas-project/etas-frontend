@@ -37,6 +37,7 @@ pub(super) fn validate(
             &footprint.requested_actions,
             &footprint.default_actions,
             &footprint.handled_actions,
+            &footprint.required_authority,
         ] {
             requests::validate_metadata_row(row, scope)?;
         }

@@ -178,6 +178,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         residual_checks: Vec::new(),
         handler_requests: Some(Default::default()),
         behavior: metadata::CallableValueBehavior {
+            suspension: None,
             determinism: metadata::CallableValueDeterminism::Deterministic,
             independent_determinism: Some(metadata::CallableValueDeterminism::Deterministic),
             host_requirements: vec![],
@@ -219,6 +220,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         returned_sources: None,
     };
     let mut input = ProjectExternalPublicMetadataInput {
+        constructor_contracts: Vec::new(),
         scoped_callbacks: Vec::new(),
         package: ExternalPackageId(0),
         types: vec![],
@@ -269,6 +271,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             visibility: "public".into(),
         }],
         effect_summaries: vec![crate::ProjectExternalEffectSummaryInput {
+            callable_body: None,
             definition: None,
             residual_checks: vec![],
             behavior: None,
@@ -281,6 +284,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             latent_flows: vec![],
             action_trace: ProjectExternalActionTraceInput::Empty,
             returned_callables: Some(metadata::CallableValueGraph {
+                call_inputs: Vec::new(),
                 source_projections: Vec::new(),
                 parameter_projections: Vec::new(),
                 objects: Vec::new(),

@@ -27,7 +27,7 @@ impl Builder<'_, '_> {
         Ok(index)
     }
 
-    fn foreign_scope(
+    pub(super) fn foreign_scope(
         &mut self,
         instance: ForeignInstance,
         scope: CallableValueScope,
@@ -48,7 +48,7 @@ impl Builder<'_, '_> {
 
     pub(super) fn foreign_parameter(
         &self,
-        graph: etas_code::CodeFingerprint,
+        instance: ForeignInstance,
         parameter: CallableValueParameter,
         scope: CallableValueScope,
     ) -> Result<CallableValueParameter, PackageMetadataError> {
@@ -57,16 +57,19 @@ impl Builder<'_, '_> {
             .checked
             .effects
             .metadata_callable_graphs
-            .get(&graph)
+            .get(&instance.source.graph)
             .ok_or_else(|| invalid("foreign parameter projection has no checked graph"))?;
-        let path = source.graph.projection_path(parameter)?;
-        self.with_projection(
+        let mut path = source.graph.projection_path(parameter)?.to_vec();
+        etas_code::descriptor::ValueProjectionStep::map_call_inputs(&mut path, &mut |id| {
+            self.reserve_inputs(InputInstance::Foreign { id, instance })
+        })?;
+        self.with_portable_projection(
             CallableValueParameter {
                 scope,
                 position: parameter.position,
                 projection: None,
             },
-            path,
+            &path,
         )
     }
 
@@ -231,11 +234,7 @@ impl Builder<'_, '_> {
                         CallableValueSource::Parameter(parameter) => {
                             if parameter.scope == CallableValueScope::Value(instance.source.value) {
                                 output.insert(CallableValueSource::Parameter(
-                                    self.foreign_parameter(
-                                        instance.source.graph,
-                                        parameter,
-                                        scope,
-                                    )?,
+                                    self.foreign_parameter(instance, parameter, scope)?,
                                 ));
                                 continue;
                             }
@@ -270,11 +269,7 @@ impl Builder<'_, '_> {
                                 }
                                 let scope = self.foreign_scope(instance, parameter.scope)?;
                                 output.insert(CallableValueSource::Parameter(
-                                    self.foreign_parameter(
-                                        instance.source.graph,
-                                        parameter,
-                                        scope,
-                                    )?,
+                                    self.foreign_parameter(instance, parameter, scope)?,
                                 ));
                             }
                         }
@@ -320,7 +315,7 @@ impl Builder<'_, '_> {
                         && parameter.scope != CallableValueScope::Root =>
                 {
                     let scope = self.foreign_scope(instance, parameter.scope)?;
-                    self.foreign_parameter(instance.source.graph, parameter, scope)?
+                    self.foreign_parameter(instance, parameter, scope)?
                 }
                 _ => return Ok(None),
             };
@@ -344,7 +339,7 @@ impl Builder<'_, '_> {
         let invocation_projection = self
             .projection
             .with_invocation_parameters(invocation_parameters);
-        let Some(projected) = summary::project(
+        let Some(mut projected) = summary::project(
             &invocation_projection,
             summary,
             &generics.type_names,
@@ -354,6 +349,14 @@ impl Builder<'_, '_> {
         else {
             return Ok(None);
         };
+        projected.behavior.suspension = (instance.source.analysis
+            == etas_effects::CallableAnalysisKind::CheckedRevision
+            && !checked
+                .effects
+                .frozen_callable_graphs
+                .contains_key(&instance.source.graph))
+        .then_some(node.behavior.suspension)
+        .flatten();
         Ok(Some(CallableValueNode {
             residual_checks: summary.residual_checks.iter().cloned().collect(),
             handler_requests: projected.handler_requests,

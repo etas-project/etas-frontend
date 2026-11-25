@@ -12,6 +12,15 @@ pub fn implementation_bounds_satisfied(
 ) -> bool {
     external::checked_implementation_bounds(store, facts, parameters, bindings)
 }
+
+pub(crate) fn structural_contract_satisfied(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    kind: crate::data_admission::Contract,
+) -> bool {
+    external::structural_contract_satisfied(store, facts, ty, kind)
+}
 pub(crate) mod object_safety;
 
 use crate::{
@@ -80,8 +89,13 @@ fn type_satisfies_spec(
     args: &[TypeId],
     visited: &mut HashSet<(TypeId, etas_hir::SymbolId)>,
 ) -> bool {
-    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Source(spec_symbol)) {
-        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    if crate::data_admission::contract(facts, &CheckedSpecRef::Source(spec_symbol)).is_some() {
+        return external::source_type_satisfies(store, facts, ty, spec_symbol, args);
+    }
+    if let Some(family) =
+        crate::numeric_family::spec_family(facts, &CheckedSpecRef::Source(spec_symbol))
+    {
+        return args.is_empty() && crate::numeric_family::supports_family(store, facts, ty, family);
     }
     if let Some(identity) = facts.external_aliases.get(&spec_symbol) {
         return external::type_satisfies(store, facts, ty, identity, args);
@@ -120,8 +134,20 @@ pub(crate) fn std_type_satisfies_spec(
     spec: &[String],
     args: &[TypeId],
 ) -> bool {
-    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Std(spec.to_vec())) {
-        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    // Implicit standard operations must consult the selected SDK declaration,
+    // including its published implementations. These maps carry checked std
+    // provenance; an unrelated same-named spec supplies no such evidence.
+    if facts.external_std_specs.keys().any(|identity| {
+        identity.path == spec && external::type_satisfies(store, facts, ty, identity, args)
+    }) || facts.canonical_std_specs.iter().any(|(identity, path)| {
+        path == spec && external::canonical_type_satisfies(store, facts, ty, identity, args)
+    }) {
+        return true;
+    }
+    if let Some(family) =
+        crate::numeric_family::spec_family(facts, &CheckedSpecRef::Std(spec.to_vec()))
+    {
+        return args.is_empty() && crate::numeric_family::supports_family(store, facts, ty, family);
     }
     if std_type_param_bound_satisfies_spec(store, facts, ty, spec, args) {
         return true;
@@ -140,7 +166,8 @@ pub(crate) fn std_type_satisfies_spec(
             .is_some_and(|path| path == spec)
             && type_same(store, implementation.self_type, ty)
             && args_match(store, &implementation.args, args)
-    })
+    }) || (crate::data_admission::contract(facts, &CheckedSpecRef::Std(spec.to_vec())).is_some()
+        && external::structural_std_satisfies(store, facts, ty, spec, args))
 }
 
 fn std_type_param_bound_satisfies_spec(

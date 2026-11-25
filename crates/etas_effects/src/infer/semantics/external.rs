@@ -361,6 +361,23 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         generic_source: Option<HirExprId>,
     ) -> Result<Option<EffectSummary>, super::specialize::EffectSpecializationError> {
+        if let Some(value) = metadata.body_root {
+            let graph = metadata.callable_graph_key.ok_or(
+                super::specialize::EffectSpecializationError::InvalidCallableReturnSources,
+            )?;
+            return self
+                .metadata_value_call(
+                    crate::MetadataCallableSource {
+                        graph,
+                        value,
+                        environment: None,
+                        analysis: crate::CallableAnalysisKind::CheckedRevision,
+                    },
+                    site,
+                    state,
+                )
+                .map(Some);
+        }
         let Some(mut summary) = self.external_summary_from_metadata(metadata, site.span) else {
             return Err(
                 super::specialize::EffectSpecializationError::InvalidCallableEnvironment {
@@ -381,7 +398,7 @@ impl EffectSemantics<'_> {
         let parameter_targets = (0..metadata.param_names.len())
             .map(|position| crate::ParameterCallTarget::Interface(position as u32))
             .collect::<Vec<_>>();
-        let mut trace_bindings = self.call_trace_bindings(site, &parameter_targets)?;
+        let mut trace_bindings = self.call_trace_bindings(site, &parameter_targets, state)?;
         let signature = self
             .checked_callable_type_for_expr(site.callee_expr)
             .ok_or(
@@ -419,6 +436,7 @@ impl EffectSemantics<'_> {
                 &effect_row_bindings,
             ),
             &mut BTreeSet::new(),
+            false,
         )?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
@@ -899,13 +917,17 @@ fn trace_calls_interface_parameter(trace: &crate::ActionTraceDomain, position: u
     let mut pending = vec![trace];
     while let Some(trace) = pending.pop() {
         match trace {
+            ActionTraceDomain::Shared(body) => pending.push(&body.body),
             ActionTraceDomain::ParameterCall { target: actual, .. } if *actual == target => {
                 return true;
             }
             ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                 pending.extend(parts)
             }
-            ActionTraceDomain::Repeat(inner) => pending.push(inner),
+            ActionTraceDomain::Recursive {
+                body: Some(inner), ..
+            }
+            | ActionTraceDomain::Repeat(inner) => pending.push(inner),
             ActionTraceDomain::Widened {
                 parameter_calls, ..
             } if parameter_calls.iter().any(|call| call.target == target) => return true,

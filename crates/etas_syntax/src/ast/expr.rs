@@ -270,7 +270,6 @@ pub struct PipelineExpr {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct PipelineStage {
     pub expr: Box<Expr>,
-    pub limits: Vec<Expr>,
     pub span: Span,
 }
 

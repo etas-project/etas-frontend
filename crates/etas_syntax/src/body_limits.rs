@@ -34,6 +34,7 @@ pub struct BodyResourceError {
     pub span: Span,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct BodyParseBudget {
     pub limits: BodyParseLimits,
     pub depth: usize,

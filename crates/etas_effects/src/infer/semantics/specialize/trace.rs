@@ -17,18 +17,24 @@ pub(crate) fn substitute_parameter_calls(
 ) -> Result<ActionTraceDomain, EffectSpecializationError> {
     enum Work<'a> {
         Visit(&'a ActionTraceDomain),
+        Shared(&'a ActionTraceDomain),
         Seq(usize),
         Choice(usize),
         Parallel(usize),
         TaskStart(etas_hir::HirExprId),
         DefaultHandler(crate::EffectSet),
         Repeat,
+        Recursive(etas_code::CodeFingerprint),
     }
     let mut pending = vec![Work::Visit(root)];
     let mut values = Vec::new();
     while let Some(work) = pending.pop() {
         match work {
             Work::Visit(trace) => match trace {
+                ActionTraceDomain::Shared(body) => {
+                    pending.push(Work::Shared(trace));
+                    pending.push(Work::Visit(&body.body));
+                }
                 ActionTraceDomain::DefaultHandler { guards, body } => {
                     pending.push(Work::DefaultHandler(guards.clone()));
                     pending.push(Work::Visit(body));
@@ -57,6 +63,14 @@ pub(crate) fn substitute_parameter_calls(
                 ActionTraceDomain::TaskStart { task_site, body } => {
                     pending.push(Work::TaskStart(*task_site));
                     pending.push(Work::Visit(body));
+                }
+                ActionTraceDomain::Recursive { id, body } => {
+                    if let Some(body) = body {
+                        pending.push(Work::Recursive(*id));
+                        pending.push(Work::Visit(body));
+                    } else {
+                        values.push(trace.clone());
+                    }
                 }
                 ActionTraceDomain::Repeat(part) => {
                     pending.push(Work::Repeat);
@@ -108,6 +122,28 @@ pub(crate) fn substitute_parameter_calls(
                     }
                 }
                 values.push(trace);
+            }
+            Work::Shared(original) => {
+                let body = values
+                    .pop()
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                let ActionTraceDomain::Shared(shared) = original else {
+                    unreachable!()
+                };
+                values.push(if body == shared.body {
+                    original.clone()
+                } else {
+                    body.shared()
+                });
+            }
+            Work::Recursive(id) => {
+                let body = values
+                    .pop()
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                values.push(ActionTraceDomain::Recursive {
+                    id,
+                    body: Some(Box::new(body)),
+                });
             }
             Work::Repeat => {
                 let value = values

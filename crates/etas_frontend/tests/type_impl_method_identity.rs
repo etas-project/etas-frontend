@@ -136,7 +136,7 @@ impl Tree<K, V> {
         return Cursor { next= () => {
             var tree = self;
             var stack = pending;
-            while true limit Iterations(18446744073709551615) {
+            while true {
                 match tree {
                     Tree.Empty => { break; },
                     Tree.Branch(node) => { stack = node :: stack; tree = node.left; },
@@ -155,7 +155,7 @@ impl SortedMap<K, V> {
         return Cursor { next= () => {
             var tree = self.tree;
             var stack: List<Node<K, V>> = [];
-            while true limit Iterations(18446744073709551615) {
+            while true {
                 match tree {
                     Tree.Empty => { break; },
                     Tree.Branch(node) => { stack = node :: stack; tree = node.left; },
@@ -167,6 +167,12 @@ impl SortedMap<K, V> {
             };
         } };
     }
+    public flow keys(self) -> Cursor<K> ![] {
+        return self.cursor().mapped((entry: (K, V)) => { let (key, _) = entry; return key; });
+    }
+    public flow values(self) -> Cursor<V> ![] {
+        return self.cursor().mapped((entry: (K, V)) => { let (_, value) = entry; return value; });
+    }
 }
 public type SortedSet<T> = { private tree: Tree<T, unit> };
 impl SortedSet<T> {
@@ -174,7 +180,7 @@ impl SortedSet<T> {
         return Cursor { next= () => {
             var tree = self.tree;
             var stack: List<Node<T, unit>> = [];
-            while true limit Iterations(18446744073709551615) {
+            while true {
                 match tree {
                     Tree.Empty => { break; },
                     Tree.Branch(node) => { stack = node :: stack; tree = node.left; },
@@ -192,6 +198,16 @@ impl SortedSet<T> {
 }
 public spec SourceIndex { flow to_usize(self) -> Option<usize> ![]; }
 impl Sequence<T> {
+    public flow from_items(items: Sequence<T>) -> Sequence<T> ![] {
+        return items;
+    }
+    public flow from_items(items: List<T>) -> Sequence<T> ![] {
+        var output: Sequence<T> = [];
+        for value in items {
+            output = output + [value];
+        }
+        return output;
+    }
     public flow fallback(self, value: T) -> T ![] { return value; }
     public flow indexed<I ~ SourceIndex>(self, index: I) -> Option<T> ![] {
         let offset = index.to_usize();
@@ -199,7 +215,7 @@ impl Sequence<T> {
     }
     public flow lookup(self, index: usize) -> Option<T> ![] {
         var iterations = 0;
-        while iterations < 1 limit Iterations(1) { iterations = iterations + 1; }
+        while iterations < 1 { iterations = iterations + 1; }
         return match self[index]? {
             Ok(value) => Some(value),
             Err(_) => None,
@@ -231,7 +247,14 @@ impl First {
     let mut expected = all_methods(source)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(expected.len(), 13);
+    assert_eq!(expected.len(), 17);
+    let overloads = expected
+        .iter()
+        .filter(|method| method.name() == "from_items")
+        .collect::<Vec<_>>();
+    assert_eq!(overloads.len(), 2);
+    assert_eq!(overloads[0].implementation(), overloads[1].implementation());
+    assert!(overloads.iter().all(|method| method.overload().is_some()));
     expected.retain(|method| method.name() != "walk");
     let checked = checked(source);
     let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
@@ -256,7 +279,7 @@ impl First {
         &artifact.bytes,
     )
     .unwrap();
-    assert_eq!(metadata.public_metadata.methods.len(), 12);
+    assert_eq!(metadata.public_metadata.methods.len(), 16);
     let cursor = metadata
         .public_metadata
         .methods

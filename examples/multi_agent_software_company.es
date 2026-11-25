@@ -48,7 +48,7 @@ flow BuildProject(brief: Brief) -> ProjectResult {
   var plan = Engineer.run({ spec: spec, architecture: architecture });
 
   var review = Reviewer.run(plan);
-  while !review.accepted limit Iterations(3) {
+  while !review.accepted {
     plan = Engineer.run({ spec: spec, architecture: architecture });
     review = Reviewer.run(plan);
   }

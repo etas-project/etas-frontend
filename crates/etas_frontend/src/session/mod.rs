@@ -100,7 +100,7 @@ pub(crate) enum StandardLibraryInput {
 }
 
 pub(crate) type StandardMethodLoader = dyn Fn(
-        Option<(&etas_hir::HirProgram, &etas_types::TypeFacts)>,
+        Option<(&etas_hir::HirProgram, &etas_types::TypeOutput)>,
     ) -> Result<crate::StandardLibraryBehaviors, String>
     + Send
     + Sync;
@@ -194,7 +194,7 @@ where
         mut self,
         interface: Arc<crate::StandardLibraryInterface>,
         methods: impl Fn(
-            Option<(&etas_hir::HirProgram, &etas_types::TypeFacts)>,
+            Option<(&etas_hir::HirProgram, &etas_types::TypeOutput)>,
         ) -> Result<crate::StandardLibraryBehaviors, String>
         + Send
         + Sync

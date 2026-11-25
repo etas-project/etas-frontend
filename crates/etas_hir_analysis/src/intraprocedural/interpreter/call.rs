@@ -64,6 +64,7 @@ where
         body: HirBlockId,
         initial: S::Domain,
     ) -> Result<Control<S::Domain>, E> {
+        let initial = self.semantics.begin_loop(body, initial);
         let solved = FixpointEngine::default().try_solve(initial, |state| {
             let body_control = self.block_control(body, state.clone())?;
             let mut back_edge = S::Domain::bottom();
@@ -73,7 +74,7 @@ where
             if let Some(continued) = body_control.continue_state() {
                 back_edge.join_assign(continued);
             }
-            Ok(state.join_assign(&back_edge))
+            Ok(self.semantics.join_loop_state(body, state, &back_edge))
         })?;
         let fixed = match solved.status {
             ConvergenceStatus::Converged => solved.value,
@@ -99,7 +100,7 @@ where
         if let Some(errored) = body_control.error_state() {
             result.join_error(errored.clone());
         }
-        Ok(result)
+        Ok(self.map_control_states(result, |semantics, state| semantics.end_loop(body, state)))
     }
 
     pub(crate) fn while_loop_control(
@@ -108,6 +109,7 @@ where
         body: HirBlockId,
         initial: S::Domain,
     ) -> Result<Control<S::Domain>, E> {
+        let initial = self.semantics.begin_loop(body, initial);
         let mut result = self.expr_control(cond, initial.clone())?;
         let solved = FixpointEngine::default().try_solve(initial, |state| {
             let condition = self.expr_control(cond, state.clone())?;
@@ -122,7 +124,7 @@ where
             if let Some(continued) = body_control.continue_state() {
                 back_edge.join_assign(continued);
             }
-            Ok(state.join_assign(&back_edge))
+            Ok(self.semantics.join_loop_state(body, state, &back_edge))
         })?;
         let fixed = match solved.status {
             ConvergenceStatus::Converged => solved.value,
@@ -150,7 +152,7 @@ where
                 result.join_error(errored.clone());
             }
         }
-        Ok(result)
+        Ok(self.map_control_states(result, |semantics, state| semantics.end_loop(body, state)))
     }
 
     pub(crate) fn direct_call_control(

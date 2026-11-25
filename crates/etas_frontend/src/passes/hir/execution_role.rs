@@ -82,11 +82,12 @@ fn canonical_execution_owner(
             matches!(member, etas_hir::HirImplItem::Callable { item: member } if *member == item)
         }).then_some(implementation)
     });
-    let Some(expected_owner) = role.associated_owner() else {
+    let expected_owners = role.associated_owners();
+    if expected_owners.is_empty() {
         return owner.is_none()
             && super::native_role::canonical_path(hir, flow.symbol).join(".")
                 == role.source_path();
-    };
+    }
     let Some(implementation) = owner else {
         return false;
     };
@@ -103,11 +104,21 @@ fn canonical_execution_owner(
         .and_then(|item| hir.items.get(item))
     {
         Some(HirItem::Enum(owner)) => {
-            role == StdExecutionRole::CaptureData && owner.type_params.is_empty()
+            matches!(
+                role,
+                StdExecutionRole::CaptureData
+                    | StdExecutionRole::CaptureStorage
+                    | StdExecutionRole::RestoreStorage
+                    | StdExecutionRole::StorageSchema
+            ) && owner.type_params.is_empty()
         }
         Some(HirItem::Type(owner)) => {
             owner.type_params.len() == role.owner_type_parameter_count()
                 && match (&owner.body, role) {
+                    (
+                        etas_hir::HirTypeDeclBody::Bodyless,
+                        StdExecutionRole::ComparatorCapture | StdExecutionRole::ComparatorSame,
+                    ) => true,
                     (
                         etas_hir::HirTypeDeclBody::Representation(body),
                         StdExecutionRole::AgentWithBody | StdExecutionRole::CallableWithBody,
@@ -119,7 +130,9 @@ fn canonical_execution_owner(
                     (
                         etas_hir::HirTypeDeclBody::Representation(body),
                         StdExecutionRole::StreamClock
+                        | StdExecutionRole::ReadScopeEnter
                         | StdExecutionRole::ScopeEnter
+                        | StdExecutionRole::ResourceScope
                         | StdExecutionRole::PayloadConvert,
                     ) => {
                         matches!(&hir.types[*body], etas_hir::HirType::Record { fields, .. }
@@ -148,7 +161,11 @@ fn canonical_execution_owner(
         && type_args.len() == role.owner_type_parameter_count()
         && (declaration.visibility == Visibility::Public) == role.owner_is_public()
         && shape
-        && super::native_role::canonical_path(hir, symbol).join(".") == expected_owner
+        && expected_owners.contains(
+            &super::native_role::canonical_path(hir, symbol)
+                .join(".")
+                .as_str(),
+        )
         && method.defining_module == declaration.defining_module
         && method.name.rsplit('.').next() == role.source_path().rsplit('.').next()
 }

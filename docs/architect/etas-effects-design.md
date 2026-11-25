@@ -4,7 +4,7 @@ Status: `Draft`
 
 Owner: `Architect`
 
-Last updated: `2026-07-02`
+Last updated: `2026-11-24`
 
 ## 1. Purpose
 
@@ -405,6 +405,9 @@ pub enum ActionTraceDomain {
     Seq(Vec<ActionTraceDomain>),
     Choice(Vec<ActionTraceDomain>),
     Repeat(Box<ActionTraceDomain>),
+    // Some(body) binds a least fixed point; None refers to that binder.
+    Recursive { id: CodeFingerprint, body: Option<Box<ActionTraceDomain>> },
+    Shared(Arc<SharedActionTrace>),
     UnknownOrder(ActionSet),
 }
 
@@ -419,8 +422,12 @@ Transfer rules:
 
 - sequential statements use `Seq`;
 - `if` and `match` use `Choice`;
-- loops, retry blocks, and recursive summaries use `Repeat`, with widening to
-  `UnknownOrder(ActionSet)` when the trace cannot remain finite;
+- loop headers are equation variables shared by the body, back edges and exits;
+  exact right-linear equations become `entry; Repeat(body)`, and other equations
+  retain a scoped `Recursive` binder;
+- recursive call components retain finite systems of ordered equations rather
+  than unrolling calls or replacing their bodies with unordered action sets;
+- closed subgraphs are shared; trace length alone never discards order;
 - calls splice the callee trace after effect-argument instantiation;
 - explicit handler/source-implementation elimination never removes the event
   from the trace;
@@ -428,7 +435,116 @@ Transfer rules:
 
 `UnknownOrder` is not a success fallback. It is a conservative abstraction. If
 a trace spec depends on order and the checker only has `UnknownOrder`, the
-trace-spec result is incomplete/rejected with a diagnostic.
+trace-spec result is incomplete/rejected with a diagnostic. It is retained for
+inputs whose order is already unavailable, not as the default convergence rule.
+An unordered segment remains local when combined with other segments:
+`Seq(A, UnknownOrder(X), B)` retains the order of A and B, and a choice keeps
+its alternatives. Neither `UnknownOrder` nor `Widened` absorbs neighbouring
+segments or default-handler boundaries. Explicit widening of an already
+unordered imported summary cannot widen the surrounding caller trace.
+
+For each checked program and concrete temporal spec, the monitor caches finite
+relations from an input product state to all possible output states, together
+with possible violations and incomplete evidence. Sequence composes relations,
+choice unions them, and repetition takes the reflexive transitive closure.
+Recursive references read their current relation and register a dependency; a
+worklist revisits users when a relation grows. The finite monitor state space,
+rather than trace node count, controls convergence. Function results and shared
+trace nodes reuse those rows within the same immutable type/registry context.
+Published graph nodes have immutable edges. Compiling another function solves
+action footprints only for its newly interned subgraph, including any new
+recursive equations; references to older nodes reuse their solved footprints.
+Solved ordinary call components publish shared immutable traces as well as
+first-class callable queries. Definition descriptions preserve those shared
+subgraphs instead of expanding each call into a separate subtree. Descriptor
+reuse is local to the exact projected function signature; parameter-call
+fragments retain their exit and Handler evidence and are projected separately.
+
+Unannotated lambda rows have a stable local inference identity per HIR value.
+The solved latent row completes that identity in the type graph before closed
+callable applications are published. Generic results that carry a returned
+lambda therefore reuse its checked row; two callable values with the same
+input/output shape do not share an unknown row. Such an inference identity is
+neither an explicit bound nor evidence of an empty Effect row. Type constraints
+can equate inferred rows when values join; completion unions all linked latent
+rows before publishing the common callable type. Selected method ABIs are then
+rederived from their declarations and checked arguments, so completed function
+types agree with the runtime dispatch contract.
+
+Action-free control flow also has a finite exact summary. After checking that
+the graph contains no action, callback, unresolved reference or preserved
+boundary, nullability is solved as a least fixed point. A productive graph over
+that empty alphabet denotes only epsilon and can use one empty descriptor node.
+Already solved nullability rows are retained across functions; only newly
+interned nodes participate in the next fixed point, including their cycles.
+`X = X` is not epsilon. Empty choices remain incomplete, and Handler/task
+boundaries are retained. This normalization does not replace a nonempty trace
+with its unordered footprint.
+
+Published traces that invoke callback parameters carry a checked callable body
+graph with their invocation-input recipes. The importer binds lexical parameters
+and rebases graph-local recipe indices before evaluating projections. A method's
+impl type binders participate in evidence substitution independently of the
+method's own generic parameter interface. Callback graph identities include that
+interface, so equally shaped invocations from distinct generic scopes do not
+collide. A return-payload graph alone cannot supply execution input recipes.
+
+Installed behavior selection also follows the checked implementation witnesses
+of concrete generic arguments, including their owner arguments. A bound call
+inside an imported function therefore retains its selected implementation even
+when the consumer HIR contains only the outer generic call.
+Imported method dictionaries include both method generic bounds and the
+owning impl's bounds. Their selected source methods enter the checked-body
+closure before executable linkage, even when their action trace is empty.
+
+After callback Effect rows close, the frontend completes any deferred `try`
+error type from its checked capture proof. The resulting substitution applies
+to all dependent type facts, including downstream method receiver types and
+owner arguments, before checked publication or executable linkage.
+
+Handlers and task boundaries remain explicit in the ordered graph. Unsupported
+recursive instantiations remain unresolved edges; they cannot establish a
+successful static proof. Generic trace-language inclusion currently reports an
+unsupported recursive proof where no finite spec monitor is available.
+
+An earlier request for a guard action is not evidence of an accepted credential.
+If the contract needs a successful, correlated result, request order alone leaves
+an outcome-evidence obligation. Static success requires every possible transfer
+to satisfy the spec and all required evidence to be available.
+
+Invocation identities use lexical creation/application identities. Contributions
+from different call-input equations are joined; refinement of one equation
+replaces that contribution without replacing other callers' inputs. Persistent
+contribution keys use semantic fingerprints, not temporary allocation indices.
+Frame identities also retain the first lexical instance when crossing a caller
+scope. A closure's formal parameter template and its executed invocation remain
+distinct when both are rebound at the same outer call site. Further rebinding
+changes the current scope/application coordinates without hashing the entire
+history into the frame identity.
+The fully substituted generic context is a separate identity coordinate. The
+context key hashes checked type/effect bindings in canonical order, so two
+instantiations of a cursor callback cannot overwrite one another's generic
+contracts. Frame edges are named after those contexts have been resolved.
+When a callback remains symbolic, its invocation inputs are still substituted
+into the current frame. An enclosing lexical callback does not make an adapter's
+own input parameters symbolic at subsequent call boundaries.
+A binding supplies only its selected position and descendants. Binding one
+invocation of a callback does not bind the callback value itself; completion
+queries retain the enclosing lexical parameter until that value is supplied.
+
+Returned generic/callable payloads retain their structural positions. The checked
+type-selector graph is reduced to finite regular paths; cycles become
+`ValueProjectionStep::Repeat` alternatives that return to the same checked type.
+Field selectors remain in those paths, so a recursive tree's key and value
+origins are not flattened into one aggregate. Selecting a returned position uses
+a finite product of selector automata and retains the remaining query suffix.
+These type queries are cached within the checked type graph.
+
+A source return equation in the active recursive component starts at the empty
+payload set until its first transfer, and dependents are revisited when it gains
+return alternatives. That initial back edge is distinct from unavailable
+origins. Missing bodies, native contracts and genuinely opaque alternatives are
+not interpreted as that source-equation bottom.
 
 ## 8. Transfer Semantics
 
@@ -451,7 +567,7 @@ if/match
   -> transfer condition/scrutinee, then join branch choices
 
 loop/retry
-  -> transfer body through fixpoint/widening, add limit requirements
+  -> solve ordered loop equations and compose the checked scope requirements
 
 perform A(args)
   -> transfer args
@@ -465,6 +581,12 @@ ordinary call f(args)
   -> transfer callee and args
   -> instantiate solved summary(f) using type/effect generic substitutions
   -> append instantiated summary
+
+omitted declaration parameter
+  -> select its checked default-expression revision
+  -> bind earlier calling slots and the declaration's type/effect arguments
+  -> retain the default value's callable origins and aggregate projections
+  -> instantiate invoked callbacks with the same rules as explicit arguments
 
 first-class flow call
   -> transfer callee and args
@@ -793,6 +915,32 @@ pub struct HandleApplicationFact {
     pub remaining_effects: EffectRow,
 }
 ```
+
+Parameter defaults are declaration calling information, absent from first-class
+arrow types. Published defaults retain their canonical owner, slot and expression
+revision together with the checked callable value graph. This includes functions
+inside records such as codecs. The default's creation must already be proven
+deterministic, action-free and non-suspending; the returned functions retain their
+own latent behavior. Imported defaults evaluate in the defining revision and bind
+to the caller's earlier arguments and checked generic application. Missing graph
+evidence cannot stand in for an empty callback or a proof of purity.
+
+Portable callable-value behavior also carries its checked suspension result.
+Returned closures and function references retain that result through source
+projection, binary encoding and re-export. Import analysis uses the exact
+checked graph node; an absent or unknown result cannot prove non-suspension.
+Frozen public transformers remain distinct from an edited body's execution.
+
+The resolved standard Hash member has a checked deterministic, action-free,
+non-suspending execution contract. Generic calls may use that contract; every
+reachable implementation must discharge it from its body or imported checked
+callable-body graph. A same-named application spec does not supply the assumption. Private
+storage view/build adapters obey the same execution boundary. Suspension
+analysis records their implicit calls from storage capture/restoration, so a
+runtime declaration alone cannot prove the adapter bodies non-suspending.
+Contract-checked generic invocations retain their typed binding dependency in
+`contract_method_calls`, separately from their empty action trace. Reachability,
+installed IR fact objects and optimization invalidation preserve that evidence.
 
 ## 13. Trace-Spec Analysis
 

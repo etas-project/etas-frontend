@@ -118,50 +118,62 @@ pub(crate) fn lower_external_scoped_generic_params(
             return None;
         }
     };
-    let mut generic_params = Vec::with_capacity(params.len());
-    for (param, subject) in params.iter().zip(subjects) {
-        let mut bounds = Vec::with_capacity(param.bounds.len());
-        for bound in &param.bounds {
-            let spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len()) {
-                Ok(spec) => spec,
-                Err(reason) => {
-                    invalid_external_metadata(
-                        ctx,
-                        span,
-                        format!(
-                            "invalid external package metadata: callable `{}` generic `{}` references spec `{}`: {reason}",
-                            callable_label,
-                            param.name,
-                            bound.spec.join(".")
-                        ),
-                    );
-                    return None;
-                }
-            };
-            bounds.push(crate::CheckedSpecBound {
-                spec,
-                args: bound
-                    .args
-                    .iter()
-                    .map(|arg| lower_external_type(ctx, span, arg))
-                    .collect(),
+    let previous = ctx.external_type_parameters.clone();
+    ctx.external_type_parameters.extend(
+        params
+            .iter()
+            .zip(&subjects)
+            .map(|(parameter, subject)| (parameter.name.clone(), *subject)),
+    );
+    let result = (|| {
+        let mut generic_params = Vec::with_capacity(params.len());
+        for (param, subject) in params.iter().zip(subjects) {
+            let mut bounds = Vec::with_capacity(param.bounds.len());
+            for bound in &param.bounds {
+                let spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len())
+                {
+                    Ok(spec) => spec,
+                    Err(reason) => {
+                        invalid_external_metadata(
+                            ctx,
+                            span,
+                            format!(
+                                "invalid external package metadata: callable `{}` generic `{}` references spec `{}`: {reason}",
+                                callable_label,
+                                param.name,
+                                bound.spec.join(".")
+                            ),
+                        );
+                        return None;
+                    }
+                };
+                bounds.push(crate::CheckedSpecBound {
+                    spec,
+                    args: bound
+                        .args
+                        .iter()
+                        .map(|arg| lower_external_type(ctx, span, arg))
+                        .collect(),
+                });
+            }
+            generic_params.push(crate::CallableGenericParam {
+                kind: match param.kind {
+                    crate::ExternalCallableGenericParamKindInput::Type => {
+                        crate::CallableGenericParamKind::Type
+                    }
+                    crate::ExternalCallableGenericParamKindInput::Effect => {
+                        crate::CallableGenericParamKind::Effect
+                    }
+                },
+                name: param.name.clone(),
+                subject,
+                bounds,
             });
         }
-        generic_params.push(crate::CallableGenericParam {
-            kind: match param.kind {
-                crate::ExternalCallableGenericParamKindInput::Type => {
-                    crate::CallableGenericParamKind::Type
-                }
-                crate::ExternalCallableGenericParamKindInput::Effect => {
-                    crate::CallableGenericParamKind::Effect
-                }
-            },
-            name: param.name.clone(),
-            subject,
-            bounds,
-        });
-    }
-    Some(generic_params)
+        Some(generic_params)
+    })();
+    ctx.external_type_parameters = previous;
+    result
 }
 
 pub(crate) fn reserve_external_generic_parameters(
@@ -342,10 +354,16 @@ pub fn lower_external_type(
             ty
         }
         crate::ExternalTypeInput::Primitive(name) => primitive_from_name(ctx, span, name),
-        crate::ExternalTypeInput::Var(name) => ctx.interner.intern(Type::Named(NamedTypeRef {
-            source_parameter: None,
-            name: name.clone(),
-        })),
+        crate::ExternalTypeInput::Var(name) => {
+            if let Some(ty) = ctx.external_type_parameters.get(name) {
+                *ty
+            } else {
+                ctx.interner.intern(Type::Named(NamedTypeRef {
+                    source_parameter: None,
+                    name: name.clone(),
+                }))
+            }
+        }
         crate::ExternalTypeInput::Parameter { owner, position } => {
             let identity =
                 crate::ty::CanonicalTypeParameterIdentity::new_scoped(owner.clone(), *position);

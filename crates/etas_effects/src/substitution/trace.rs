@@ -7,12 +7,14 @@ pub(crate) fn map_trace<M: SummaryMapper>(
 ) -> Result<ActionTraceDomain, M::Error> {
     enum Work<'a> {
         Visit(&'a ActionTraceDomain),
+        Shared(&'a ActionTraceDomain),
         Seq(usize),
         Choice(usize),
         Parallel(usize),
         TaskStart(etas_hir::HirExprId),
         DefaultHandler(EffectSet),
         Repeat,
+        Recursive(etas_code::CodeFingerprint),
     }
     let mut work = vec![Work::Visit(root)];
     let mut values = Vec::new();
@@ -20,6 +22,10 @@ pub(crate) fn map_trace<M: SummaryMapper>(
         mapper.checkpoint()?;
         match next {
             Work::Visit(trace) => match trace {
+                ActionTraceDomain::Shared(body) => {
+                    work.push(Work::Shared(trace));
+                    work.push(Work::Visit(&body.body));
+                }
                 ActionTraceDomain::DefaultHandler { guards, body } => {
                     if let Some(guards) = mapper.default_guards(guards)? {
                         work.push(Work::DefaultHandler(guards));
@@ -45,6 +51,14 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                 ActionTraceDomain::TaskStart { task_site, body } => {
                     work.push(Work::TaskStart(*task_site));
                     work.push(Work::Visit(body));
+                }
+                ActionTraceDomain::Recursive { id, body } => {
+                    if let Some(body) = body {
+                        work.push(Work::Recursive(*id));
+                        work.push(Work::Visit(body));
+                    } else {
+                        values.push(trace.clone());
+                    }
                 }
                 ActionTraceDomain::Repeat(part) => {
                     work.push(Work::Repeat);
@@ -110,6 +124,24 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                     Work::Choice(_) => ActionTraceDomain::Choice(parts),
                     Work::Parallel(_) => ActionTraceDomain::Parallel(parts),
                     _ => unreachable!("matched compound trace"),
+                });
+            }
+            Work::Shared(original) => {
+                let body = values.pop().ok_or_else(|| mapper.invalid_structure())?;
+                let ActionTraceDomain::Shared(shared) = original else {
+                    unreachable!()
+                };
+                values.push(if body == shared.body {
+                    original.clone()
+                } else {
+                    body.shared()
+                });
+            }
+            Work::Recursive(id) => {
+                let body = values.pop().ok_or_else(|| mapper.invalid_structure())?;
+                values.push(ActionTraceDomain::Recursive {
+                    id,
+                    body: Some(Box::new(body)),
                 });
             }
             Work::Repeat => {

@@ -130,11 +130,17 @@ pub(crate) fn prepare_from_targets(
     } = input;
     let empty_handlers = super::HandlerContexts::default();
     let handlers = handlers.unwrap_or(&empty_handlers);
+    let equality = super::value_equality::ValueEqualityApplications::new(&types.facts);
+    let provider_map = (phase == PreparationPhase::Effects && hir.source_standard_types)
+        .then(|| types.facts.model_step_provider_map(&types.store))
+        .flatten();
     if types.facts.generic_instantiations.is_empty()
         && types.facts.checked_method_calls.is_empty()
         && types.facts.bound_method_values.is_empty()
         && types.facts.existential_packs.is_empty()
         && seeds.is_empty()
+        && equality.is_empty()
+        && provider_map.is_none()
     {
         return Ok(PreparedInstantiations {
             store: types.store.clone(),
@@ -174,7 +180,7 @@ pub(crate) fn prepare_from_targets(
         sites.sort();
         sites.dedup();
     }
-    if calls.is_empty() && seeds.is_empty() {
+    if calls.is_empty() && seeds.is_empty() && equality.is_empty() && provider_map.is_none() {
         return Ok(PreparedInstantiations {
             store: types.store.clone(),
             plan: Arc::default(),
@@ -211,8 +217,13 @@ pub(crate) fn prepare_from_targets(
         roots.sort();
         roots.dedup();
     }
-    let mut pending = calls
+    let root_owners = calls
         .keys()
+        .chain(roots.keys().filter(|_| !equality.is_empty()))
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut pending = root_owners
+        .iter()
         .filter(|owner| {
             signature(&types.facts, **owner)
                 .is_none_or(|signature| signature.generic_params.is_empty())
@@ -235,6 +246,39 @@ pub(crate) fn prepare_from_targets(
     let mut flows_seen = HashSet::new();
     let mut interner = interner.unwrap_or_else(|| TypeInterner::from_store((*types.store).clone()));
     let mut materialized = Vec::new();
+    if let Some(map) = provider_map {
+        let nodes = etas_types::storage_layout::materialize_storage_shapes(
+            &mut interner,
+            &types.facts,
+            map,
+            limits.max_nodes,
+        )
+        .map_err(|error| InstantiationError::Invalid(error.to_string()))?;
+        if let etas_types::storage_layout::StorageKind::Collection { restore, .. } = &nodes[0].kind
+        {
+            match &restore.target {
+                etas_types::method::MethodTarget::Source { callable, .. } => {
+                    method_bodies.insert(*callable);
+                    pending.push_back(NativeInstantiation {
+                        owner: *callable,
+                        arguments: vec![],
+                        owner_bindings: restore.owner_bindings.clone(),
+                    });
+                }
+                etas_types::method::MethodTarget::External { identity } => {
+                    let application = super::ForeignMethodInstantiation {
+                        identity: identity.clone(),
+                        arguments: vec![],
+                        owner_bindings: restore.owner_bindings.clone(),
+                    };
+                    foreign_seen.insert(application.clone());
+                    foreign_methods.push(application);
+                }
+                _ => return Err("model provider data requires a checked Etas Map builder".into()),
+            }
+        }
+        materialized.extend(nodes.into_iter().map(|node| node.ty));
+    }
     let mut representations =
         etas_types::ty::TypeRepresentationMaterializer::with_acyclic_enum_payloads(
             interner.store(),
@@ -317,6 +361,44 @@ pub(crate) fn prepare_from_targets(
                 }
             }
             drop(substitution);
+            // Storage derivation is demanded by a reached runtime mechanism,
+            // never merely by mentioning a collection type. Prepare its exact
+            // logical view types and checked Etas adapter applications here.
+            if let Some(etas_hir::HirItem::Flow(flow)) = hir.items.get(instance.owner)
+                && matches!(flow.body, etas_hir::HirFlowBody::Runtime { role: etas_std::StdExecutionRole::CaptureStorage | etas_std::StdExecutionRole::RestoreStorage | etas_std::StdExecutionRole::StorageSchema, .. })
+            {
+                let signature = template.ok_or("storage mechanism has no checked signature")?;
+                let subject = TypeSubstitutionEngine::materializing(&mut interner, &type_bindings, None)
+                    .with_type_parameters(&parameters).substitute(signature.generic_params[0].subject)?;
+                let names = HashMap::new();
+                let closed = TypeSubstitutionEngine::existing(interner.store(), &names).validate_closed_argument(subject);
+                match closed {
+                    Err(etas_types::TypeSubstitutionError::UnresolvedType(_) | etas_types::TypeSubstitutionError::OpenEffectRow(_)) => {},
+                    result => {
+                        result?;
+                        let nodes = etas_types::storage_layout::materialize_storage_shapes(&mut interner, &types.facts, subject, limits.max_nodes)
+                            .map_err(|error| InstantiationError::Invalid(error.to_string()))?;
+                        for node in nodes {
+                            materialized.push(node.ty);
+                            if let etas_types::storage_layout::StorageKind::Collection { capture, restore, .. } = node.kind {
+                                for call in [capture, restore] {
+                                    match call.target {
+                                        etas_types::method::MethodTarget::Source { callable, .. } => {
+                                            method_bodies.insert(callable);
+                                            pending.push_back(NativeInstantiation { owner: callable, arguments: vec![], owner_bindings: call.owner_bindings });
+                                        },
+                                        etas_types::method::MethodTarget::External { identity } => {
+                                            let application = super::ForeignMethodInstantiation { identity, arguments: vec![], owner_bindings: call.owner_bindings };
+                                            if foreign_seen.insert(application.clone()) { foreign_methods.push(application); }
+                                        },
+                                        _ => return Err("storage adapters require checked Etas bodies".into()),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             for (site, ty) in roots.get(&instance.owner).into_iter().flatten() {
                 for context in handlers.at(hir, *site, limits.max_nodes)? {
                     if context.types.is_empty() && context.rows.is_empty() {
@@ -370,11 +452,20 @@ pub(crate) fn prepare_from_targets(
                     }
                     if let Some(method) = types.facts.selected_method(*call)
                         && let etas_types::method::MethodTarget::External { identity } = &method.target
-                        && method
+                    {
+                        // Imported type-owned methods receive witness dictionaries
+                        // for both impl binders and their own generic parameters.
+                        // These source bodies must be checked before SDK linkage.
+                        let dictionary = witnesses.method_bound_bodies(method, &mut substitution)?;
+                        method_bodies.extend(dictionary.bodies);
+                        pending.extend(dictionary.applications);
+                        if !method
                             .instantiation
                             .deferred_effect_row_obligations
                             .is_empty()
-                    {
+                        {
+                            continue;
+                        }
                         let owner_bindings = method
                             .owner_bindings
                             .iter()
@@ -530,9 +621,27 @@ pub(crate) fn prepare_from_targets(
                     .substitute(*ty)
                     .map_err(InstantiationError::from)?;
             }
+            let mut represented = Vec::new();
             representations
-                .materialize(&mut interner, std::mem::take(&mut materialized))
+                .materialize_observed(
+                    &mut interner,
+                    std::mem::take(&mut materialized),
+                    |ty| represented.push(ty),
+                )
                 .map_err(InstantiationError::from)?;
+            for application in equality.collect(interner.store(), represented)? {
+                match application {
+                    super::value_equality::ValueEqualityApplication::Native(instance) => {
+                        method_bodies.insert(instance.owner);
+                        pending.push_back(instance);
+                    }
+                    super::value_equality::ValueEqualityApplication::Foreign(application) => {
+                        if foreign_seen.insert(application.clone()) {
+                            foreign_methods.push(application);
+                        }
+                    }
+                }
+            }
             Ok(())
         })()
         .map_err(|error| match error {

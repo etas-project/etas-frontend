@@ -55,6 +55,32 @@ impl Default for EffectSummary {
 }
 
 impl EffectSummary {
+    pub fn record_managed_agent_boundary(&mut self, action: Effect, span: Span) {
+        self.with_direct_behavior(|summary| {
+            summary.record_managed_agent_boundary(action.clone(), span)
+        });
+        let row = EffectRow::closed(EffectSet::one(action.clone()));
+        self.requested_actions.union_assign(&row);
+        self.default_actions.union_assign(&row);
+        self.record_action_trace_event(action, span, ActionEventSource::AgentCall);
+        self.require_runtime(RuntimeRequirementReason::TaskScheduler);
+        self.determinism.join_assign(&Determinism::NonDeterministic);
+        if let Some(independent) = &mut self.independent_determinism {
+            independent.join_assign(&Determinism::NonDeterministic);
+        }
+    }
+    pub fn required_authority(&self) -> EffectRow {
+        EffectRow::closed(
+            self.requirements
+                .iter()
+                .filter_map(|requirement| match requirement {
+                    crate::RequirementFact::HostAuthority(action) => Some(action.clone()),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
     pub fn local() -> Self {
         Self::default()
     }
@@ -304,6 +330,15 @@ pub enum ActionTraceDomain {
     Seq(Vec<ActionTraceDomain>),
     Choice(Vec<ActionTraceDomain>),
     Repeat(Box<ActionTraceDomain>),
+    /// An immutable, closed subgraph shared by callable summary instances.
+    /// Portable projections traverse it transparently.
+    Shared(std::sync::Arc<SharedActionTrace>),
+    /// Least fixed point of an ordered trace equation. A missing body refers
+    /// to the enclosing equation with this identity; it is never epsilon.
+    Recursive {
+        id: etas_code::CodeFingerprint,
+        body: Option<Box<ActionTraceDomain>>,
+    },
     UnknownOrder(EffectSet),
     Widened {
         actions: EffectSet,
@@ -318,6 +353,17 @@ pub struct ParameterCallRef {
     pub target: ParameterCallTarget,
     pub parameter: String,
     pub span: Span,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct SharedActionTrace {
+    pub body: ActionTraceDomain,
+    pub fingerprint: etas_code::CodeFingerprint,
+    pub actions: EffectSet,
+    pub parameter_calls: Vec<ParameterCallRef>,
+    pub unordered: bool,
 }
 
 type ParameterCallIndex = BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>;
@@ -357,20 +403,147 @@ pub enum ParameterCallTarget {
 }
 
 impl ActionTraceDomain {
-    const FIXPOINT_TRACE_NODE_LIMIT: usize = 32;
+    pub(crate) fn free_references(&self) -> BTreeSet<etas_code::CodeFingerprint> {
+        enum Work<'a> {
+            Visit(&'a ActionTraceDomain),
+            Leave(etas_code::CodeFingerprint, bool),
+        }
+        let mut work = vec![Work::Visit(self)];
+        let mut bound = BTreeSet::new();
+        let mut free = BTreeSet::new();
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Leave(id, fresh) => {
+                    if fresh {
+                        bound.remove(&id);
+                    }
+                }
+                Work::Visit(Self::Recursive { id, body: None }) => {
+                    if !bound.contains(id) {
+                        free.insert(*id);
+                    }
+                }
+                Work::Visit(Self::Recursive {
+                    id,
+                    body: Some(body),
+                }) => {
+                    let fresh = bound.insert(*id);
+                    work.push(Work::Leave(*id, fresh));
+                    work.push(Work::Visit(body));
+                }
+                Work::Visit(Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts)) => {
+                    work.extend(parts.iter().rev().map(Work::Visit))
+                }
+                Work::Visit(
+                    Self::Repeat(body)
+                    | Self::DefaultHandler { body, .. }
+                    | Self::TaskStart { body, .. },
+                ) => work.push(Work::Visit(body)),
+                _ => {}
+            }
+        }
+        free
+    }
+
+    pub(crate) fn structural_identity(&self) -> etas_code::CodeFingerprint {
+        enum Work<'a> {
+            Visit(&'a ActionTraceDomain),
+            Build(&'a ActionTraceDomain, usize),
+        }
+        let mut work = vec![Work::Visit(self)];
+        let mut keys = Vec::new();
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Visit(Self::Shared(shared)) => keys.push(shared.fingerprint),
+                Work::Visit(trace) => {
+                    let children: Vec<&Self> = match trace {
+                        Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                            parts.iter().collect()
+                        }
+                        Self::Repeat(body)
+                        | Self::Recursive {
+                            body: Some(body), ..
+                        }
+                        | Self::DefaultHandler { body, .. }
+                        | Self::TaskStart { body, .. } => vec![body],
+                        _ => Vec::new(),
+                    };
+                    work.push(Work::Build(trace, children.len()));
+                    work.extend(children.into_iter().rev().map(Work::Visit));
+                }
+                Work::Build(trace, count) => {
+                    let children = keys.split_off(keys.len() - count);
+                    let mut children = children.into_iter();
+                    let node = trace.map_children(|_| Self::Recursive {
+                        id: children.next().unwrap(),
+                        body: None,
+                    });
+                    let bytes = serde_json::to_vec(&node).expect("checked trace node serializes");
+                    keys.push(etas_code::CodeFingerprint::of_bytes(
+                        "etas.effects.trace-structure.v1",
+                        &bytes,
+                    ));
+                }
+            }
+        }
+        keys.pop().unwrap()
+    }
+
+    /// Inspect a node without copying its immutable shared storage.
+    pub fn structure(&self) -> &Self {
+        let mut trace = self;
+        while let Self::Shared(shared) = trace {
+            trace = &shared.body;
+        }
+        trace
+    }
+
+    pub(crate) fn shared(self) -> Self {
+        if matches!(
+            self,
+            Self::Empty
+                | Self::Shared(_)
+                | Self::Event(_)
+                | Self::ParameterCall { .. }
+                | Self::TaskAwait { .. }
+                | Self::UnknownOrder(_)
+                | Self::Widened { .. }
+        ) {
+            return self;
+        }
+        if !self.free_references().is_empty() {
+            return self;
+        }
+        Self::Shared(std::sync::Arc::new(SharedActionTrace {
+            fingerprint: self.structural_identity(),
+            actions: self.action_set(),
+            parameter_calls: self.parameter_calls(),
+            unordered: self.has_unordered_approximation(),
+            body: self,
+        }))
+    }
 
     pub(crate) fn has_unordered_approximation(&self) -> bool {
         let mut pending = vec![self];
         while let Some(trace) = pending.pop() {
             match trace {
                 Self::UnknownOrder(_) | Self::Widened { .. } => return true,
+                Self::Shared(body) => {
+                    if body.unordered {
+                        return true;
+                    }
+                }
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner)
+                Self::Recursive {
+                    body: Some(inner), ..
+                }
+                | Self::Repeat(inner)
                 | Self::TaskStart { body: inner, .. }
                 | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
-                Self::Empty
+                Self::Recursive { body: None, .. }
+                | Self::Empty
                 | Self::Event(_)
                 | Self::ParameterCall { .. }
                 | Self::TaskAwait { .. } => {}
@@ -384,16 +557,25 @@ impl ActionTraceDomain {
         while let Some(trace) = pending.pop() {
             match trace {
                 Self::ParameterCall { .. } => return true,
+                Self::Shared(body) => {
+                    if !body.parameter_calls.is_empty() {
+                        return true;
+                    }
+                }
                 Self::Widened {
                     parameter_calls, ..
                 } if !parameter_calls.is_empty() => return true,
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner)
+                Self::Recursive {
+                    body: Some(inner), ..
+                }
+                | Self::Repeat(inner)
                 | Self::TaskStart { body: inner, .. }
                 | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
-                Self::Empty
+                Self::Recursive { body: None, .. }
+                | Self::Empty
                 | Self::Event(_)
                 | Self::TaskAwait { .. }
                 | Self::UnknownOrder(_)
@@ -421,69 +603,25 @@ impl ActionTraceDomain {
         match self {
             Self::Empty => Self::Empty,
             Self::Repeat(inner) => Self::Repeat(inner),
+            Self::Choice(parts) => {
+                let mut parts = parts
+                    .into_iter()
+                    .filter(|part| part != &Self::Empty)
+                    .collect::<Vec<_>>();
+                match parts.len() {
+                    0 => Self::Empty,
+                    1 => parts.pop().unwrap().repeat(),
+                    _ => Self::Repeat(Box::new(Self::Choice(parts))),
+                }
+            }
             other => Self::Repeat(Box::new(other)),
         }
     }
 
-    pub fn stabilize_for_fixpoint(self, current: Option<&Self>) -> Self {
-        // A stable Repeat is a regular trace, not evidence of fixpoint growth.
-        let needs_widening = self.node_count() > Self::FIXPOINT_TRACE_NODE_LIMIT
-            || current.is_some_and(|current| {
-                current != &self
-                    && (current.contains_repeat() || current.has_unordered_approximation())
-            });
-        if !needs_widening {
-            return self;
-        }
-        self.into_widened()
-    }
-
-    fn node_count(&self) -> usize {
-        let mut count = 0;
-        let mut pending = vec![self];
-        while let Some(trace) = pending.pop() {
-            count += 1;
-            if count > Self::FIXPOINT_TRACE_NODE_LIMIT {
-                return count;
-            }
-            match trace {
-                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
-                    pending.extend(parts)
-                }
-                Self::Repeat(inner)
-                | Self::TaskStart { body: inner, .. }
-                | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
-                Self::Empty
-                | Self::Event(_)
-                | Self::ParameterCall { .. }
-                | Self::TaskAwait { .. }
-                | Self::UnknownOrder(_)
-                | Self::Widened { .. } => {}
-            }
-        }
-        count
-    }
-
-    fn contains_repeat(&self) -> bool {
-        let mut pending = vec![self];
-        while let Some(trace) = pending.pop() {
-            match trace {
-                Self::Repeat(_) => return true,
-                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
-                    pending.extend(parts)
-                }
-                Self::TaskStart { body, .. } | Self::DefaultHandler { body, .. } => {
-                    pending.push(body)
-                }
-                Self::Empty
-                | Self::Event(_)
-                | Self::ParameterCall { .. }
-                | Self::TaskAwait { .. }
-                | Self::UnknownOrder(_)
-                | Self::Widened { .. } => {}
-            }
-        }
-        false
+    pub fn stabilize_for_fixpoint(self, _current: Option<&Self>) -> Self {
+        // Structured loops and recursive equations provide convergence without
+        // discarding order. Imported explicit unordered traces remain explicit.
+        self
     }
 
     pub fn action_set(&self) -> EffectSet {
@@ -502,6 +640,9 @@ impl ActionTraceDomain {
         let mut pending = vec![self];
         while let Some(trace) = pending.pop() {
             match trace {
+                Self::Shared(body) => {
+                    actions.union_assign(&body.actions);
+                }
                 Self::UnknownOrder(set) | Self::Widened { actions: set, .. } => {
                     actions.union_assign(set);
                 }
@@ -511,10 +652,16 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner)
+                Self::Recursive {
+                    body: Some(inner), ..
+                }
+                | Self::Repeat(inner)
                 | Self::TaskStart { body: inner, .. }
                 | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
-                Self::Empty | Self::ParameterCall { .. } | Self::TaskAwait { .. } => {}
+                Self::Recursive { body: None, .. }
+                | Self::Empty
+                | Self::ParameterCall { .. }
+                | Self::TaskAwait { .. } => {}
             }
         }
     }
@@ -526,6 +673,19 @@ impl ActionTraceDomain {
         let mut pending = vec![self];
         while let Some(trace) = pending.pop() {
             match trace {
+                Self::Shared(body) => {
+                    for call in &body.parameter_calls {
+                        calls.insert(
+                            (
+                                call.target,
+                                call.span.source.0,
+                                call.span.range.start.0,
+                                call.span.range.end.0,
+                            ),
+                            call.clone(),
+                        );
+                    }
+                }
                 Self::ParameterCall {
                     target,
                     parameter,
@@ -558,10 +718,17 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner)
+                Self::Recursive {
+                    body: Some(inner), ..
+                }
+                | Self::Repeat(inner)
                 | Self::TaskStart { body: inner, .. }
                 | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
-                Self::Empty | Self::Event(_) | Self::TaskAwait { .. } | Self::UnknownOrder(_) => {}
+                Self::Recursive { body: None, .. }
+                | Self::Empty
+                | Self::Event(_)
+                | Self::TaskAwait { .. }
+                | Self::UnknownOrder(_) => {}
             }
         }
     }
@@ -581,6 +748,7 @@ impl ActionTraceDomain {
             }
             let (actions, calls) = groups.entry(guards.clone()).or_default();
             match trace {
+                Self::Shared(body) => pending.push((body.body.clone(), guards)),
                 Self::ParameterCall {
                     target,
                     parameter,
@@ -615,16 +783,18 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts.into_iter().rev().map(|part| (part, guards.clone())));
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => {
-                    pending.push((*inner, guards))
+                Self::Recursive {
+                    body: Some(inner), ..
                 }
+                | Self::Repeat(inner)
+                | Self::TaskStart { body: inner, .. } => pending.push((*inner, guards)),
                 Self::Event(event) => {
                     actions.insert(event.action);
                 }
                 Self::UnknownOrder(set) => {
                     actions.union_assign(&set);
                 }
-                Self::Empty | Self::TaskAwait { .. } => {}
+                Self::Recursive { body: None, .. } | Self::Empty | Self::TaskAwait { .. } => {}
                 Self::DefaultHandler { .. } => unreachable!("default guard handled above"),
             }
         }
@@ -658,71 +828,16 @@ impl ActionTraceDomain {
         }
     }
 
-    fn has_default_handlers(&self) -> bool {
-        let mut pending = vec![self];
-        while let Some(trace) = pending.pop() {
-            match trace {
-                Self::DefaultHandler { .. } => return true,
-                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
-                    pending.extend(parts)
-                }
-                Self::Repeat(body) | Self::TaskStart { body, .. } => pending.push(body),
-                _ => {}
-            }
-        }
-        false
-    }
-
-    // Guarded widening is a partition of the same unordered footprint domain.
-    // It must remain absorbing under joins, just like an unguarded Widened.
-    fn is_widened_partition(&self) -> bool {
-        let mut trace = self;
-        while let Self::Repeat(body) = trace {
-            trace = body;
-        }
-        match trace {
-            Self::Widened { .. } => true,
-            Self::DefaultHandler { body, .. } => matches!(body.as_ref(), Self::Widened { .. }),
-            Self::Choice(parts) => {
-                !parts.is_empty() && parts.iter().all(Self::is_widened_partition)
-            }
-            _ => false,
-        }
-    }
-
     pub(crate) fn widened(self) -> Self {
         self.into_widened()
     }
 
-    fn merge_widened(left: Self, right: Self) -> Self {
-        Self::Seq(vec![left, right]).into_widened()
-    }
-
     fn seq(self, other: Self) -> Self {
-        let trace = match (self, other) {
-            (left, right) if left.is_widened_partition() || right.is_widened_partition() => {
-                Self::merge_widened(left, right)
-            }
+        // An unordered summary describes only its own segment. Concatenating
+        // it must retain the known order of the surrounding segments.
+        match (self, other) {
             (Self::Empty, right) => right,
             (left, Self::Empty) => left,
-            (Self::UnknownOrder(mut left), Self::UnknownOrder(right)) => {
-                left.union_assign(&right);
-                Self::UnknownOrder(left)
-            }
-            (left @ Self::Widened { .. }, right) | (right, left @ Self::Widened { .. }) => {
-                Self::merge_widened(left, right)
-            }
-            (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                if right.has_default_handlers()
-                    || matches!(right, Self::Widened { .. })
-                    || !right.parameter_calls().is_empty()
-                {
-                    Self::merge_widened(Self::UnknownOrder(left), right)
-                } else {
-                    left.union_assign(&right.action_set());
-                    Self::UnknownOrder(left)
-                }
-            }
             (Self::Seq(mut left), Self::Seq(right)) => {
                 left.extend(right);
                 Self::Seq(left)
@@ -737,68 +852,38 @@ impl ActionTraceDomain {
                 Self::Seq(items)
             }
             (left, right) => Self::Seq(vec![left, right]),
-        };
-        trace.widen_if_needed()
+        }
     }
 
     fn choice(self, other: Self) -> Self {
-        let trace = match (self, other) {
+        match (self, other) {
             (left, right) if left == right => left,
-            (left, right) if left.is_widened_partition() || right.is_widened_partition() => {
-                Self::merge_widened(left, right)
-            }
-            (Self::UnknownOrder(mut left), Self::UnknownOrder(right)) => {
-                left.union_assign(&right);
-                Self::UnknownOrder(left)
-            }
-            (left @ Self::Widened { .. }, right) | (right, left @ Self::Widened { .. }) => {
-                Self::merge_widened(left, right)
-            }
-            (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                if right.has_default_handlers()
-                    || matches!(right, Self::Widened { .. })
-                    || !right.parameter_calls().is_empty()
-                {
-                    Self::merge_widened(Self::UnknownOrder(left), right)
-                } else {
-                    left.union_assign(&right.action_set());
-                    Self::UnknownOrder(left)
-                }
-            }
             (Self::Choice(mut left), Self::Choice(right)) => {
                 left.extend(right);
-                left.sort_by_key(|trace| format!("{trace:?}"));
+                left.sort_by_cached_key(Self::structural_identity);
                 left.dedup();
                 Self::Choice(left)
             }
             (Self::Choice(mut left), right) => {
                 left.push(right);
-                left.sort_by_key(|trace| format!("{trace:?}"));
+                left.sort_by_cached_key(Self::structural_identity);
                 left.dedup();
                 Self::Choice(left)
             }
             (left, Self::Choice(mut right)) => {
                 let mut items = vec![left];
                 items.append(&mut right);
-                items.sort_by_key(|trace| format!("{trace:?}"));
+                items.sort_by_cached_key(Self::structural_identity);
                 items.dedup();
                 Self::Choice(items)
             }
             (left, right) => {
                 let mut items = vec![left, right];
-                items.sort_by_key(|trace| format!("{trace:?}"));
+                items.sort_by_cached_key(Self::structural_identity);
                 items.dedup();
                 Self::Choice(items)
             }
-        };
-        trace.widen_if_needed()
-    }
-
-    fn widen_if_needed(self) -> Self {
-        if self.node_count() <= Self::FIXPOINT_TRACE_NODE_LIMIT {
-            return self;
         }
-        self.into_widened()
     }
 }
 
@@ -1639,62 +1724,33 @@ mod tests {
     }
 
     #[test]
-    fn widening_preserves_parameter_call_placeholders() {
+    fn fixpoint_stabilization_keeps_regular_parameter_calls_ordered() {
         let trace = ActionTraceDomain::Repeat(Box::new(ActionTraceDomain::ParameterCall {
             target: super::ParameterCallTarget::Native(etas_hir::SymbolId(3)),
-            parameter: "f".to_owned(),
+            parameter: "f".into(),
             span: Span::empty(SourceId(7), TextSize(11)),
         }));
-
-        assert_eq!(trace.clone().stabilize_for_fixpoint(None), trace);
-        assert_eq!(trace.clone().stabilize_for_fixpoint(Some(&trace)), trace);
         let previous = ActionTraceDomain::Repeat(Box::new(ActionTraceDomain::Empty));
-        let widened = trace.stabilize_for_fixpoint(Some(&previous));
-
-        let ActionTraceDomain::Widened {
-            actions,
-            parameter_calls,
-        } = widened
-        else {
-            panic!("repeated parameter call should widen");
-        };
-        assert!(actions.is_empty());
-        assert_eq!(parameter_calls.len(), 1);
-        assert_eq!(parameter_calls[0].parameter, "f");
+        assert_eq!(trace.clone().stabilize_for_fixpoint(Some(&previous)), trace);
+        assert_eq!(trace.parameter_calls()[0].parameter, "f");
     }
 
     #[test]
-    fn deep_trace_widening_preserves_actions_and_parameter_calls() {
-        let registry = crate::EffectRegistry::with_standard_effects();
-        let action =
-            crate::Effect::Action(registry.action_by_name("Console.stdout_write").unwrap());
-        let span = Span::empty(SourceId(7), TextSize(11));
-        let mut trace = ActionTraceDomain::ParameterCall {
-            target: super::ParameterCallTarget::Native(etas_hir::SymbolId(3)),
-            parameter: "f".into(),
-            span,
-        };
-        for _ in 0..20_000 {
-            trace = ActionTraceDomain::Seq(vec![trace]);
+    fn one_hundred_operations_keep_their_sequence_positions() {
+        let parts = (0..100)
+            .map(|position| ActionTraceDomain::ParameterCall {
+                target: super::ParameterCallTarget::Native(etas_hir::SymbolId(position)),
+                parameter: format!("operation_{position}"),
+                span: Span::empty(SourceId(7), TextSize(position)),
+            })
+            .collect::<Vec<_>>();
+        let mut trace = ActionTraceDomain::Empty;
+        for part in &parts {
+            trace.seq_assign(part.clone());
         }
-        let trace = ActionTraceDomain::Seq(vec![
-            trace,
-            ActionTraceDomain::Event(crate::ActionEvent {
-                action: action.clone(),
-                span,
-                source: crate::ActionEventSource::Perform,
-            }),
-        ]);
-        assert!(trace.action_set().iter().any(|found| found == &action));
-        let ActionTraceDomain::Widened {
-            actions,
-            parameter_calls,
-        } = trace.stabilize_for_fixpoint(None)
-        else {
-            panic!("deep trace should widen");
-        };
-        assert!(actions.iter().any(|found| found == &action));
-        assert_eq!(parameter_calls.len(), 1);
-        assert_eq!(parameter_calls[0].parameter, "f");
+        assert_eq!(
+            trace.stabilize_for_fixpoint(None),
+            ActionTraceDomain::Seq(parts)
+        );
     }
 }

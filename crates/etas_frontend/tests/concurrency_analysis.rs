@@ -212,7 +212,7 @@ flow make<T>(fallback: T) -> ((T) -> T ![]) {
     return (value: T) => {
         let snapshot = values;
         var step = 0;
-        while step < 20000 limit Iterations(20000) { step = step + 1; }
+        while step < 20000 { step = step + 1; }
         if config.valid { return value; }
         return config.fallback;
     };
@@ -272,7 +272,7 @@ fn package_cpu_callable_keeps_its_definition_owner() {
         "module app.main; import dependency.jobs.burn; flow main() -> i32 { return burn(7); }",
     ));
     input.sources.push(SourceInput { id: etas_core::SourceId(1), path: None,
-        text: "module dependency.jobs; public flow burn(value: i32) -> i32 { var step = 0; while step < 20000 limit Iterations(20000) { step = step + 1; } return value; }".into(),
+        text: "module dependency.jobs; public flow burn(value: i32) -> i32 { var step = 0; while step < 20000 { step = step + 1; } return value; }".into(),
         kind: SourceKind::DependencySourceOverlay { package: dependency, import_root: "dependency".into() } });
     input
         .environment
@@ -414,7 +414,7 @@ flow main() -> i32 {
         Owner.Values.put("owner", 1);
         let child = start(() => {
             var index: i32 = 0;
-            while index < 2 limit Iterations(2) {
+            while index < 2 {
                 Peer.Values.put("part-" + from_i32(index), index);
                 index = index + 1;
             }
@@ -450,7 +450,7 @@ fn cpu_work_estimates_distinguish_leaf_bounded_and_recursive_calls() {
 flow tiny(value: i32) -> i32 { return value + 1; }
 flow bounded(value: i32) -> i32 {
     var index = 0;
-    while index < 2000 limit Iterations(2000) { index = tiny(index); }
+    while index < 2000 { index = tiny(index); }
     return value;
 }
 flow wrapper(value: i32) -> i32 { return bounded(value); }

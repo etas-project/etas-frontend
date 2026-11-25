@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use etas_code::CodeFingerprint;
 use etas_core::Span;
-use etas_types::{CallableGenericParamKind, GenericInstantiationFact, TypeSubstitutionEngine};
+use etas_types::{CallableGenericParamKind, GenericInstantiationFact};
 
 use crate::{
     EffectSummary, ParameterCallTarget,
@@ -120,10 +120,22 @@ impl EffectSemantics<'_> {
             .owner
             .ok_or_else(|| invalid("metadata method has no invocation owner"))?;
         let mut snapshot = CallableEnvironment {
+            invocation_origin: None,
+            invocation_inputs: Default::default(),
             owner,
             parameters: BTreeMap::new(),
             generics: BTreeMap::new(),
         };
+        if let Some(parameters) = generics.parameters {
+            snapshot
+                .generics
+                .extend(parameters.iter().map(|(subject, argument)| {
+                    (
+                        CallableGenericParameter::TypeParameter { subject: *subject },
+                        CallableGenericValue::Type(*argument),
+                    )
+                }));
+        }
         for (position, (name, kind)) in definition.generics.iter().enumerate() {
             let value = match kind {
                 CallableGenericParamKind::Type => CallableGenericValue::Type(
@@ -172,6 +184,9 @@ impl EffectSemantics<'_> {
                 .insert(ParameterCallTarget::Interface(argument.position), origins);
         }
         let id = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&snapshot.generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(snapshot.owner)?),
             origin: invocation,
             application,
         };
@@ -195,14 +210,23 @@ impl EffectSemantics<'_> {
             CallableValueParameter, CallableValueScope, CallableValueSource,
         };
         let (snapshot, application) = context;
-        let graph =
-            super::metadata_graphs::graph_key(definition.invocation.identity, argument.position);
+        let graph = super::metadata_graphs::graph_key(
+            definition.invocation.identity,
+            argument.position,
+            &definition.generics,
+        );
         let mut captured = CallableEnvironment {
+            invocation_origin: None,
+            invocation_inputs: Default::default(),
             owner: snapshot.owner,
             generics: BTreeMap::new(),
             parameters: BTreeMap::new(),
         };
         for (parameter, value) in &snapshot.generics {
+            if let CallableGenericParameter::TypeParameter { .. } = parameter {
+                captured.generics.insert(*parameter, value.clone());
+                continue;
+            }
             let CallableGenericParameter::Graph {
                 scope, position, ..
             } = parameter
@@ -243,6 +267,7 @@ impl EffectSemantics<'_> {
                 }
             };
             if let Some(binding) = bindings.get(parameter) {
+                let origins = self.trace_argument_origins(binding, state)?;
                 captured.parameters.insert(
                     ParameterCallTarget::Graph {
                         graph,
@@ -252,11 +277,60 @@ impl EffectSemantics<'_> {
                             position,
                         },
                     },
-                    self.trace_argument_origins(binding, state)?,
+                    origins.clone(),
                 );
+                if let ParameterCallTarget::Graph {
+                    graph: parent_graph,
+                    parameter: projected,
+                } = parameter
+                    && projected.projection.is_some()
+                {
+                    let mut root = *projected;
+                    root.projection = None;
+                    let root = ParameterCallTarget::Graph {
+                        graph: *parent_graph,
+                        parameter: root,
+                    };
+                    let root_position = definition
+                        .parameters
+                        .iter()
+                        .position(|(_, target)| *target == root)
+                        .ok_or_else(|| {
+                            invalid(
+                                "metadata callback projection has no root in its binding interface",
+                            )
+                        })?;
+                    let (parent, _, _, _) =
+                        self.callable_graph(*parent_graph).ok_or_else(|| {
+                            invalid("metadata callback projection has no checked parent graph")
+                        })?;
+                    let path = parent
+                        .projection_path(*projected)
+                        .map_err(|error| invalid(error.to_string()))?;
+                    for (projection, selected) in
+                        argument.sources.parameter_projections.iter().enumerate()
+                    {
+                        if selected == path {
+                            captured.parameters.insert(
+                                ParameterCallTarget::Graph {
+                                    graph,
+                                    parameter: CallableValueParameter {
+                                        scope: CallableValueScope::Root,
+                                        position: root_position as u32,
+                                        projection: Some(projection as u32),
+                                    },
+                                },
+                                origins.clone(),
+                            );
+                        }
+                    }
+                }
             }
         }
         let id = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&captured.generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(captured.owner)?),
             origin: graph,
             application,
         };
@@ -285,6 +359,24 @@ impl EffectSemantics<'_> {
                             graph,
                             parameter: *parameter,
                         })
+                        .cloned();
+                    let values = match values {
+                        Some(values) => Some(values),
+                        None => {
+                            let call = definition.parameters.get(parameter.position as usize)
+                                .and_then(|(_, target)| bindings.get(target))
+                                .and_then(|binding| match binding {
+                                    super::super::specialize::TraceArgumentBinding::Expression(expr)
+                                    | super::super::specialize::TraceArgumentBinding::ProjectedExpression { expr, .. } => Some(*expr),
+                                    super::super::specialize::TraceArgumentBinding::InputData { call, .. } => Some(*call),
+                                    _ => None,
+                                });
+                            match call {
+                                Some(call) => self.metadata_parameter_origins(graph, *parameter, &captured, Some(id), state, call)?,
+                                None => None,
+                            }
+                        }
+                    }
                         .ok_or_else(|| {
                             invalid(format!(
                                 "metadata method callback {}.{} has no checked argument binding for {parameter:?}; interface {:?}; bound inputs {:?}",
@@ -353,9 +445,21 @@ impl EffectSemantics<'_> {
             }
         }
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
-        let mut substitution =
-            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &types)
-                .with_effect_arguments(&type_rows);
+        let type_parameters = snapshot
+            .generics
+            .iter()
+            .filter_map(|(parameter, value)| match (parameter, value) {
+                (
+                    CallableGenericParameter::TypeParameter { subject },
+                    CallableGenericValue::Type(argument),
+                ) => Some((*subject, *argument)),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let mut substitution = self
+            .type_substitution(&types)
+            .with_type_parameters(&type_parameters)
+            .with_effect_arguments(&type_rows);
         let method = &definition.invocation;
         let receiver = substitution.substitute(method.receiver)?;
         let spec_args = method
@@ -468,9 +572,12 @@ impl EffectSemantics<'_> {
                 .map(super::MethodEvidence::Resolved);
         }
         if !self.spec_method_has_lexical_parameter(snapshot.owner, receiver, &spec_args)? {
-            return Err(invalid(
-                "metadata method has no unique checked implementation",
-            ));
+            return Err(invalid(format!(
+                "metadata method {}.{} has no unique checked implementation for {:?} with bindings {types:?}",
+                method.spec.path.join("."),
+                method.method,
+                self.types.store.get(receiver),
+            )));
         }
         types.extend(declaration.param_names.iter().cloned().zip(spec_args));
         types.extend(arguments.type_bindings);
@@ -481,9 +588,9 @@ impl EffectSemantics<'_> {
                 .ok_or_else(|| invalid("metadata method receiver binder is invalid"))?;
             types.insert(parameter.name.clone(), receiver);
         }
-        let mut substitution =
-            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &types)
-                .with_effect_arguments(&type_rows);
+        let mut substitution = self
+            .type_substitution(&types)
+            .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &signature.effects {
             summary.record_escaping_effect_row(
@@ -494,6 +601,12 @@ impl EffectSemantics<'_> {
             invocation,
             environment: Some(environment),
         };
+        if etas_types::data_equality::is_hash_member(&self.spec_facts, &fact.identity) {
+            super::contract_completion(&mut summary, substitution.substitute(signature.output)?);
+            return Ok(super::MethodEvidence::Contract {
+                summary: Box::new(summary),
+            });
+        }
         summary.action_trace = crate::ActionTraceDomain::ParameterCall {
             target,
             parameter: method.method.clone(),

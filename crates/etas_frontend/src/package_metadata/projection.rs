@@ -41,6 +41,7 @@ use crate::{AstItemKind, CheckedProject, ModuleOrigin};
 use super::{PackageMetadataBuildInput, PackageMetadataError, PackageMetadataHeader};
 
 mod callable_returns;
+mod constructor_contracts;
 mod default_behavior;
 mod methods;
 mod re_exports;
@@ -116,35 +117,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                 Some(self.definition_descriptors(&origins, identities)?);
         }
         let effect_metadata = self.effect_metadata(&public_metadata)?;
-        let mut re_exports = public_metadata
-            .re_exports
-            .iter()
-            .map(|export| (&export.exported, &export.from))
-            .collect::<Vec<_>>();
-        re_exports.sort();
-        public_metadata.fingerprint = Some(blake3_hash(
-            format!(
-                "{:?}{:?}{:?}{:?}{:?}{:?}",
-                public_symbols(&public_metadata),
-                effect_metadata,
-                re_exports,
-                public_metadata
-                    .definition_origins
-                    .as_ref()
-                    .map(|origins| origins.fingerprint()),
-                public_metadata
-                    .definition_descriptors
-                    .as_ref()
-                    .map(etas_package_metadata::definition_descriptors_fingerprint),
-                (
-                    &public_metadata.flows,
-                    &public_metadata.agents,
-                    &public_metadata.tools,
-                    &public_metadata.actions,
-                    &public_metadata.spec_signatures
-                ),
-            )
-            .as_bytes(),
+        public_metadata.fingerprint = Some(public_metadata_fingerprint(
+            &public_metadata,
+            &effect_metadata,
         ));
         let package_metadata = PackageMetadata {
             version: 1,
@@ -233,6 +208,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                     metadata
                         .annotations
                         .extend(self.annotation_metadata_for_item(path.clone(), item)?);
+                    if let Some(contract) = self.constructor_contract(path.clone(), item)? {
+                        metadata.constructor_contracts.push(contract);
+                    }
                 }
                 match export.item.kind {
                     AstItemKind::Type | AstItemKind::TypeAlias => metadata
@@ -273,6 +251,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                                                     path.clone(),
                                                 ),
                                             parameters: contract.parameters.clone(),
+                                            resource_boundaries: contract
+                                                .resource_boundaries
+                                                .clone(),
                                         },
                                     );
                                 }
@@ -358,6 +339,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                                 identity.clone(),
                             ),
                             parameters: contract.parameters.clone(),
+                            resource_boundaries: contract.resource_boundaries.clone(),
                         });
                 }
             }
@@ -852,6 +834,13 @@ impl<'a> ProjectMetadataProjection<'a> {
         params
             .iter()
             .map(|param| {
+                let mut bounds = Vec::new();
+                for bound in &param.bounds {
+                    let bound = self.checked_spec_bound_metadata(bound, &generic_names)?;
+                    if !bounds.contains(&bound) {
+                        bounds.push(bound);
+                    }
+                }
                 Ok(etas_package_metadata::GenericParam {
                     name: param.name.clone(),
                     kind: match param.kind {
@@ -862,11 +851,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                             etas_package_metadata::GenericParamKind::Effect
                         }
                     },
-                    bounds: param
-                        .bounds
-                        .iter()
-                        .map(|bound| self.checked_spec_bound_metadata(bound, &generic_names))
-                        .collect::<Result<Vec<_>, _>>()?,
+                    bounds,
                 })
             })
             .collect()
@@ -1645,6 +1630,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 behavior.direct.escaping_effects = direct_effects.clone();
             }
             summaries.push(MetadataEffectSummary {
+                callable_body: self
+                    .invocation_callable_graph(*item, summary, identities)
+                    .map_err(|error| PackageMetadataError::InvalidMetadataType {
+                        reason: format!("{} callable body: {error}", path.join(".")),
+                    })?,
                 definition: identities.and_then(|identities| {
                     self.checked
                         .hir
@@ -1657,7 +1647,18 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .cloned()
                 }),
                 residual_checks: summary.residual_checks.iter().cloned().collect(),
-                behavior: callable_returns::behavior(summary),
+                behavior: callable_returns::behavior(summary).map(|mut behavior| {
+                    behavior.suspension = self
+                        .checked
+                        .effects
+                        .suspension
+                        .get(&etas_effects::EffectUnit::Item(*item))
+                        .map(|summary| etas_code::descriptor::SuspensionInfo {
+                            may_suspend: summary.may_suspend,
+                            unknown: summary.unknown,
+                        });
+                    behavior
+                }),
                 handler_requests: self.request_template_metadata(
                     &summary.handler_requests,
                     &type_generic_names,
@@ -2031,6 +2032,19 @@ impl<'a> ProjectMetadataProjection<'a> {
         parameters: &BTreeMap<etas_effects::ParameterCallTarget, String>,
     ) -> Result<MetadataActionTrace, PackageMetadataError> {
         Ok(match trace {
+            ActionTraceDomain::Shared(body) => {
+                return self.action_trace_metadata(&body.body, type_generic_names, parameters);
+            }
+            ActionTraceDomain::Recursive { id, body } => MetadataActionTrace::Recursive {
+                id: *id,
+                body: body
+                    .as_ref()
+                    .map(|body| {
+                        self.action_trace_metadata(body, type_generic_names, parameters)
+                            .map(Box::new)
+                    })
+                    .transpose()?,
+            },
             ActionTraceDomain::Empty => MetadataActionTrace::Empty,
             ActionTraceDomain::DefaultHandler { guards, body } => {
                 MetadataActionTrace::DefaultHandler {
@@ -2513,6 +2527,38 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|reference| (slot, reference))
             })
             .map(|(slot, reference)| {
+                let callable_value =
+                    if let etas_types::ParameterDefaultRef::Source { parameter } = reference {
+                        let etas_hir::SymbolDef::Param { owner, .. } = self
+                            .checked
+                            .hir
+                            .symbols
+                            .get(*parameter)
+                            .ok_or_else(|| invalid("default has no checked parameter"))?
+                            .def
+                        else {
+                            return Err(invalid("default owner is not a value parameter"));
+                        };
+                        let expr = *self
+                            .checked
+                            .hir
+                            .parameter_defaults
+                            .get(parameter)
+                            .ok_or_else(|| invalid("default expression is missing"))?;
+                        let summary = self
+                            .checked
+                            .effects
+                            .unit_effects
+                            .get(&etas_effects::EffectUnit::ParameterDefault {
+                                owner,
+                                parameter: *parameter,
+                                expr,
+                            })
+                            .ok_or_else(|| invalid("default value has no checked analysis"))?;
+                        self.returned_callables(owner, summary, self.identities)?
+                    } else {
+                        None
+                    };
                 let reference = match reference {
                     etas_types::ParameterDefaultRef::External { reference } => reference.clone(),
                     etas_types::ParameterDefaultRef::Source { .. } => {
@@ -2530,6 +2576,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 Ok(etas_package_metadata::ParameterDefault {
                     slot: slot as u32,
                     reference,
+                    callable_value,
                 })
             })
             .collect()
@@ -3061,6 +3108,44 @@ fn normalize_generic_type(ty: &mut MetadataType, names: &BTreeSet<String>) {
     }
 }
 
+fn public_metadata_fingerprint(
+    public_metadata: &PublicMetadata,
+    effect_metadata: &MetadataEffectMetadata,
+) -> String {
+    let mut re_exports = public_metadata
+        .re_exports
+        .iter()
+        .map(|export| (&export.exported, &export.from))
+        .collect::<Vec<_>>();
+    re_exports.sort();
+    blake3_hash(
+        format!(
+            "{:?}{:?}{:?}{:?}{:?}{:?}",
+            public_symbols(&public_metadata),
+            effect_metadata,
+            re_exports,
+            public_metadata
+                .definition_origins
+                .as_ref()
+                .map(|origins| origins.fingerprint()),
+            public_metadata
+                .definition_descriptors
+                .as_ref()
+                .map(etas_package_metadata::definition_descriptors_fingerprint),
+            (
+                &public_metadata.flows,
+                &public_metadata.agents,
+                &public_metadata.tools,
+                &public_metadata.actions,
+                &public_metadata.spec_signatures,
+                &public_metadata.scoped_callbacks,
+                &public_metadata.constructor_contracts
+            ),
+        )
+        .as_bytes(),
+    )
+}
+
 fn public_symbols(metadata: &PublicMetadata) -> PublicSymbols {
     let mut symbols = Vec::new();
     for symbol in &metadata.types {
@@ -3151,5 +3236,49 @@ fn trust_wrapper_kind(wrapper: TrustWrapper) -> MetadataTypeKind {
         TrustWrapper::Secret => MetadataTypeKind::Secret,
         TrustWrapper::Public => MetadataTypeKind::Public,
         TrustWrapper::Sanitized => MetadataTypeKind::Sanitized,
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    #[test]
+    fn resource_boundaries_change_the_published_contract_identity() {
+        let path = vec!["pkg".into(), "scope".into()];
+        let unit = MetadataType {
+            kind: MetadataTypeKind::Primitive,
+            name: "unit".into(),
+            ..Default::default()
+        };
+        let mut metadata = PublicMetadata::default();
+        metadata.flows.push(MetadataCallableSignature {
+            path: path.clone(),
+            param_names: vec!["body".into()],
+            input: vec![MetadataType {
+                kind: MetadataTypeKind::Function,
+                children: vec![unit.clone()],
+                effects: Some(MetadataEffectRow::default()),
+                ..Default::default()
+            }],
+            output: Some(unit),
+            effects: Some(MetadataEffectRow::default()),
+            ..Default::default()
+        });
+        metadata
+            .scoped_callbacks
+            .push(etas_package_metadata::ScopedCallbackContract {
+                target: etas_package_metadata::CallableContractTarget::Item(path),
+                parameters: vec![0],
+                resource_boundaries: Vec::new(),
+            });
+        let effect_metadata = MetadataEffectMetadata::default();
+        let before = public_metadata_fingerprint(&metadata, &effect_metadata);
+        metadata.scoped_callbacks[0].resource_boundaries.push(0);
+        metadata.scoped_callbacks[0].validate(&metadata).unwrap();
+        assert_ne!(
+            before,
+            public_metadata_fingerprint(&metadata, &effect_metadata)
+        );
     }
 }

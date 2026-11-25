@@ -25,3 +25,6 @@ pub use domain::{
     ResidualCheckSet, RuntimeRequirementReason,
 };
 pub use unit::EffectUnit;
+
+pub(crate) mod ordered_trace;
+pub(crate) mod recursive_trace;

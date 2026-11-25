@@ -9,7 +9,7 @@ impl EffectSemantics<'_> {
             self.types.facts.checked_method_calls.get(&call)
         {
             let parameters = &method.signature.params;
-            let arguments = match self.checked_method_arguments(call) {
+            let arguments = match self.checked_method_argument_slots(call) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     self.mark_incomplete_at(
@@ -38,7 +38,7 @@ impl EffectSemantics<'_> {
             let arguments = args
                 .iter()
                 .map(|arg| match arg {
-                    HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
+                    HirArg::Positional(value) | HirArg::Named { value, .. } => Some(*value),
                 })
                 .collect::<Vec<_>>();
             (parameters, arguments)
@@ -46,33 +46,45 @@ impl EffectSemantics<'_> {
             return;
         };
 
-        for (parameter, argument) in parameters.iter().copied().zip(arguments) {
+        for (parameter_position, (parameter, argument)) in
+            parameters.iter().copied().zip(arguments).enumerate()
+        {
             let Some(Type::Function(expected)) = self.types.store.get(parameter) else {
                 continue;
             };
             let Some(bound) = expected.effects.as_ref().filter(|row| row.tail.is_none()) else {
                 continue;
             };
-            let Some(Type::Function(actual)) = self
-                .types
-                .facts
-                .expr_types
-                .get(&argument)
-                .and_then(|ty| self.types.store.get(*ty))
-            else {
-                continue;
-            };
-            if actual.effects.is_some() {
-                continue;
+            if let Some(argument) = argument {
+                let Some(Type::Function(actual)) = self
+                    .types
+                    .facts
+                    .expr_types
+                    .get(&argument)
+                    .and_then(|ty| self.types.store.get(*ty))
+                else {
+                    continue;
+                };
+                if actual.effects.is_some() {
+                    continue;
+                }
             }
             // Context may solve after collection. The shared value analysis also
             // follows aliases and captured/returned callable environments.
             let bound = self.row_from_type_ref(bound);
-            let summary = match self.latent_summary_for_expr(state, argument, "callback") {
+            let checked = match argument {
+                Some(argument) => self.latent_summary_for_expr(state, argument, "callback"),
+                None => self.default_argument_binding(call, parameter_position, state).and_then(|binding| {
+                    let binding = binding.ok_or(super::specialize::EffectSpecializationError::InvalidCallableParameterInterface)?;
+                    self.latent_summary_for_origins(self.trace_argument_origins(&binding, state)?, self.hir.exprs[call].span(&self.hir.blocks), "default callback")
+                }),
+            };
+            let location = argument.unwrap_or(call);
+            let summary = match checked {
                 Ok(summary) => summary,
                 Err(error) => {
                     self.mark_incomplete_at(
-                        self.hir.exprs[argument].span(&self.hir.blocks),
+                        self.hir.exprs[location].span(&self.hir.blocks),
                         error.to_string(),
                         state,
                     );
@@ -81,7 +93,7 @@ impl EffectSemantics<'_> {
             };
             if matches!(summary.support, crate::InterpreterSupport::Rejected(_)) {
                 self.mark_incomplete_at(
-                    self.hir.exprs[argument].span(&self.hir.blocks),
+                    self.hir.exprs[location].span(&self.hir.blocks),
                     "callback effect contract requires a complete latent behavior summary",
                     state,
                 );
@@ -94,7 +106,7 @@ impl EffectSemantics<'_> {
             if !coverage.row_covers(&bound, &summary.escaping_effects) {
                 self.diagnostics.push(etas_core::Diagnostic::effect_check(
                     etas_core::EffectDiagnosticCode::EscapedEffect,
-                    self.hir.exprs[argument].span(&self.hir.blocks),
+                    self.hir.exprs[location].span(&self.hir.blocks),
                     "callback escaping effects exceed the selected parameter's effect bound",
                 ));
                 state.summary.support = crate::InterpreterSupport::Rejected(

@@ -61,7 +61,7 @@ impl TraceSpecMaterializer<'_> {
                 tag: signature.owner,
                 action: signature.id,
             };
-            let Some(args) = self.action_args(effect_ref, signature)? else {
+            let Some(args) = self.action_args(effect_ref, &action)? else {
                 return Ok(None);
             };
             return if args.is_empty() {
@@ -98,15 +98,17 @@ impl TraceSpecMaterializer<'_> {
         effect_ref: &HirEffectRef,
     ) -> Result<Option<Effect>, EffectPipelineError> {
         let qualified = effect_label(effect_ref);
-        if let Some(action) = self.registry.standard_action_by_name(&qualified) {
-            let Some(signature) = self.registry.action_signature(&action) else {
-                self.diagnostic(
-                    effect_ref.span,
-                    "trace spec action is missing registry signature",
-                );
-                return Ok(None);
-            };
-            let Some(args) = self.action_args(effect_ref, signature)? else {
+        if let Some(action) = self
+            .registry
+            .standard_action_by_name(&qualified)
+            .or_else(|| {
+                self.registry.action_by_name(&qualified).filter(|action| {
+                    self.registry.is_carried_action(action)
+                        && self.registry.standard_tag_by_id(action.tag.0).is_some()
+                })
+            })
+        {
+            let Some(args) = self.action_args(effect_ref, &action)? else {
                 return Ok(None);
             };
             return Ok(Some(if args.is_empty() {
@@ -136,7 +138,22 @@ impl TraceSpecMaterializer<'_> {
         let Some(prefix) = partial.resolved_prefix else {
             return Ok(None);
         };
-        let Some(tag) = self.registry.tag_by_symbol(prefix) else {
+        let Some(prefix) = self.hir.canonical_source_symbol(prefix) else {
+            return Ok(None);
+        };
+        let tag = self.registry.tag_by_symbol(prefix).or_else(|| {
+            let symbol = self.hir.symbols.get(prefix)?;
+            let SymbolDef::ImportAlias { path, origin } = &symbol.def else {
+                return None;
+            };
+            matches!(
+                origin,
+                ImportAliasOrigin::StdPrelude | ImportAliasOrigin::SourceImport
+            )
+            .then(|| self.registry.tag_by_name(&path.join(".")))
+            .flatten()
+        });
+        let Some(tag) = tag else {
             return Ok(None);
         };
         if partial.remaining.len() != 1 {
@@ -144,14 +161,7 @@ impl TraceSpecMaterializer<'_> {
         }
         let action_name = format!(
             "{}.{}",
-            effect_ref
-                .path
-                .segments
-                .iter()
-                .take(effect_ref.path.segments.len().saturating_sub(1))
-                .map(|segment| segment.name.as_str())
-                .collect::<Vec<_>>()
-                .join("."),
+            self.registry.tag_name(tag).expect("checked effect tag"),
             partial.remaining[0]
         );
         let Some(action) = self.registry.action_by_name(&action_name) else {
@@ -160,14 +170,7 @@ impl TraceSpecMaterializer<'_> {
         if action.tag != tag {
             return Ok(None);
         }
-        let Some(signature) = self.registry.action_signature(&action) else {
-            self.diagnostic(
-                effect_ref.span,
-                "trace spec action is missing registry signature",
-            );
-            return Ok(None);
-        };
-        let Some(args) = self.action_args(effect_ref, signature)? else {
+        let Some(args) = self.action_args(effect_ref, &action)? else {
             return Ok(None);
         };
         Ok(Some(if args.is_empty() {
@@ -196,14 +199,7 @@ impl TraceSpecMaterializer<'_> {
         }
         let qualified = path.join(".");
         if let Some(action) = self.registry.action_by_name(&qualified) {
-            let Some(signature) = self.registry.action_signature(&action) else {
-                self.diagnostic(
-                    effect_ref.span,
-                    "trace spec action is missing registry signature",
-                );
-                return Ok(None);
-            };
-            let Some(args) = self.action_args(effect_ref, signature)? else {
+            let Some(args) = self.action_args(effect_ref, &action)? else {
                 return Ok(None);
             };
             return Ok(Some(if args.is_empty() {
@@ -228,14 +224,25 @@ impl TraceSpecMaterializer<'_> {
     fn action_args(
         &mut self,
         effect_ref: &HirEffectRef,
-        signature: &crate::EffectActionSig,
+        action: &ActionRef,
     ) -> Result<Option<Vec<EffectArgRef>>, EffectPipelineError> {
-        if !effect_ref.args.is_empty() && effect_ref.args.len() != signature.effect_args.len() {
+        let Some(selectors) = self.registry.action_selectors(action) else {
+            self.diagnostic(
+                effect_ref.span,
+                "trace spec action is missing checked selectors",
+            );
+            return Ok(None);
+        };
+        let defaults = self
+            .registry
+            .action_signature(action)
+            .map_or(&[][..], |signature| signature.selector_defaults.as_slice());
+        if !effect_ref.args.is_empty() && effect_ref.args.len() != selectors.len() {
             self.diagnostic(
                 effect_ref.span,
                 format!(
                     "trace spec action pattern expects {} static selector argument(s), got {}",
-                    signature.effect_args.len(),
+                    selectors.len(),
                     effect_ref.args.len()
                 ),
             );
@@ -243,13 +250,11 @@ impl TraceSpecMaterializer<'_> {
         }
         if effect_ref.args.is_empty() {
             return Ok(Some(
-                signature
-                    .effect_args
+                selectors
                     .iter()
                     .enumerate()
                     .map(|(index, _)| {
-                        signature
-                            .selector_defaults
+                        defaults
                             .get(index)
                             .and_then(Clone::clone)
                             .unwrap_or(EffectArgRef::Wildcard)
@@ -257,8 +262,7 @@ impl TraceSpecMaterializer<'_> {
                     .collect(),
             ));
         }
-        let args = signature
-            .effect_args
+        let args = selectors
             .iter()
             .zip(&effect_ref.args)
             .map(|(kind, arg)| self.effect_arg(arg, kind))
@@ -343,7 +347,29 @@ impl TraceSpecMaterializer<'_> {
     }
 
     fn type_arg_from_path(&self, path: &etas_hir::ResolvedPath) -> Option<TypeId> {
-        let symbol = resolved_static_type_selector_symbol(path, Some)?;
+        let symbol = resolved_static_type_selector_symbol(path, |symbol| {
+            self.hir.canonical_source_symbol(symbol)
+        })
+        .or_else(|| {
+            let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
+                return None;
+            };
+            let [name] = partial.remaining.as_slice() else {
+                return None;
+            };
+            let owner = self.hir.canonical_source_symbol(partial.resolved_prefix?)?;
+            let SymbolTypeFact::Agent { signature } = self.types.facts.symbol_types.get(&owner)?
+            else {
+                return None;
+            };
+            self.types
+                .facts
+                .agent_method(signature.component, name)
+                .map(|method| method.symbol)
+        })?;
+        if let Some(method) = self.types.facts.agent_methods.get(&symbol) {
+            return Some(method.context_type);
+        }
         if let Some(symbol_data) = self.hir.symbols.get(symbol)
             && matches!(symbol_data.def, etas_hir::SymbolDef::TypeParam { .. })
         {
@@ -356,6 +382,7 @@ impl TraceSpecMaterializer<'_> {
             });
         }
         match self.types.facts.symbol_types.get(&symbol) {
+            Some(SymbolTypeFact::Agent { signature }) => Some(signature.component),
             Some(SymbolTypeFact::TypeAlias { target, .. }) => Some(*target),
             Some(SymbolTypeFact::Type { constructor })
             | Some(SymbolTypeFact::NominalType { constructor, .. }) => Some(TypeId(constructor.0)),

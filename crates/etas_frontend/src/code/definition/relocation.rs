@@ -172,6 +172,36 @@ impl NativeTypeCorrespondence {
         &self.declarations
     }
 
+    /// Reserve checked binders that have no declaration in the destination.
+    /// A marker impl may own binders without owning any callable signature.
+    pub(crate) fn reserve_parameters(
+        &mut self,
+        source: &DefinitionCatalog,
+        reachable: &[TypeId],
+        target: &mut etas_types::TypeInterner,
+        budget: &etas_types::TypeSubstitutionBudget<'_>,
+    ) -> Result<(), etas_types::TypeSubstitutionError> {
+        let parameters = source.native_type_parameters();
+        for ty in reachable {
+            budget.charge_node()?;
+            if self.declarations.contains_key(ty) {
+                continue;
+            }
+            let Some(identity) = parameters.get(ty) else {
+                continue;
+            };
+            let Some(etas_types::Type::Named(parameter)) = source.checked.type_store.get(*ty)
+            else {
+                return Err(etas_types::TypeSubstitutionError::MissingTypeIdentity(*ty));
+            };
+            let mapped = target
+                .intern_canonical_parameter(identity.clone(), parameter.name.clone())
+                .map_err(|_| etas_types::TypeSubstitutionError::MissingTypeIdentity(*ty))?;
+            self.declarations.insert(*ty, mapped);
+        }
+        Ok(())
+    }
+
     pub fn effect_names(&self) -> &HashMap<String, String> {
         &self.effect_names
     }
@@ -279,6 +309,42 @@ mod tests {
             | SymbolTypeFact::Type { constructor } => TypeId(constructor.0),
             _ => panic!("expected nominal type"),
         }
+    }
+
+    #[test]
+    fn marker_implementation_binders_relocate_without_method_signatures() {
+        let (checked, source, _) =
+            catalog("module app; spec Allowed; type Box<T> = { value: T }; impl Box<T> ~ Allowed;");
+        let (_, destination, _) = catalog("module app; spec Allowed; type Box<T> = { value: T };");
+        let parameter = checked
+            .types
+            .spec_impls
+            .iter()
+            .find(|implementation| !implementation.generic_params.is_empty())
+            .unwrap()
+            .generic_params[0]
+            .subject;
+        let mut correspondence = NativeTypeCorrespondence::build(&source, &destination).unwrap();
+        let mut target =
+            etas_types::TypeInterner::from_store(destination.checked.type_store.as_ref().clone());
+        let budget = etas_types::TypeSubstitutionBudget::new(1024, 1024, None);
+        correspondence
+            .reserve_parameters(&source, &[parameter], &mut target, &budget)
+            .unwrap();
+        let mapped = correspondence.declarations()[&parameter];
+        assert_eq!(
+            target.store().parameter_identity(mapped),
+            source.native_type_parameters().get(&parameter)
+        );
+        assert!(matches!(
+            target.store().parameter_identity(mapped).unwrap().owner(),
+            etas_code::descriptor::GenericOwner::Implementation(_)
+        ));
+        let again = target.store().len();
+        correspondence
+            .reserve_parameters(&source, &[parameter], &mut target, &budget)
+            .unwrap();
+        assert_eq!(target.store().len(), again);
     }
 
     #[test]

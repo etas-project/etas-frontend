@@ -86,7 +86,7 @@ pub fn complete_handler_instantiations(
     if output.facts.deferred_handler_instantiations.is_empty() {
         return Ok(());
     }
-    if substitutions.iter().next().is_none() {
+    if substitutions.is_empty() {
         std::sync::Arc::make_mut(&mut output.facts)
             .deferred_handler_instantiations
             .clear();

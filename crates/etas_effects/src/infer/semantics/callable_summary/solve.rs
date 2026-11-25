@@ -90,11 +90,21 @@ impl EffectSemantics<'_> {
                         .apply_callable_summary(plan, &summaries, mode)
                         .map_err(|error| context(error, "solving checked callable summary"))?;
                     summary.stabilize_for_fixpoint(None);
+                    summary.action_trace = summary.action_trace.shared();
+                    if let Some(exits) = &mut summary.exits {
+                        for exit in &mut exits.exits {
+                            exit.trace = std::mem::take(&mut exit.trace).shared();
+                        }
+                        for exit in &mut exits.parameter_exits {
+                            exit.prefix = std::mem::take(&mut exit.prefix).shared();
+                        }
+                    }
                     summaries.insert(key, summary);
                 }
                 continue;
             }
             let members = component.nodes.iter().copied().collect::<BTreeSet<_>>();
+            let mut trace_equations = crate::infer::recursive_trace::TraceEquations::default();
             for key in &members {
                 summaries.insert(*key, EffectSummary::local());
             }
@@ -114,11 +124,14 @@ impl EffectSemantics<'_> {
                     let previous = summaries.get(key).ok_or_else(|| {
                         invalid("callable summary worklist lost its solution slot")
                     })?;
-                    let candidate = self.apply_callable_summary(plan, summaries, mode)?;
+                    let mut candidate = self.apply_callable_summary(plan, summaries, mode)?;
+                    trace_equations.summarize_with_id(
+                        crate::infer::recursive_trace::identity(key),
+                        &mut candidate,
+                    );
                     let mut joined = previous.clone();
                     joined.join_summary(&candidate);
                     joined.stabilize_for_fixpoint(Some(previous));
-                    joined.action_trace = joined.action_trace.repeat().stabilize_for_fixpoint(None);
                     let changed = &joined != previous;
                     if changed {
                         summaries.insert(*key, joined);
@@ -141,6 +154,11 @@ impl EffectSemantics<'_> {
                 ));
             }
             summaries = solved.value;
+            for key in &members {
+                if let Some(summary) = summaries.get_mut(key) {
+                    trace_equations.close_summary(summary);
+                }
+            }
         }
         let summary = summaries
             .get(&root)
@@ -170,19 +188,26 @@ impl EffectSemantics<'_> {
         mode: CallableSummaryMode,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         let plan = match plan {
-            CallableSummaryPlan::Alternatives(keys) => {
-                let mut keys = keys.iter();
-                let first = keys
-                    .next()
-                    .and_then(|key| summaries.get(key))
-                    .ok_or_else(|| {
-                        invalid("existential method has no solved implementation alternatives")
-                    })?;
-                let mut result = first.clone();
-                for key in keys {
-                    result.join_branch(summaries.get(key).ok_or_else(|| {
-                        invalid("existential method implementation summary is missing")
-                    })?);
+            CallableSummaryPlan::Dispatch {
+                implementations,
+                managed,
+            } => {
+                let mut alternatives = implementations.iter().map(|key| {
+                    let body = summaries
+                        .get(key)
+                        .cloned()
+                        .ok_or_else(|| invalid("method implementation summary is missing"))?;
+                    if *managed {
+                        self.agent_request_summary(key.source, key.span(), body)
+                    } else {
+                        Ok(body)
+                    }
+                });
+                let mut result = alternatives.next().ok_or_else(|| {
+                    invalid("method dispatch has no solved implementation alternatives")
+                })??;
+                for alternative in alternatives {
+                    result.join_branch(&alternative?);
                 }
                 return Ok(result);
             }
@@ -317,6 +342,13 @@ fn joined_origins(
     summaries: &BTreeMap<CallableSummaryKey, EffectSummary>,
     mode: CallableSummaryMode,
 ) -> Result<EffectSummary, EffectSpecializationError> {
+    if origins.is_empty() {
+        // A checked empty structural payload (None, or an empty sequence) has
+        // no callable to execute. Use an epsilon over-approximation for that
+        // unreachable callback branch. Missing bindings and empty direct flow
+        // arguments are still rejected when building the dependency graph.
+        return Ok(EffectSummary::local());
+    }
     let mut combined = None::<EffectSummary>;
     for origin in origins {
         let summary = summaries

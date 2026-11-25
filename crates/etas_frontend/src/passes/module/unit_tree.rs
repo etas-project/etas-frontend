@@ -168,19 +168,34 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                             );
                         };
                         for (index, member) in decl.items.iter().enumerate() {
-                            if let etas_syntax::ast::ImplItem::Flow(flow) = member {
-                                if matches!(flow.body, etas_syntax::ast::FlowBody::Decl { .. })
-                                    && flow.params.iter().all(|param| param.default.is_none())
+                            let span = match member {
+                                etas_syntax::ast::ImplItem::Flow(flow)
+                                    if !matches!(
+                                        flow.body,
+                                        etas_syntax::ast::FlowBody::Decl { .. }
+                                    ) || flow
+                                        .params
+                                        .iter()
+                                        .any(|param| param.default.is_some()) =>
                                 {
-                                    continue;
+                                    flow.span
                                 }
-                                bodies.push(AstBodyRef {
-                                    source: item.source,
-                                    item: item.clone(),
-                                    impl_member: Some(index),
-                                    span: flow.span,
-                                });
-                            }
+                                etas_syntax::ast::ImplItem::Tool(tool)
+                                    if matches!(
+                                        tool.body,
+                                        etas_syntax::ast::ToolBody::Source(_)
+                                    ) =>
+                                {
+                                    tool.span
+                                }
+                                _ => continue,
+                            };
+                            bodies.push(AstBodyRef {
+                                source: item.source,
+                                item: item.clone(),
+                                impl_member: Some(index),
+                                span,
+                            });
                         }
                     }
                     for body in bodies {

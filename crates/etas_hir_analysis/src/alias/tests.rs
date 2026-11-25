@@ -86,6 +86,7 @@ impl HirBuilder {
 
     fn record(&mut self, fields: Vec<(&str, HirExprId)>) -> HirExprId {
         self.expr(HirExpr::Record(etas_hir::HirRecordExpr {
+            injections: None,
             path: None,
             generic_args: Vec::new(),
             fields: fields

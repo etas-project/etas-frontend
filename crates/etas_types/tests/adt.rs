@@ -4,7 +4,7 @@ use etas_core::{SourceFile, SourceId};
 fn iteration_preserves_solved_nominal_constructor_expression_types() {
     for literal in ["#{Id(1), Id(2)}", "[Id(1), Id(2)]", "[Id(1); Id(2)]"] {
         let source = format!(
-            "type Id = i32; flow main() -> unit {{ let values = {literal}; for value in values limit Iterations(4) {{ let copy = value; }} return; }}"
+            "type Id = i32; flow main() -> unit {{ let values = {literal}; for value in values {{ let copy = value; }} return; }}"
         );
         let parsed = etas_syntax::parse_program(SourceFile::new(SourceId(1), None, source));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);

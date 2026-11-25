@@ -29,13 +29,9 @@ where
                 self.expr_control(expr, state)?
             }
             HirStmt::For {
-                pat,
-                iter,
-                limits,
-                body,
-                ..
+                pat, iter, body, ..
             } => {
-                let control = self.exprs_control(limits, Control::normal(state))?;
+                let control = Control::normal(state);
                 let control =
                     control.try_with_normal_processed(|state| self.expr_control(iter, state))?;
                 let control = control.with_normal_processed(|state| {
@@ -52,15 +48,13 @@ where
                         .try_with_normal_processed(|state| self.loop_block_control(body, state))?,
                 }
             }
-            HirStmt::While {
-                cond, limits, body, ..
-            } => {
-                let control = self.exprs_control(limits, Control::normal(state))?;
+            HirStmt::While { cond, body, .. } => {
+                let control = Control::normal(state);
                 control
                     .try_with_normal_processed(|state| self.while_loop_control(cond, body, state))?
             }
-            HirStmt::Retry { limits, body, .. } => {
-                let control = self.exprs_control(limits, Control::normal(state))?;
+            HirStmt::Retry { body, .. } => {
+                let control = Control::normal(state);
                 control.try_with_normal_processed(|state| self.loop_block_control(body, state))?
             }
             HirStmt::Return { value, .. } => {

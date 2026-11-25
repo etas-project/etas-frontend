@@ -47,7 +47,11 @@ impl EffectSemantics<'_> {
             .owner
             .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
         let site = self.callable_environment_site(pack)?;
+        let generics = self.lexical_generic_values(owner)?;
         let environment = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(owner)?),
             origin: site,
             application: site,
         };
@@ -62,8 +66,10 @@ impl EffectSemantics<'_> {
         self.record_callable_environment(
             environment,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner,
-                generics: self.lexical_generic_values(owner)?,
+                generics,
                 parameters: BTreeMap::from([(ParameterCallTarget::Interface(0), sources)]),
             },
         )?;

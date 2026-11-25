@@ -518,8 +518,21 @@ impl DefinitionCatalog {
                 .or_insert(Some(identity));
         }
         for (ty, _) in self.checked.type_store.iter() {
-            if let Some(identity) = self.checked.type_store.parameter_identity(ty) {
-                parameters.insert(ty, Some(identity.clone()));
+            let identity = self
+                .checked
+                .type_store
+                .parameter_identity(ty)
+                .cloned()
+                .or_else(|| {
+                    let parameter = self.identities.implementation_parameter(ty)?;
+                    CanonicalTypeParameterIdentity::new_scoped(
+                        parameter.owner.clone(),
+                        parameter.position,
+                    )
+                    .ok()
+                });
+            if let Some(identity) = identity {
+                parameters.insert(ty, Some(identity));
             }
         }
         parameters

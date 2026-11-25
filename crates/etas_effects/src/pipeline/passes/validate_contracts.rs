@@ -29,6 +29,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateContractsPass {
             context.input.types,
             registry,
             context.input.tool_bindings,
+            context.input.external_implementations,
             &mut effects,
             context.input.reachable_items,
         ) {

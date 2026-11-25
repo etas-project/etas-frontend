@@ -1,4 +1,5 @@
 mod handlers;
+mod value_equality;
 mod index;
 pub(crate) use handlers::HandlerContexts;
 mod prepare;

@@ -131,10 +131,10 @@ pub enum HirBodyKind {
         expr: HirExprId,
         arm: u32,
     },
-    StageLimit {
-        expr: HirExprId,
-        stage: u32,
-        limit: u32,
+    FieldAnnotation {
+        field: crate::SymbolId,
+        annotation: u32,
+        arg: u32,
     },
 }
 

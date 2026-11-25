@@ -11,6 +11,7 @@ use crate::{
 
 pub fn collect_lambda<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
+    value: etas_hir::HirExprId,
     params: Vec<etas_hir::SymbolId>,
     body: HirLambdaBody,
     span: etas_core::Span,
@@ -80,7 +81,11 @@ pub fn collect_lambda<E>(
     Ok(ctx.ctx.interner.intern(Type::Function(FlowType {
         input,
         output,
-        effects: expected_flow.and_then(|flow| flow.effects),
+        effects: Some(
+            expected_flow
+                .and_then(|flow| flow.effects)
+                .unwrap_or_else(|| crate::EffectRowRef::inferred_lambda(value)),
+        ),
     })))
 }
 

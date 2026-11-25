@@ -53,26 +53,6 @@ enum HirTreeChildIterState<'hir> {
         arms: &'hir [HirMatchArm],
         index: usize,
     },
-    StmtFor {
-        phase: u8,
-        pat: crate::HirPatId,
-        iter: HirExprId,
-        limits: &'hir [HirExprId],
-        limit_index: usize,
-        body: crate::HirBlockId,
-    },
-    StmtWhile {
-        phase: u8,
-        cond: HirExprId,
-        limits: &'hir [HirExprId],
-        limit_index: usize,
-        body: crate::HirBlockId,
-    },
-    StmtRetry {
-        limits: &'hir [HirExprId],
-        limit_index: usize,
-        body: Option<crate::HirBlockId>,
-    },
     RecordPatFields {
         fields: &'hir [HirRecordPatField],
         index: usize,
@@ -180,67 +160,6 @@ impl Iterator for HirTreeChildren<'_> {
                 *index += 1;
                 Some(HirTreeChild::Pattern(arm.pat))
             }
-            HirTreeChildIterState::StmtFor {
-                phase,
-                pat,
-                iter,
-                limits,
-                limit_index,
-                body,
-            } => match *phase {
-                0 => {
-                    *phase = 1;
-                    Some(HirTreeChild::Pattern(*pat))
-                }
-                1 => {
-                    *phase = 2;
-                    Some(HirTreeChild::Expr(*iter))
-                }
-                2 => {
-                    if let Some(limit) = limits.get(*limit_index).copied() {
-                        *limit_index += 1;
-                        Some(HirTreeChild::Expr(limit))
-                    } else {
-                        *phase = 3;
-                        Some(HirTreeChild::Block(*body))
-                    }
-                }
-                _ => None,
-            },
-            HirTreeChildIterState::StmtWhile {
-                phase,
-                cond,
-                limits,
-                limit_index,
-                body,
-            } => match *phase {
-                0 => {
-                    *phase = 1;
-                    Some(HirTreeChild::Expr(*cond))
-                }
-                1 => {
-                    if let Some(limit) = limits.get(*limit_index).copied() {
-                        *limit_index += 1;
-                        Some(HirTreeChild::Expr(limit))
-                    } else {
-                        *phase = 2;
-                        Some(HirTreeChild::Block(*body))
-                    }
-                }
-                _ => None,
-            },
-            HirTreeChildIterState::StmtRetry {
-                limits,
-                limit_index,
-                body,
-            } => {
-                if let Some(limit) = limits.get(*limit_index).copied() {
-                    *limit_index += 1;
-                    Some(HirTreeChild::Expr(limit))
-                } else {
-                    body.take().map(HirTreeChild::Block)
-                }
-            }
             HirTreeChildIterState::RecordPatFields { fields, index } => {
                 while let Some(field) = fields.get(*index) {
                     *index += 1;
@@ -255,6 +174,9 @@ impl Iterator for HirTreeChildren<'_> {
 }
 
 pub(super) fn body_scope(program: &HirProgram, body: HirBodyRef) -> Option<ScopeId> {
+    if matches!(body.kind, HirBodyKind::FieldAnnotation { .. }) {
+        return item_scope(program.items.get(body.item)?);
+    }
     if let HirBodyKind::ParameterDefault { parameter } = body.kind {
         return program
             .scopes
@@ -344,39 +266,22 @@ pub(super) fn stmt_children(program: &HirProgram, stmt: HirStmtId) -> HirTreeChi
             HirTreeChildren::fixed([Some(HirTreeChild::Expr(*expr)), None, None, None])
         }
         HirStmt::For {
-            pat,
-            iter,
-            limits,
-            body,
-            ..
-        } => HirTreeChildren {
-            state: HirTreeChildIterState::StmtFor {
-                phase: 0,
-                pat: *pat,
-                iter: *iter,
-                limits,
-                limit_index: 0,
-                body: *body,
-            },
-        },
-        HirStmt::While {
-            cond, limits, body, ..
-        } => HirTreeChildren {
-            state: HirTreeChildIterState::StmtWhile {
-                phase: 0,
-                cond: *cond,
-                limits,
-                limit_index: 0,
-                body: *body,
-            },
-        },
-        HirStmt::Retry { limits, body, .. } => HirTreeChildren {
-            state: HirTreeChildIterState::StmtRetry {
-                limits,
-                limit_index: 0,
-                body: Some(*body),
-            },
-        },
+            pat, iter, body, ..
+        } => HirTreeChildren::fixed([
+            Some(HirTreeChild::Pattern(*pat)),
+            Some(HirTreeChild::Expr(*iter)),
+            Some(HirTreeChild::Block(*body)),
+            None,
+        ]),
+        HirStmt::While { cond, body, .. } => HirTreeChildren::fixed([
+            Some(HirTreeChild::Expr(*cond)),
+            Some(HirTreeChild::Block(*body)),
+            None,
+            None,
+        ]),
+        HirStmt::Retry { body, .. } => {
+            HirTreeChildren::fixed([Some(HirTreeChild::Block(*body)), None, None, None])
+        }
         HirStmt::Resume { value, .. } | HirStmt::Return { value, .. } => {
             HirTreeChildren::fixed([value.map(HirTreeChild::Expr), None, None, None])
         }

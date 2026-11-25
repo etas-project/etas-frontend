@@ -90,10 +90,14 @@ impl SummaryMapper for HandlerTraceMapper<'_> {
         while let Some(trace) = work.pop() {
             self.checkpoint()?;
             match trace {
+                ActionTraceDomain::Shared(body) => work.push(&body.body),
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     work.extend(parts)
                 }
-                ActionTraceDomain::Repeat(inner) => work.push(inner),
+                ActionTraceDomain::Recursive {
+                    body: Some(inner), ..
+                }
+                | ActionTraceDomain::Repeat(inner) => work.push(inner),
                 _ => {}
             }
         }

@@ -59,6 +59,7 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                     continue;
                 };
                 let definition_type = component.definition_type;
+                let state_type = component.state;
                 let component = component.component;
                 let default_entry = if let Some(output_type) = agent.output_type {
                     let callable = CallableSignature {
@@ -88,6 +89,7 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                 };
                 let signature = crate::AgentSignature {
                     component,
+                    state: state_type,
                     definition_type,
                     default_entry,
                 };
@@ -99,6 +101,20 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                     .insert(agent.symbol, SymbolTypeFact::Agent { signature });
             }
             HirItem::Tool(tool) => {
+                if ctx.hir.enclosing_impl(tool.scope).is_some()
+                    && (ctx
+                        .hir
+                        .member_tool_owner(id)
+                        .and_then(|owner| ctx.hir.active_agent_item(owner))
+                        .is_none()
+                        || !matches!(tool.body, HirToolBody::Source(_)))
+                {
+                    ctx.diagnostics.push(etas_core::Diagnostic::type_check(
+                        etas_core::TypeDiagnosticCode::InvalidImplMemberKind,
+                        tool.span,
+                        "member tools must have a source body and belong to an active Agent",
+                    ));
+                }
                 let signature = ToolSignature {
                     parameter_interface: Some(crate::call_interface::source_parameters(
                         ctx.hir,

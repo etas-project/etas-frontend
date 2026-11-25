@@ -10,7 +10,7 @@ flow append_audit(log: string, event: string) -> string {
 
 flow build_audit(name: string) -> string {
     var audit = "";
-    for stage in ["open-scope", "load-symbols", "resolve", "validate", "close-scope"] limit Iterations(5) {
+    for stage in ["open-scope", "load-symbols", "resolve", "validate", "close-scope"] {
         audit = append_audit(audit, name + ":" + stage);
     }
     return audit;
@@ -25,7 +25,7 @@ flow main() -> bool {
     let target = target_key(name);
     let audit = build_audit(target);
     var found = false;
-    for key in ["root", "workspace", "module", "flow", "shadow_scope-target", "block", "closure", "fallback"] limit Iterations(8) {
+    for key in ["root", "workspace", "module", "flow", "shadow_scope-target", "block", "closure", "fallback"] {
         if key == "shadow_scope-target" {
             found = true;
         }

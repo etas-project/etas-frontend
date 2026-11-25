@@ -108,10 +108,7 @@ impl ProjectContext {
             .types
             .as_ref()
             .ok_or("method behavior loading requires checked types")?;
-        let behaviors = load(Some((
-            &self.hir.as_ref().expect("checked HIR").hir,
-            &types.facts,
-        )))?;
+        let behaviors = load(Some((&self.hir.as_ref().expect("checked HIR").hir, types)))?;
         let library = self
             .standard_library_interface()
             .expect("installed standard interface");

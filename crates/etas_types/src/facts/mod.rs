@@ -72,6 +72,8 @@ pub struct TypeFacts {
     pub scoped_callbacks: HashMap<SymbolId, concurrency::ScopedCallbackFact>,
     #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
     pub external_scoped_methods: HashMap<etas_code::MethodId, Vec<u32>>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub external_resource_boundaries: HashMap<etas_code::MethodId, Vec<u32>>,
     #[serde(default)]
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub existential_packs: HashMap<HirExprId, existentials::CheckedExistentialPackFact>,
@@ -204,6 +206,131 @@ pub struct TypeFacts {
 }
 
 impl TypeFacts {
+    /// The closed carrier traversed by the checked model response boundary.
+    pub fn model_step_provider_map(&self, store: &crate::TypeStore) -> Option<TypeId> {
+        let is_step_result = |ty| match store.get(ty) {
+            Some(crate::Type::Applied { constructor, .. }) => matches!(
+                store.get(TypeId(constructor.0)),
+                Some(crate::Type::Nominal(nominal)) if nominal.name == "std.agent.StepResult"
+            ),
+            _ => false,
+        };
+        if self.agent_controllers.is_empty()
+            && !self
+                .action_calls
+                .values()
+                .any(|call| is_step_result(call.signature.output))
+            && !self
+                .library_flow_calls
+                .values()
+                .any(|call| is_step_result(call.signature.output))
+            && !self
+                .std_intrinsic_calls
+                .values()
+                .any(|call| is_step_result(call.signature.output))
+        {
+            return None;
+        }
+        let fields = store.iter().find_map(|(_, ty)| match ty {
+            crate::Type::Nominal(nominal) if nominal.name == "std.agent.AssistantTurn" => {
+                match store.get(nominal.representation?)? {
+                    crate::Type::Record(record) => Some(record),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })?;
+        fields
+            .fields
+            .iter()
+            .find(|field| field.name == "provider_data")
+            .map(|field| field.ty)
+    }
+
+    /// Checked source adapters retain private collection algorithms across
+    /// the SDK boundary. A same-named application extension is not a contract.
+    pub fn storage_methods(
+        &self,
+    ) -> impl Iterator<Item = (&crate::method::MethodSignatureFact, &etas_code::MethodId)> {
+        [
+            etas_std::SOURCE_STORAGE_VIEW,
+            etas_std::SOURCE_STORAGE_BUILD,
+        ]
+        .into_iter()
+        .flat_map(|name| self.methods.member(name))
+        .filter_map(|(_, method)| {
+            if method.public {
+                return None;
+            }
+            let identity = self.methods.target_identity(&method.target)?;
+            let implementation = identity.implementation();
+            let owner = implementation.subject();
+            (implementation.package() == owner.package()
+                && implementation.module() == owner.module()
+                && etas_std::source_storage_method(
+                    owner.module(),
+                    owner.declaration(),
+                    &method.name,
+                ))
+            .then_some((method, identity))
+        })
+    }
+
+    /// Fixed, private standard value operations. Their checked package/owner
+    /// identities prevent an application extension from replacing language ==.
+    pub fn value_equality_methods(
+        &self,
+    ) -> impl Iterator<Item = (&crate::method::MethodSignatureFact, &etas_code::MethodId)> {
+        self.methods
+            .member(etas_std::SOURCE_VALUE_EQUALITY_METHOD)
+            .filter_map(|(_, method)| {
+                if method.public || method.name != etas_std::SOURCE_VALUE_EQUALITY_METHOD {
+                    return None;
+                }
+                let identity = self.methods.target_identity(&method.target)?;
+                let implementation = identity.implementation();
+                let owner = implementation.subject();
+                (implementation.package() == owner.package()
+                    && implementation.module() == owner.module()
+                    && etas_std::source_value_equality_owner(owner.module(), owner.declaration()))
+                .then_some((method, identity))
+            })
+    }
+
+    /// Type-to-operation edges, including operations of nested value types.
+    pub fn value_equality_dependencies(
+        &self,
+        store: &crate::TypeStore,
+    ) -> std::collections::BTreeSet<etas_code::MethodId> {
+        let mut pending = self
+            .expr_types
+            .values()
+            .copied()
+            .chain(
+                self.generic_instantiations
+                    .values()
+                    .flat_map(|fact| fact.type_bindings.iter().map(|(_, ty)| *ty)),
+            )
+            .collect::<Vec<_>>();
+        let mut found = std::collections::BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            if found.insert(ty) {
+                if let Some(value) = store.get(ty) {
+                    pending.extend(crate::type_dependencies(value));
+                }
+            }
+        }
+        self.value_equality_methods()
+            .filter_map(|(method, identity)| {
+                let owner = match store.get(method.receiver_type) {
+                    Some(crate::Type::Applied { constructor, .. }) => crate::TypeId(constructor.0),
+                    _ => method.receiver_type,
+                };
+                found.contains(&owner).then(|| identity.clone())
+            })
+            .collect()
+    }
+
     pub fn selected_method(&self, expr: etas_hir::HirExprId) -> Option<&CheckedMethodCallFact> {
         self.checked_method_calls.get(&expr).or_else(|| {
             self.bound_method_values
@@ -234,6 +361,25 @@ impl TypeFacts {
         (variant.name == enums::constructor_name(symbol)).then_some((owner, index, variant))
     }
 
+    pub fn agent_method(
+        &self,
+        component: TypeId,
+        name: &str,
+    ) -> Option<&signatures::AgentMethodSignature> {
+        let candidates = || {
+            self.agent_methods
+                .values()
+                .filter(|method| method.component == component && method.name == name)
+        };
+        let mut inherent = candidates().filter(|method| method.inherent);
+        if let Some(method) = inherent.next() {
+            return inherent.next().is_none().then_some(method);
+        }
+        let mut candidates = candidates();
+        let method = candidates.next()?;
+        candidates.next().is_none().then_some(method)
+    }
+
     pub fn agent_default_method(
         &self,
         agent: HirItemId,
@@ -256,16 +402,69 @@ impl TypeFacts {
             _ => None,
         }
     }
+
+    pub fn is_active_agent(&self, store: &crate::TypeStore, ty: TypeId) -> bool {
+        let component = match store.get(ty) {
+            Some(crate::Type::Applied { constructor, .. }) => TypeId(constructor.0),
+            _ => ty,
+        };
+        self.agent_signature(component)
+            .is_some_and(|agent| agent.state.is_some())
+    }
+
+    /// The private layout is separate from the scoped reference's nominal type.
+    pub fn agent_state_type(
+        &self,
+        store: &crate::TypeStore,
+        ty: TypeId,
+    ) -> Result<Option<TypeId>, crate::TypeSubstitutionError> {
+        let (component, args) = match store.get(ty) {
+            Some(crate::Type::Applied { constructor, args }) => (TypeId(constructor.0), Some(args)),
+            _ => (ty, None),
+        };
+        let Some(state) = self
+            .agent_signature(component)
+            .and_then(|agent| agent.state)
+        else {
+            return Ok(None);
+        };
+        let Some(args) = args else {
+            return Ok(Some(state));
+        };
+        let names = self
+            .type_generics
+            .get(&component)
+            .into_iter()
+            .flatten()
+            .map(|parameter| parameter.name.clone())
+            .zip(args.iter().copied())
+            .collect();
+        let canonical = crate::ty::canonical_parameters_for_application(store, component, args)?;
+        crate::TypeSubstitutionEngine::existing(store, &names)
+            .with_canonical_parameters(&canonical)
+            .substitute(state)
+            .map(Some)
+    }
 }
 
 impl From<&TypeFacts> for SpecFacts {
     fn from(facts: &TypeFacts) -> Self {
         Self {
+            active_agents: facts
+                .symbol_types
+                .values()
+                .filter_map(|fact| match fact {
+                    SymbolTypeFact::Agent { signature } => Some(signature.component),
+                    _ => None,
+                })
+                .collect(),
+            data_declarations: crate::data_admission::Declarations::from_facts(facts),
             checked_impls: facts.checked_spec_impls.clone(),
             canonical: facts.canonical_specs.clone(),
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
             external_aliases: facts.external_specs.aliases.clone(),
+            external_std_specs: facts.external_specs.std_identities.clone(),
             signatures: facts.spec_signatures.clone(),
             impls: facts.spec_impls.clone(),
             type_satisfactions: facts.type_spec_satisfactions.clone(),
@@ -276,11 +475,71 @@ impl From<&TypeFacts> for SpecFacts {
             type_param_bounds: facts.type_param_bounds.clone(),
             std_impls: facts.std_spec_impls.clone(),
             std_spec_aliases: facts.std_spec_aliases.clone(),
+            canonical_std_specs: facts
+                .std_spec_aliases
+                .iter()
+                .filter_map(|(symbol, path)| {
+                    facts
+                        .external_definition_bindings
+                        .get(symbol)
+                        .or_else(|| facts.reflection_declaration_identities.get(path))
+                        .filter(|identity| identity.kind() == etas_code::DefinitionKind::Spec)
+                        .map(|identity| (identity.clone(), path.clone()))
+                })
+                .chain(
+                    facts
+                        .external_specs
+                        .std_identities
+                        .iter()
+                        .map(|(external, identity)| (identity.clone(), external.path.clone())),
+                )
+                .collect(),
         }
     }
 }
 
 impl TypeFacts {
+    /// Concrete generic arguments bring their checked implementation witnesses
+    /// across a package boundary, even when the bound call is inside a library
+    /// body rather than in the consumer HIR. Follow witness owner arguments for
+    /// nested containers instead of loading every implementation in the SDK.
+    pub fn generic_method_dependencies(
+        &self,
+        store: &crate::TypeStore,
+    ) -> Result<std::collections::BTreeSet<etas_code::MethodId>, String> {
+        let specs = crate::SpecFacts::from(self);
+        let lookup = crate::ty::TypeLookupIndex::new(store);
+        let mut pending = self
+            .generic_instantiations
+            .values()
+            .flat_map(|fact| fact.type_bindings.iter().map(|(_, ty)| *ty))
+            .chain(
+                self.checked_method_calls
+                    .values()
+                    .flat_map(|call| call.owner_bindings.iter().map(|(_, ty)| *ty)),
+            )
+            .collect::<Vec<_>>();
+        let mut visited = std::collections::BTreeSet::new();
+        let mut methods = std::collections::BTreeSet::new();
+        while let Some(receiver) = pending.pop() {
+            if !visited.insert(receiver) {
+                continue;
+            }
+            for witness in self
+                .methods
+                .witnesses_for_receiver_indexed(store, &lookup, &specs, receiver)?
+            {
+                if let crate::method::MethodTarget::External { identity } =
+                    &witness.declaration.target
+                {
+                    methods.insert(identity.clone());
+                }
+                pending.extend(witness.owner_bindings.values().copied());
+            }
+        }
+        Ok(methods)
+    }
+
     /// External method roots selected by checked calls, values and witnesses.
     pub fn referenced_external_methods(&self) -> std::collections::BTreeSet<etas_code::MethodId> {
         let targets = self
@@ -306,20 +565,24 @@ impl TypeFacts {
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
-        if targets
+        let members = targets
             .iter()
-            .any(|target| matches!(target, crate::method::MethodTarget::BoundSpec { .. }))
-        {
-            methods.extend(
-                self.methods
-                    .entries()
-                    .filter_map(|method| match &method.target {
-                        crate::method::MethodTarget::External { identity } => {
-                            Some(identity.clone())
-                        }
-                        _ => None,
-                    }),
-            );
+            .filter_map(|target| match target {
+                crate::method::MethodTarget::BoundSpec { member, .. } => Some(member),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if !members.is_empty() {
+            methods.extend(self.methods.entries().filter_map(|method| {
+                match (&method.target, &method.spec_member) {
+                    (crate::method::MethodTarget::External { identity }, Some(member))
+                        if members.contains(member) =>
+                    {
+                        Some(identity.clone())
+                    }
+                    _ => None,
+                }
+            }));
         }
         methods
     }

@@ -3,7 +3,10 @@ mod call_interface;
 pub use call_interface::{
     ArgumentBinding, DefaultArgument, ParameterDefaultRef, ParameterInterface,
 };
+pub mod active_agent;
 pub mod constraint;
+pub mod data_admission;
+pub mod data_equality;
 pub mod diagnostic;
 pub mod facts;
 pub mod lower;
@@ -13,6 +16,7 @@ pub mod pipeline;
 pub mod solver;
 pub mod source_execution;
 pub mod source_iteration;
+pub mod storage_layout;
 pub mod task_scope;
 pub mod ty;
 pub mod value_projection;
@@ -58,8 +62,9 @@ pub use facts::{
 };
 pub use pipeline::finalize::{
     EffectRowMaterializationError, HandlerInstantiationProof, HandlerRequestProof,
-    ResolvedEffectRowInstantiation, complete_handler_instantiations,
-    materialize_effect_row_instantiations,
+    ResolvedEffectRowInstantiation, ResolvedTryCapture, complete_handler_instantiations,
+    materialize_effect_row_instantiations, materialize_lambda_effect_rows,
+    materialize_try_captures,
 };
 pub use pipeline::signature::validate::annotations::validate_annotations as validate_item_annotations;
 pub use solver::{

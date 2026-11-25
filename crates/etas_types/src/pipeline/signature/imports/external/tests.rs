@@ -41,6 +41,17 @@ fn with_binding(
     binding_path: Vec<String>,
     assert: impl FnOnce(&mut TypePipelineContext<'_>, etas_hir::SymbolId),
 ) {
+    with_binding_setup(declarations, specs, source, binding_path, |_, _| {}, assert);
+}
+
+fn with_binding_setup(
+    declarations: Vec<Decl>,
+    specs: Vec<crate::ExternalSpecSignatureInput>,
+    source: &str,
+    binding_path: Vec<String>,
+    setup: impl FnOnce(&mut TypePipelineContext<'_>, &mut ExternalSignatureInput),
+    assert: impl FnOnce(&mut TypePipelineContext<'_>, etas_hir::SymbolId),
+) {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(73),
         None,
@@ -56,10 +67,11 @@ fn with_binding(
         .id;
     let span = hir.symbols.get(symbol).unwrap().definition_span;
     let package = ExternalPackageKey(7);
-    let input = ExternalSignatureInput {
+    let mut input = ExternalSignatureInput {
         metadata: vec![crate::ExternalPublicMetadataInput {
             parameter_interfaces: Default::default(),
             method_parameter_interfaces: Default::default(),
+            constructor_contracts: Vec::new(),
             scoped_callbacks: Vec::new(),
             behavior_types: vec![],
             package,
@@ -88,6 +100,7 @@ fn with_binding(
         ..Default::default()
     };
     let mut ctx = TypePipelineContext::new(&hir);
+    setup(&mut ctx, &mut input);
     apply_external_signature_input(&mut ctx, &input);
     assert(&mut ctx, symbol);
 }
@@ -492,4 +505,111 @@ fn long_external_alias_chains_use_the_worklist_instead_of_the_rust_stack() {
             Some(&Type::Primitive(crate::PrimitiveType::I32))
         );
     });
+}
+
+#[test]
+fn imported_record_and_action_keep_distinct_t_binders_and_instantiate_fields() {
+    let key = etas_code::DefinitionKey::new(
+        etas_code::PackageKey::from_name_and_version("wiring", "0.1.0").unwrap(),
+        vec!["dep".into()],
+        vec!["A".into()],
+        etas_code::DefinitionKind::Type,
+    )
+    .unwrap();
+    let expected = key.clone();
+    let mut generic = declaration(
+        "A",
+        Ty::Nominal {
+            path: path("A"),
+            representation: Some(Box::new(Ty::Record {
+                fields: vec![crate::ExternalRecordFieldInput {
+                    name: "value".into(),
+                    ty: Ty::Var("T".into()),
+                }],
+            })),
+        },
+    );
+    generic
+        .generic_params
+        .push(crate::ExternalCallableGenericParamInput {
+            name: "T".into(),
+            kind: crate::ExternalCallableGenericParamKindInput::Type,
+            bounds: vec![],
+        });
+    with_binding_setup(
+        vec![generic],
+        vec![],
+        "import dep.A;",
+        path("A"),
+        move |ctx, input| {
+            ctx.signature_facts
+                .reflection_declaration_identities
+                .insert(path("A"), key);
+            input.metadata[0].effects.push(Decl {
+                path: path("Supply"),
+                generic_params: vec![],
+                ty: None,
+            });
+            input.metadata[0]
+                .actions
+                .push(crate::ExternalActionSignatureInput {
+                    path: vec!["dep".into(), "Supply".into(), "value".into()],
+                    parameter_interface: vec![],
+                    generic_params: vec![crate::ExternalCallableGenericParamInput {
+                        name: "T".into(),
+                        kind: crate::ExternalCallableGenericParamKindInput::Type,
+                        bounds: vec![],
+                    }],
+                    params: vec![],
+                    effect_args: vec![crate::ExternalActionArgKindInput::Type],
+                    selector_param_names: vec!["T".into()],
+                    selector_defaults: vec![None],
+                    output: Ty::Var("T".into()),
+                    returns_never: false,
+                    default_handler_effects: None,
+                });
+        },
+        move |ctx, _| {
+            assert!(ctx.diagnostics.is_empty(), "{:?}", ctx.diagnostics);
+            let nominal = ctx.external_type_paths[&path("A")];
+            let parameter = ctx.signature_facts.type_generics[&nominal][0].subject;
+            let identity = crate::ty::CanonicalTypeParameterIdentity::new(expected, 0).unwrap();
+            assert_eq!(
+                ctx.interner.store().parameter_identity(parameter),
+                Some(&identity)
+            );
+            let action_output = ctx
+                .qualified_action_signature(&"dep.Supply.value".to_owned())
+                .unwrap()
+                .output;
+            assert_ne!(
+                parameter, action_output,
+                "a type declaration and an action cannot share a binder just because both are named T"
+            );
+            let Type::Nominal(declaration) = ctx.interner.store().get(nominal).unwrap() else {
+                panic!("nominal declaration");
+            };
+            let Type::Record(record) = ctx
+                .interner
+                .store()
+                .get(declaration.representation.unwrap())
+                .unwrap()
+            else {
+                panic!("record representation");
+            };
+            assert_eq!(record.fields[0].ty, parameter);
+            let integer = ctx.interner.primitive(crate::PrimitiveType::I32);
+            let applied = ctx.interner.intern(Type::Applied {
+                constructor: TypeConstructorId(nominal.0),
+                args: vec![integer],
+            });
+            let representation = crate::applied_representation(&mut ctx.interner, applied)
+                .unwrap()
+                .unwrap();
+            let Type::Record(record) = ctx.interner.store().get(representation).unwrap() else {
+                panic!("instantiated record");
+            };
+            assert_eq!(record.fields[0].ty, integer);
+        },
+    );
 }

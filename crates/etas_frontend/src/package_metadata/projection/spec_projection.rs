@@ -527,6 +527,7 @@ mod tests {
             },
         );
         let mut metadata = vec![ProjectExternalPublicMetadataInput {
+            constructor_contracts: Vec::new(),
             scoped_callbacks: Vec::new(),
             package: ExternalPackageId(1),
             types: vec![],

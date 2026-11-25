@@ -23,6 +23,7 @@ pub use cpu_parallel::{
     CpuParallelEligibilityFact, CpuParallelEligibilityFacts, CpuParallelRejection,
 };
 mod method_origins;
+mod session_lease;
 mod standard_library;
 mod type_check;
 mod type_check_body;

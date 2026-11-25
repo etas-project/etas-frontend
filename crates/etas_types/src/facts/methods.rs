@@ -4,6 +4,64 @@ use crate::{
 };
 
 #[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub enum MethodCallKind {
+    #[default]
+    Synchronous,
+    AgentRequest,
+    AgentTurnHelper,
+}
+
+impl MethodCallKind {
+    pub fn is_agent(self) -> bool {
+        self != Self::Synchronous
+    }
+
+    pub fn same_callable_body(
+        view: &etas_hir::HirTreeView<'_>,
+        expr: etas_hir::HirExprId,
+        item: etas_hir::HirItemId,
+    ) -> bool {
+        use etas_hir::HirOwner;
+        let index = view.index();
+        let mut node = HirOwner::Expr(expr);
+        loop {
+            let next = match node {
+                HirOwner::Expr(current) => {
+                    if matches!(
+                        view.program().exprs.get(current),
+                        Some(etas_hir::HirExpr::Lambda { .. } | etas_hir::HirExpr::Handler { .. })
+                    ) {
+                        return false;
+                    }
+                    index.expr_owner.get(&current).copied()
+                }
+                HirOwner::Stmt(stmt) => index.stmt_block.get(&stmt).copied().map(HirOwner::Block),
+                HirOwner::Block(block) => index.block_owner.get(&block).copied(),
+                HirOwner::Body(body) => index.body_owner.get(&body).copied(),
+                HirOwner::Item(owner) => return owner == item,
+                HirOwner::HandlerArm(_) | HirOwner::Module(_) | HirOwner::Pattern(_) => {
+                    return false;
+                }
+            };
+            let Some(next) = next else {
+                return false;
+            };
+            node = next;
+        }
+    }
+}
+
+#[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub enum BoundMethodReceiver {
@@ -24,6 +82,7 @@ pub struct CheckedBoundMethodValueFact {
 pub struct ExternalMethodFact {
     pub span: etas_core::Span,
     pub identity: etas_code::MethodId,
+    pub internal: bool,
     pub self_type: TypeId,
     pub receiver: MethodReceiver,
     pub owner_params: Vec<crate::CallableGenericParam>,
@@ -42,6 +101,10 @@ pub struct ExternalMethodImplementationFact {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct CheckedMethodCallFact {
     #[serde(default)]
+    pub kind: MethodCallKind,
+    #[serde(default)]
+    pub request_context: Option<TypeId>,
+    #[serde(default)]
     pub defaults: Vec<crate::DefaultArgument>,
     pub target: MethodTarget,
     pub receiver: MethodReceiver,
@@ -58,6 +121,9 @@ impl CheckedMethodCallFact {
         &mut self,
         mut map: impl FnMut(TypeId) -> Result<TypeId, E>,
     ) -> Result<(), E> {
+        if let Some(context) = &mut self.request_context {
+            *context = map(*context)?;
+        }
         self.receiver_type = map(self.receiver_type)?;
         map_signature(&mut self.signature, &mut map)?;
         for (parameter, argument) in &mut self.owner_bindings {

@@ -193,7 +193,7 @@ impl EffectSemantics<'_> {
             .descriptor_contract_type(parameter)
             .unwrap_or(parameter);
         let flow = self.checked_payload_callable_contract(contract)?;
-        if flow.effects.is_none() && !self.parameter_effects.contains_key(&symbol) {
+        if flow.declared_effects().is_none() && !self.parameter_effects.contains_key(&symbol) {
             return None;
         }
         Some(flow)
@@ -282,7 +282,7 @@ impl EffectSemantics<'_> {
             LatentSource::Projection(id) => {
                 let projection = self.parameter_projection(id)?;
                 let flow = self.checked_payload_callable_contract(projection.ty)?;
-                let row = flow.effects.as_ref()?;
+                let row = flow.declared_effects()?;
                 let name = self.hir.symbols.get(projection.parameter)?.name.clone();
                 let mut summary =
                     self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span);
@@ -337,7 +337,7 @@ impl EffectSemantics<'_> {
                     return None;
                 }
                 let flow = self.checked_callable_contract_parameter(symbol)?;
-                let Some(row) = &flow.effects else {
+                let Some(row) = flow.declared_effects() else {
                     return self.parameter_effects.get(&symbol).cloned();
                 };
                 let mut summary =

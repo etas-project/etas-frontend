@@ -491,6 +491,28 @@ pub(super) fn execution_role_diagnostics(
         };
         if matches!(
             role,
+            etas_std::StdExecutionRole::ComparatorCapture
+                | etas_std::StdExecutionRole::ComparatorSame
+        ) {
+            if !execution::comparator_signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "comparator identity requires its private opaque source owner and closed capture/same ABI",
+                ));
+            }
+            continue;
+        }
+        if *role == etas_std::StdExecutionRole::ReadScopeEnter {
+            if !execution::read_scope_signature_matches(types, item) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "ReadScope.enter requires <S>(S) -> (S, Option<ReadOwner>) ![] with its private opaque owner",
+                ));
+            }
+            continue;
+        }
+        if matches!(
+            role,
             etas_std::StdExecutionRole::MessageContextCapture
                 | etas_std::StdExecutionRole::MessageContextRecord
                 | etas_std::StdExecutionRole::PayloadConvert
@@ -544,6 +566,15 @@ pub(super) fn execution_role_diagnostics(
             }
             continue;
         }
+        if *role == etas_std::StdExecutionRole::ResourceScope {
+            if !execution::resource_scope_signature_matches(types, item) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "resource scope entry requires a zero-argument scoped callback, matching Effect binder and source ScopeReport<R> result",
+                ));
+            }
+            continue;
+        }
         if *role == etas_std::StdExecutionRole::ScopeEnter {
             if !execution::scope_signature_matches(hir, types, item) {
                 diagnostics.push(etas_core::Diagnostic::type_check(
@@ -558,6 +589,20 @@ pub(super) fn execution_role_diagnostics(
                 diagnostics.push(etas_core::Diagnostic::type_check(
                     etas_core::TypeDiagnosticCode::TypeMismatch, *span,
                     "Data.capture requires its source-owned neutral Data enum, DataError record and <T>(T) -> Result<Data, DataError> ![] ABI",
+                ));
+            }
+            continue;
+        }
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::CaptureStorage
+                | etas_std::StdExecutionRole::RestoreStorage
+                | etas_std::StdExecutionRole::StorageSchema
+        ) {
+            if !execution::storage_signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "storage value mechanisms require their private source-owned StorageValue layout, StorageError result and closed pure generic ABI",
                 ));
             }
             continue;

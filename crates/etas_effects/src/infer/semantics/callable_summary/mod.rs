@@ -12,7 +12,7 @@ use etas_types::TypeId;
 use super::{specialize::EffectSpecializationError, state::LatentSource};
 use crate::{ActionTraceDomain, EffectSummary, OutcomeAnalysisGap, ParameterCallTarget};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub(crate) struct CallableSummaryKey {
     source: LatentSource,
     mode: CallableSummaryMode,
@@ -40,7 +40,7 @@ impl CallableSummaryKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub(super) enum CallableSummaryMode {
     Invocation,
     Descriptor,
@@ -60,7 +60,10 @@ impl CallableSummaryCache {
 
 pub(super) enum CallableSummaryPlan {
     Leaf(EffectSummary),
-    Alternatives(BTreeSet<CallableSummaryKey>),
+    Dispatch {
+        implementations: BTreeSet<CallableSummaryKey>,
+        managed: bool,
+    },
     Captured(CallableSummaryInstantiation),
 }
 
@@ -76,8 +79,11 @@ impl CallableSummaryPlan {
         &self,
         mode: CallableSummaryMode,
     ) -> Result<BTreeSet<CallableSummaryKey>, EffectSpecializationError> {
-        if let Self::Alternatives(keys) = self {
-            return Ok(keys.clone());
+        if let Self::Dispatch {
+            implementations, ..
+        } = self
+        {
+            return Ok(implementations.clone());
         }
         let Self::Captured(plan) = self else {
             return Ok(BTreeSet::new());
@@ -91,6 +97,7 @@ impl CallableSummaryPlan {
         }
         while let Some(trace) = pending.pop() {
             match trace {
+                ActionTraceDomain::Shared(body) => pending.push(&body.body),
                 ActionTraceDomain::ParameterCall { target, span, .. } => {
                     calls.push((*target, *span))
                 }
@@ -100,10 +107,14 @@ impl CallableSummaryPlan {
                 ActionTraceDomain::Seq(parts)
                 | ActionTraceDomain::Choice(parts)
                 | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
-                ActionTraceDomain::Repeat(inner)
+                ActionTraceDomain::Recursive {
+                    body: Some(inner), ..
+                }
+                | ActionTraceDomain::Repeat(inner)
                 | ActionTraceDomain::DefaultHandler { body: inner, .. }
                 | ActionTraceDomain::TaskStart { body: inner, .. } => pending.push(inner),
-                ActionTraceDomain::Empty
+                ActionTraceDomain::Recursive { body: None, .. }
+                | ActionTraceDomain::Empty
                 | ActionTraceDomain::Event(_)
                 | ActionTraceDomain::TaskAwait { .. }
                 | ActionTraceDomain::UnknownOrder(_) => {}
@@ -124,6 +135,20 @@ impl CallableSummaryPlan {
                         .iter()
                         .map(|source| CallableSummaryKey::in_mode(*source, span, mode)),
                 ),
+                Some(origins)
+                    if origins.is_empty()
+                        && matches!(
+                            target,
+                            ParameterCallTarget::Projection(_)
+                                | ParameterCallTarget::ExternalProjection(_)
+                                | ParameterCallTarget::Graph {
+                                    parameter: etas_package_metadata::CallableValueParameter {
+                                        projection: Some(_),
+                                        ..
+                                    },
+                                    ..
+                                }
+                        ) => {}
                 None if plan.own_parameters.contains(&target) => {}
                 _ => {
                     return Err(invalid(&format!(

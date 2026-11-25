@@ -720,7 +720,7 @@ flow run() -> bool ![Console.stdout_write] {
     let output = check_program(&hir, &types);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let summary = &output.facts.item_effects[&flow_item(&hir, "run")];
-    let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
+    let etas_effects::ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
         panic!("expected ordered handler factory and body actions: {summary:?}");
     };
     assert_eq!(events.len(), 3, "{events:?}");
@@ -784,4 +784,31 @@ fn handler_resume_preserves_callable_source_identity() {
         ),
         "{exit:?}"
     );
+}
+
+#[test]
+fn captured_parameter_callbacks_keep_their_invocation_input_bindings() {
+    let source = r#"
+module app;
+flow invoke<T>(f: (T, T) -> i32 ![], value: T) -> i32 ![] { return f(value, value); }
+type Comparer<T> = { compare: (T, T) -> i32 ![] };
+impl Comparer<T> {
+    flow compare_value(self, value: T) -> i32 ![] {
+        let compare = self.compare;
+        let callback = (a: T, b: T) => compare(a, b);
+        return invoke(callback, value);
+    }
+}
+public flow compare<T>(value: T, callback: (T, T) -> i32 ![]) -> i32 ![] {
+    return Comparer<T> { compare = callback }.compare_value(value);
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }

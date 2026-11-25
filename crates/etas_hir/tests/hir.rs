@@ -367,7 +367,7 @@ flow main(input: string) -> string {
     }
   };
 
-  let result = input ~> Writer limit Tokens(1);
+  let result = input ~> Writer;
   return lambda(result);
 }
 "#,
@@ -401,12 +401,7 @@ flow main(input: string) -> string {
             .any(|kind| matches!(kind, HirBodyKind::MatchArm { .. })),
         "match arm bodies should be separate body work units: {body_kinds:?}"
     );
-    assert!(
-        body_kinds
-            .iter()
-            .any(|kind| matches!(kind, HirBodyKind::StageLimit { .. })),
-        "pipeline stage limits should be separate body work units: {body_kinds:?}"
-    );
+
     let missing_scopes = view
         .index()
         .body_owner

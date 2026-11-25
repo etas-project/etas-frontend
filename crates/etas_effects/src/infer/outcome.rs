@@ -392,15 +392,21 @@ pub struct CallableExitSummary {
     /// Checked callable origins at positions in a returned value. Positions
     /// stay separate until a caller selects them and substitutes its arguments.
     #[serde(default)]
-    pub value_projections: std::collections::BTreeMap<
-        Vec<etas_code::descriptor::ValueProjectionStep>,
-        ProjectedReturnSources,
-    >,
+    pub value_projections: ValueProjectionSources,
     #[serde(default)]
     pub parameter_exits: Vec<ParameterExitFact>,
     #[serde(default)]
     pub handler_gaps: std::collections::BTreeSet<HandlerGapEvidence>,
+    /// Private pending-state origins at normal exit of a source Agent method.
+    /// The compiler uses these while checking the owning source revision.
+    #[serde(skip)]
+    pub receiver_projections: ValueProjectionSources,
 }
+
+type ValueProjectionSources = std::collections::BTreeMap<
+    Vec<etas_code::descriptor::ValueProjectionStep>,
+    ProjectedReturnSources,
+>;
 
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
@@ -483,6 +489,32 @@ impl CallableExitSummary {
         (!sources.is_empty()).then_some(sources)
     }
 
+    pub(crate) fn handler_resume_sources(
+        &self,
+    ) -> Option<std::collections::BTreeSet<CallableReturnSource>> {
+        if self.gaps.iter().any(|gap| {
+            matches!(
+                gap,
+                OutcomeAnalysisGap::MissingReturnType
+                    | OutcomeAnalysisGap::MissingReturnObservation
+            )
+        }) {
+            return None;
+        }
+        let mut sources = std::collections::BTreeSet::new();
+        for exit in &self.exits {
+            match &exit.outcome {
+                CallableOutcome::HandlerResumed {
+                    observation: ReturnObservation::CallableSources(found),
+                    ..
+                } => sources.extend(found.iter().cloned()),
+                CallableOutcome::HandlerResumed { .. } => return None,
+                _ => {}
+            }
+        }
+        Some(sources)
+    }
+
     /// Value-origin evidence is independent of whether a preceding call returns,
     /// raises or diverges. Keep all control gaps on this summary; they are not a
     /// certificate of purity or totality. Successful returns need checked
@@ -548,32 +580,10 @@ impl CallableExitSummary {
     }
 
     pub fn join_assign(&mut self, other: &Self) -> bool {
-        let mut changed = false;
-        for (path, incoming) in &other.value_projections {
-            match self.value_projections.entry(path.clone()) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(incoming.clone());
-                    changed = true;
-                }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    match (entry.get_mut(), incoming) {
-                        (ProjectedReturnSources::Unavailable, _) => {}
-                        (current, ProjectedReturnSources::Unavailable) => {
-                            *current = ProjectedReturnSources::Unavailable;
-                            changed = true;
-                        }
-                        (
-                            ProjectedReturnSources::Known(current),
-                            ProjectedReturnSources::Known(found),
-                        ) => {
-                            let before = current.len();
-                            current.extend(found.iter().cloned());
-                            changed |= current.len() != before;
-                        }
-                    }
-                }
-            }
-        }
+        let mut changed =
+            join_projection_sources(&mut self.value_projections, &other.value_projections);
+        changed |=
+            join_projection_sources(&mut self.receiver_projections, &other.receiver_projections);
         for exit in &other.exits {
             changed |= self.record(exit.outcome.clone(), exit.trace.clone());
         }
@@ -630,3 +640,36 @@ impl CallableExitSummary {
 
 #[cfg(test)]
 mod return_source_tests;
+
+fn join_projection_sources(
+    target: &mut ValueProjectionSources,
+    source: &ValueProjectionSources,
+) -> bool {
+    let mut changed = false;
+    for (path, incoming) in source {
+        match target.entry(path.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(incoming.clone());
+                changed = true;
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                match (entry.get_mut(), incoming) {
+                    (ProjectedReturnSources::Unavailable, _) => {}
+                    (current, ProjectedReturnSources::Unavailable) => {
+                        *current = ProjectedReturnSources::Unavailable;
+                        changed = true;
+                    }
+                    (
+                        ProjectedReturnSources::Known(current),
+                        ProjectedReturnSources::Known(found),
+                    ) => {
+                        let before = current.len();
+                        current.extend(found.iter().cloned());
+                        changed |= current.len() != before;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}

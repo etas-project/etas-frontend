@@ -14,8 +14,9 @@ impl DefinitionDescriptorProjector<'_> {
             .checked
             .effects
             .and_then(|effects| effects.item_effects.get(&item));
-        let mut analysis =
-            self.project_analysis_with_summary(callable, item, signature, summary)?;
+        let mut analysis = self
+            .project_analysis_with_summary(callable, item, signature, summary)
+            .map_err(|source| self.projection_error(callable, "analysis", source))?;
         analysis.suspension = self
             .checked
             .effects
@@ -38,7 +39,8 @@ impl DefinitionDescriptorProjector<'_> {
         signature: ProjectedSignature,
         summary: Option<&etas_effects::EffectSummary>,
     ) -> Result<CallableAnalysisInfo, ProjectionError> {
-        self.materialize_pending()?;
+        self.materialize_pending()
+            .map_err(|source| self.projection_error(callable, "signature types", source))?;
         let Some(Some(TypeInfo::Function(header))) = self.types.get(signature.ty.0 as usize) else {
             return Err(ProjectionError::Invalid(
                 "analysis requires a projected callable signature".into(),
@@ -119,20 +121,23 @@ impl DefinitionDescriptorProjector<'_> {
         let escaping = self.analysis_row(&summary.escaping_effects, scope)?;
         let requested = self.analysis_row(&summary.requested_actions, scope)?;
         let default_handled = self.analysis_row(&summary.default_actions, scope)?;
-        let trace = self.analysis_trace(
-            &summary.action_trace,
-            callable,
-            signature.ty,
-            &parameters,
-            scope,
-            summary.exits.as_ref(),
-        )?;
+        let trace = self
+            .analysis_trace(
+                &summary.action_trace,
+                callable,
+                signature.ty,
+                &parameters,
+                scope,
+                summary.exits.as_ref(),
+            )
+            .map_err(|source| self.projection_error(callable, "action trace", source))?;
         let outcomes = summary
             .exits
             .as_ref()
             .filter(|exits| self.can_project_parametric_outcomes(exits, signature.ty, &parameters))
             .map(|exits| self.project_outcomes(exits, callable, signature.ty, &parameters, scope))
-            .transpose()?;
+            .transpose()
+            .map_err(|source| self.projection_error(callable, "outcomes", source))?;
         Ok(CallableAnalysisInfo {
             suspension: None,
             effects: EffectSummaryInfo {
@@ -269,10 +274,26 @@ impl DefinitionDescriptorProjector<'_> {
         scope: usize,
         exits: Option<&etas_effects::CallableExitSummary>,
     ) -> Result<TraceInfoRef, ProjectionError> {
-        let root = self.reserve_trace()?;
-        let mut work = vec![(trace, root)];
+        let (root, fresh) = self.analysis_trace_reference(trace, signature)?;
+        let mut work = if fresh { vec![(trace, root)] } else { vec![] };
         while let Some((trace, target)) = work.pop() {
             let node = match trace {
+                ActionTraceDomain::Shared(body) => {
+                    work.push((&body.body, target));
+                    continue;
+                }
+                ActionTraceDomain::Recursive { id, body } => {
+                    let body = if let Some(body) = body {
+                        let (child, fresh) = self.analysis_trace_reference(body, signature)?;
+                        if fresh {
+                            work.push((body.as_ref(), child));
+                        }
+                        Some(child)
+                    } else {
+                        None
+                    };
+                    TraceInfo::Recursive { id: *id, body }
+                }
                 ActionTraceDomain::Empty => TraceInfo::Empty,
                 ActionTraceDomain::DefaultHandler { body, .. } => {
                     work.push((body, target));
@@ -314,12 +335,13 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     self.ensure_edges(parts.len())?;
-                    self.ensure_nodes(parts.len())?;
                     let mut children = Vec::with_capacity(parts.len());
                     for part in parts {
-                        let child = self.reserve_trace()?;
+                        let (child, fresh) = self.analysis_trace_reference(part, signature)?;
                         children.push(child);
-                        work.push((part, child));
+                        if fresh {
+                            work.push((part, child));
+                        }
                     }
                     if matches!(trace, ActionTraceDomain::Seq(_)) {
                         TraceInfo::Seq(children)
@@ -328,8 +350,10 @@ impl DefinitionDescriptorProjector<'_> {
                     }
                 }
                 ActionTraceDomain::Repeat(inner) => {
-                    let child = self.reserve_trace()?;
-                    work.push((inner, child));
+                    let (child, fresh) = self.analysis_trace_reference(inner, signature)?;
+                    if fresh {
+                        work.push((inner, child));
+                    }
                     TraceInfo::Repeat(child)
                 }
                 ActionTraceDomain::UnknownOrder(actions)
@@ -384,6 +408,45 @@ impl DefinitionDescriptorProjector<'_> {
             self.traces[target.0 as usize] = Some(node);
         }
         Ok(root)
+    }
+
+    fn analysis_trace_reference(
+        &mut self,
+        trace: &ActionTraceDomain,
+        signature: TypeInfoRef,
+    ) -> Result<(TraceInfoRef, bool), ProjectionError> {
+        if self.epsilon_analysis.is_epsilon(trace) {
+            let reference = match self.epsilon_trace {
+                Some(reference) => reference,
+                None => {
+                    let reference = self.reserve_trace()?;
+                    self.traces[reference.0 as usize] = Some(TraceInfo::Empty);
+                    self.epsilon_trace = Some(reference);
+                    reference
+                }
+            };
+            return Ok((reference, false));
+        }
+        // Parameter calls also depend on the caller's exit/handler evidence.
+        // Share closed action subgraphs within this exact signature context.
+        // Structural identities also survive SDK decoding, which creates
+        // distinct Arcs for references to the same immutable subgraph.
+        let shared = match trace {
+            ActionTraceDomain::Shared(body) if body.parameter_calls.is_empty() => {
+                Some((signature, body.fingerprint))
+            }
+            _ => None,
+        };
+        if let Some(key) = shared
+            && let Some(reference) = self.shared_traces.get(&key)
+        {
+            return Ok((*reference, false));
+        }
+        let reference = self.reserve_trace()?;
+        if let Some(key) = shared {
+            self.shared_traces.insert(key, reference);
+        }
+        Ok((reference, true))
     }
 
     fn parameter_arguments(

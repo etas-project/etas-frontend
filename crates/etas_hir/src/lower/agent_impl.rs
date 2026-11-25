@@ -31,28 +31,85 @@ impl LowerCtx {
                     );
                 }
                 ast::Item::Impl(decl) => {
-                    let ast::ImplTarget::Agent { target, specs, .. } = &decl.target else {
-                        continue;
+                    let (target, legacy) = match &decl.target {
+                        ast::ImplTarget::Agent { target, specs, .. } => {
+                            (target, Some(specs.is_empty()))
+                        }
+                        ast::ImplTarget::Inherent { target, .. } => (target, None),
+                        ast::ImplTarget::SpecSatisfaction { self_type, .. } => {
+                            let ast::TypeExpr::Path { path, .. } = self_type else {
+                                continue;
+                            };
+                            (path, None)
+                        }
+                        ast::ImplTarget::Error { .. } => continue,
                     };
                     let path = self.resolve_path(target, scope, false);
                     let ResolveResult::Resolved(owner) = path.resolution else {
                         continue;
                     };
                     for item in &decl.items {
-                        if let ast::ImplItem::Flow(flow) = item {
-                            self.predeclare_agent_method(
-                                owner,
-                                &flow.name.text,
-                                flow.name.span,
-                                specs.is_empty(),
-                                super::item::hir_visibility(flow.visibility),
-                            );
+                        match (legacy, item) {
+                            (Some(inherent), ast::ImplItem::Flow(flow)) => {
+                                self.predeclare_agent_method(
+                                    owner,
+                                    &flow.name.text,
+                                    flow.name.span,
+                                    inherent,
+                                    super::item::hir_visibility(flow.visibility),
+                                );
+                            }
+                            (None, ast::ImplItem::Tool(tool)) => {
+                                self.predeclare_member_tool(tool, Some(owner));
+                            }
+                            _ => {}
                         }
                     }
                 }
                 _ => {}
             }
         }
+    }
+
+    pub(super) fn predeclare_member_tool(
+        &mut self,
+        tool: &ast::ToolDecl,
+        owner: Option<SymbolId>,
+    ) -> SymbolId {
+        let key = method_key(tool.span);
+        if let Some(symbol) = self.method_symbols.get(&key) {
+            return *symbol;
+        }
+        let name = tool
+            .path
+            .segments
+            .last()
+            .map_or("<error>", |name| name.text.as_str());
+        let symbol = self.alloc_symbol_with_def(SymbolData {
+            name: name.to_owned(),
+            kind: SymbolKind::Tool,
+            visibility: super::item::hir_visibility(tool.visibility),
+            defining_module: self.current_module,
+            defining_item: None,
+            def: SymbolDef::Error,
+            declared_type: None,
+            definition_span: tool.path.span,
+        });
+        if let Some(owner) = owner {
+            if let ResolveResult::Resolved(previous) = self.symbols.resolve_member(owner, name) {
+                self.diagnostics.duplicate_symbol(
+                    name,
+                    tool.path.span,
+                    self.symbols
+                        .get(previous)
+                        .expect("member symbol")
+                        .definition_span,
+                );
+            }
+            self.symbols.insert_member(owner, name.to_owned(), symbol);
+        }
+        self.method_symbols.insert(key, symbol);
+        symbol
     }
 
     fn predeclare_agent_method(
@@ -174,6 +231,10 @@ impl LowerCtx {
                         },
                     );
                     items.push(HirImplItem::Callable { item: body });
+                }
+                ast::ImplItem::Tool(tool) => {
+                    self.diagnostics.invalid_impl_target(tool.span);
+                    items.push(HirImplItem::Error { span: tool.span });
                 }
                 ast::ImplItem::Action(action) => {
                     self.diagnostics.invalid_impl_target(action.span);

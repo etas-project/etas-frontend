@@ -65,6 +65,7 @@ pub(in crate::pipeline) enum EmptyCollectionKind {
 
 #[derive(Default, serde::Serialize)]
 pub struct ProvisionalFacts {
+    pub selector_type_refs: HashMap<etas_hir::HirTypeId, TypeId>,
     pub trusted_literals: std::collections::BTreeSet<HirExprId>,
     pub declared_call_arguments: HashMap<HirExprId, crate::ArgumentBinding>,
     pub agent_method_calls: HashMap<HirExprId, SymbolId>,

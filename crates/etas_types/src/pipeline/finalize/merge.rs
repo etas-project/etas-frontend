@@ -118,6 +118,17 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     if facts.known_std_types.source_iterator.is_none() {
         facts.known_std_types.source_iterator = body.known_std_types.source_iterator;
     }
+    if facts.known_std_types.source_slice.is_none() {
+        facts.known_std_types.source_slice = body.known_std_types.source_slice;
+    }
+    facts
+        .known_std_types
+        .trust_wrappers
+        .extend(body.known_std_types.trust_wrappers);
+    facts
+        .known_std_types
+        .storage_resources
+        .extend(body.known_std_types.storage_resources);
     facts
         .known_std_types
         .execution

@@ -34,9 +34,12 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                             .map(|part| part.name.clone())
                             .collect::<Vec<_>>();
                         path.push(symbol.name.clone());
-                        if ctx.std_registry.lookup_type_dependency(&path).is_some_and(|entry|
-                            matches!(&entry.decl, etas_std::StdDecl::Type(ty) if ty.kind == etas_std::TypeDeclKind::Spec)) {
-                            ctx.signature_facts.std_spec_aliases.insert(decl.symbol, path);
+                        // The checked std source owns its declarations. New specs
+                        // must not require a second declaration in Rust's legacy registry.
+                        if path.first().is_some_and(|part| part == "std") {
+                            ctx.signature_facts
+                                .std_spec_aliases
+                                .insert(decl.symbol, path);
                         }
                     }
                 }

@@ -31,6 +31,17 @@ fn project_with_lookup(
     path: &[Step],
 ) -> Result<Option<TypeId>, TypeSubstitutionError> {
     for step in path {
+        if let Step::Repeat { alternatives } = step {
+            if alternatives.is_empty() || alternatives.iter().any(Vec::is_empty) {
+                return Ok(None);
+            }
+            for alternative in alternatives {
+                if project_with_lookup(store, facts, lookup, ty, alternative)? != Some(ty) {
+                    return Ok(None);
+                }
+            }
+            continue;
+        }
         let mut seen = BTreeSet::new();
         loop {
             if !seen.insert(ty) {
@@ -58,9 +69,11 @@ fn project_with_lookup(
             ty = representation;
         }
         ty = match (step, store.get(ty)) {
-            (Step::CallResult, Some(Type::Function(signature))) if signature.input.is_empty() => {
-                signature.output
-            }
+            (Step::Invocation { .. }, Some(Type::Function(_))) => ty,
+            (
+                Step::CallResult | Step::CallWithArguments { .. },
+                Some(Type::Function(signature)),
+            ) => signature.output,
             (Step::TupleElement(position), Some(Type::Tuple(elements))) => {
                 match elements.get(*position as usize) {
                     Some(ty) => *ty,

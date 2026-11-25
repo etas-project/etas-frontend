@@ -162,6 +162,7 @@ fn run(
     }];
     let registry = etas_std::standard_registry();
     let output = RunEffectPipeline::run(EffectPipelineInput {
+        external_defaults: &[],
         external_implementations: &[],
         source_snapshots: if stable_source { &snapshots } else { &[] },
         residual_identity: None,

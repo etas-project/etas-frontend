@@ -28,6 +28,7 @@ impl DefinitionCatalog {
     pub(in crate::code::definition) fn bind_external_agents(
         &mut self,
         limits: DescriptorLimits,
+        execution: bool,
     ) -> Result<(), ProjectionError> {
         let mut pending = BTreeMap::new();
         for (symbol, fact) in &self.checked.types.symbol_types {
@@ -61,13 +62,17 @@ impl DefinitionCatalog {
                 continue;
             }
             let graph = DescriptorGraph::new(set.graph.clone(), limits)?;
-            let snapshots = headers.snapshots.as_ref().map(|snapshots| {
-                snapshots
-                    .agents
-                    .iter()
-                    .map(|snapshot| (&snapshot.identity, snapshot))
-                    .collect::<BTreeMap<_, _>>()
-            });
+            let snapshots = headers
+                .snapshots
+                .as_ref()
+                .filter(|_| !execution)
+                .map(|snapshots| {
+                    snapshots
+                        .agents
+                        .iter()
+                        .map(|snapshot| (&snapshot.identity, snapshot))
+                        .collect::<BTreeMap<_, _>>()
+                });
             let callables = headers
                 .callables
                 .iter()
@@ -80,13 +85,18 @@ impl DefinitionCatalog {
                     .map(|body| (&body.callable, body))
                     .collect::<BTreeMap<_, _>>()
             });
-            let method_snapshots = headers.snapshots.as_ref().map(|snapshots| {
-                snapshots
-                    .methods
-                    .iter()
-                    .map(|snapshot| (&snapshot.revision.definition, snapshot))
-                    .collect::<BTreeMap<_, _>>()
-            });
+            let method_snapshots =
+                headers
+                    .snapshots
+                    .as_ref()
+                    .filter(|_| !execution)
+                    .map(|snapshots| {
+                        snapshots
+                            .methods
+                            .iter()
+                            .map(|snapshot| (&snapshot.revision.definition, snapshot))
+                            .collect::<BTreeMap<_, _>>()
+                    });
             for header in selected {
                 let methods = header
                     .default_entry

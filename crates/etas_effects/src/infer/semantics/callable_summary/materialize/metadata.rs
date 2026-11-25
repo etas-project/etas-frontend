@@ -129,6 +129,31 @@ impl EffectSemantics<'_> {
                 }
             }
         }
+        for inputs in self
+            .parameter_projection_index
+            .borrow()
+            .call_inputs
+            .values()
+        {
+            for argument in &inputs.arguments {
+                for origin in argument.sources.iter().chain(
+                    argument
+                        .projections
+                        .iter()
+                        .flat_map(|projection| &projection.sources),
+                ) {
+                    match origin {
+                        LatentSource::Metadata(source) => {
+                            sources.insert(*source);
+                        }
+                        LatentSource::MetadataObject(source) => {
+                            object_sources.insert(*source);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         for summary in self.inputs.unit_effects.values().chain(
             self.inputs
                 .captured_callables

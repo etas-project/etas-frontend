@@ -282,7 +282,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 analysis_mode
             };
             let result = self.run_once(context, manager, &mut requested, mode);
-            let Some(ty) = requested else {
+            let Some(requested_types) = requested else {
                 if matches!(&result.control, etas_utils::PassControl::Continue) {
                     match task_rows::refine(context) {
                         Ok(true) => {
@@ -328,7 +328,13 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             let types = context.types.as_mut().expect("checked type phase");
             let mut interner = etas_types::TypeInterner::from_store(types.store.as_ref().clone());
             let before = interner.store().len();
-            interner.intern(ty);
+            let roots = requested_types
+                .into_iter()
+                .map(|ty| interner.intern(ty))
+                .collect::<Vec<_>>();
+            if let Err(error) = etas_types::ty::materialize_representations(&mut interner, roots) {
+                return PassResult::failed(format!("Effect type materialization failed: {error}"));
+            }
             assert!(
                 interner.store().len() > before,
                 "requested type must be absent from the checked store"
@@ -347,7 +353,7 @@ impl RunEffectPipelinePass {
         &mut self,
         context: &mut ProjectContext,
         manager: &mut PassManager<ProjectContext>,
-        requested: &mut Option<etas_types::Type>,
+        requested: &mut Option<Vec<etas_types::Type>>,
         analysis_mode: EffectAnalysisMode<'_>,
     ) -> PassResult {
         context.residual_plans = None;
@@ -415,6 +421,14 @@ impl RunEffectPipelinePass {
             &mut external_metadata_diagnostics,
         ) {
             Ok(implementations) => implementations,
+            Err(error) => return PassResult::failed(error),
+        };
+        let external_defaults = match external_metadata::external_parameter_defaults(
+            environment,
+            types,
+            &external_anchors,
+        ) {
+            Ok(defaults) => defaults,
             Err(error) => return PassResult::failed(error),
         };
         let external_trace_specs = external_trace_spec_summaries(
@@ -510,6 +524,7 @@ impl RunEffectPipelinePass {
             }
         }
         let input = etas_effects::EffectPipelineInput {
+            external_defaults: &external_defaults,
             source_snapshots: &source_snapshots,
             residual_identity: Some(&residual_identity),
             trace_monitor_projector: Some(&residual_identity),

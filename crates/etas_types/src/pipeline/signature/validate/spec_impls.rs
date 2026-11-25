@@ -7,15 +7,65 @@ use crate::pipeline::{context::TypePipelineContext, signature::state::SignatureP
 
 pub fn validate_spec_impls(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipelineState) {
     let facts = crate::SpecFacts::from(&ctx.signature_facts);
+    let equality = std::cell::OnceCell::new();
     for implementation in &state.spec_impls {
-        if crate::numeric_family::is_number_spec(
+        if crate::active_agent::is_active_spec(
             &facts,
             &crate::CheckedSpecRef::Source(implementation.spec_symbol),
         ) {
             ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::InvalidImplTargetKind,
+                implementation.span,
+                "Active evidence is supplied by the compiler for agent declarations",
+            ));
+        }
+        for kind in crate::data_admission::requirements(
+            &facts,
+            &crate::CheckedSpecRef::Source(implementation.spec_symbol),
+        ) {
+            if kind != crate::data_admission::Contract::Equality
+                && !crate::solver::spec_solver::structural_contract_satisfied(
+                    ctx.interner.store(),
+                    &facts,
+                    implementation.self_type,
+                    kind,
+                )
+            {
+                ctx.diagnostics.push(Diagnostic::type_check(
+                    TypeDiagnosticCode::InvalidImplTargetKind,
+                    implementation.span,
+                    "storage evidence requires persistable components; an impl or custom codec cannot admit execution capabilities or secrets",
+                ));
+            }
+        }
+        if crate::data_equality::requires_data(
+            &facts,
+            &crate::CheckedSpecRef::Source(implementation.spec_symbol),
+        ) && !equality
+            .get_or_init(|| {
+                crate::data_equality::DataEquality::build(
+                    ctx.interner.store(),
+                    &ctx.signature_facts,
+                )
+            })
+            .supports(ctx.interner.store(), &facts, implementation.self_type)
+        {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::InvalidImplTargetKind,
+                implementation.span,
+                "Eq and Hash require component equality for finite data; raw floats, callables, secrets and resource capabilities are not admitted",
+            ));
+        }
+        if crate::numeric_family::spec_family(
+            &facts,
+            &crate::CheckedSpecRef::Source(implementation.spec_symbol),
+        )
+        .is_some()
+        {
+            ctx.diagnostics.push(Diagnostic::type_check(
                 etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
                 implementation.span,
-                "Number membership is supplied by the compiler's closed primitive numeric family",
+                "numeric family membership is supplied by the compiler's closed primitive evidence",
             ));
         }
     }

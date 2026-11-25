@@ -21,7 +21,6 @@ struct MembershipLoop {
     pattern: HirPatId,
     loop_symbol: SymbolId,
     iterable: HirExprId,
-    limits: Vec<HirExprId>,
     body: HirBlockId,
     body_statement: HirStmtId,
     target_symbol: SymbolId,
@@ -66,15 +65,7 @@ impl Pass<ProjectContext> for BatchStorageSemijoinPass {
                 context,
                 &output.hir,
                 fusions.values().flatten().flat_map(|fusion| {
-                    expression_tree(output.hir.program(), fusion.second.iterable)
-                        .into_iter()
-                        .chain(
-                            fusion
-                                .second
-                                .limits
-                                .iter()
-                                .flat_map(|limit| expression_tree(output.hir.program(), *limit)),
-                        )
+                    expression_tree(output.hir.program(), fusion.second.iterable).into_iter()
                 }),
             );
         }
@@ -128,8 +119,6 @@ fn find_fusions(
             };
             if first.target_symbol == second.target_symbol
                 || !equivalent_literal_sequence(program, first.iterable, second.iterable)
-                || iteration_count(program, &first.limits)
-                    != iteration_count(program, &second.limits)
             {
                 index += 1;
                 continue;
@@ -154,11 +143,7 @@ fn membership_loop(
     legality: &crate::AgentEffectLegalityFacts,
 ) -> Option<MembershipLoop> {
     let HirStmt::For {
-        pat,
-        iter,
-        limits,
-        body,
-        ..
+        pat, iter, body, ..
     } = &program.stmts[statement]
     else {
         return None;
@@ -170,10 +155,8 @@ fn membership_loop(
     else {
         return None;
     };
-    let element_count = literal_sequence(program, *iter)?.len();
-    if iteration_count(program, limits).is_none_or(|count| count < element_count)
-        || !legality.is_movable(*iter)
-    {
+    literal_sequence(program, *iter)?;
+    if !legality.is_movable(*iter) {
         return None;
     }
     let body_data = &program.blocks[*body];
@@ -246,7 +229,6 @@ fn membership_loop(
         pattern: *pat,
         loop_symbol,
         iterable: *iter,
-        limits: limits.clone(),
         body: *body,
         body_statement: *body_statement,
         target_symbol,
@@ -310,33 +292,6 @@ fn equivalent_literal(left: &HirLiteral, right: &HirLiteral) -> bool {
     }
 }
 
-fn iteration_count(program: &etas_hir::HirProgram, limits: &[HirExprId]) -> Option<usize> {
-    let [limit] = limits else {
-        return None;
-    };
-    let HirExpr::Call {
-        callee,
-        generic_args,
-        args,
-        ..
-    } = &program.exprs[*limit]
-    else {
-        return None;
-    };
-    let HirExpr::Path(path) = &program.exprs[*callee] else {
-        return None;
-    };
-    let [HirArg::Positional(count)] = args.as_slice() else {
-        return None;
-    };
-    let HirExpr::Literal(HirLiteral::Int { text, .. }) = &program.exprs[*count] else {
-        return None;
-    };
-    (generic_args.is_empty()
-        && path.segments.last().map(|segment| segment.name.as_str()) == Some("Iterations"))
-    .then(|| text.parse().expect("checked integer literal"))
-}
-
 fn apply_fusions(program: &mut etas_hir::HirProgram, fusions: HashMap<HirBlockId, Vec<Fusion>>) {
     for (parent, fusions) in fusions {
         let removed = fusions
@@ -349,11 +304,6 @@ fn apply_fusions(program: &mut etas_hir::HirProgram, fusions: HashMap<HirBlockId
             program.mark_block_optimized_out(fusion.second.body);
             for expression in expression_tree(program, fusion.second.iterable) {
                 program.mark_expr_optimized_out(expression);
-            }
-            for limit in fusion.second.limits {
-                for expression in expression_tree(program, limit) {
-                    program.mark_expr_optimized_out(expression);
-                }
             }
             program
                 .blocks

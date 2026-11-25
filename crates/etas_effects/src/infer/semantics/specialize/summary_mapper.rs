@@ -67,27 +67,29 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
         Ok(result)
     }
     fn ty(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
-        self.types.substitute(ty).map_err(Into::into)
+        self.types.substitute(ty).map_err(|error| {
+            if let etas_types::TypeSubstitutionError::UnmaterializedType(ty) = &error {
+                self.semantics.requested_types.borrow_mut().push(ty.clone());
+            }
+            error.into()
+        })
     }
     fn request_type(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
         // Captured callable sources retain their own row environment. A request
         // ABI applies the invocation's row arguments before crossing a handler.
         let rows = self.semantics.type_row_arguments(self.rows, self.owner)?;
         let names = self.type_bindings.iter().cloned().collect();
-        etas_types::TypeSubstitutionEngine::existing_indexed(
-            &self.semantics.types.store,
-            self.semantics.type_lookup(),
-            &names,
-        )
-        .with_type_parameters(self.type_parameters)
-        .with_effect_arguments(&rows)
-        .substitute(ty)
-        .map_err(|error| {
-            if let etas_types::TypeSubstitutionError::UnmaterializedType(ty) = &error {
-                self.semantics.requested_types.borrow_mut().push(ty.clone());
-            }
-            error.into()
-        })
+        self.semantics
+            .type_substitution(&names)
+            .with_type_parameters(self.type_parameters)
+            .with_effect_arguments(&rows)
+            .substitute(ty)
+            .map_err(|error| {
+                if let etas_types::TypeSubstitutionError::UnmaterializedType(ty) = &error {
+                    self.semantics.requested_types.borrow_mut().push(ty.clone());
+                }
+                error.into()
+            })
     }
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error> {
         let mut effect = self

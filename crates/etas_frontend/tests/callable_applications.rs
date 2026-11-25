@@ -16,6 +16,39 @@ fn check(source: &str) -> CheckedProgram {
     output.checked.unwrap()
 }
 
+#[test]
+fn source_hash_generics_keep_checked_dependencies_without_effect_requests() {
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module std.collections;
+public spec Eq;
+public spec Hash ~ Eq { flow hash(self, state: Hasher) -> Hasher ![]; }
+public type Hasher = { value: u32 };
+impl u32 ~ Eq {}
+impl u32 ~ Hash {
+    public flow hash(self, state: Hasher) -> Hasher ![] {
+        return Hasher { value= self + state.value };
+    }
+}
+public flow fold<T ~ Hash>(value: T, state: Hasher) -> Hasher ![] {
+    return value.hash(state);
+}
+"#,
+    ));
+    for (index, source) in [
+        "module std.option; public enum Option<T> { Some(T), None, }",
+        "module std.runtime.budget; public type Money = { private amount: f64, private currency: string };",
+        "module std.runtime.time; public type Duration = { nanos: u64 };",
+    ].into_iter().enumerate() {
+        let mut source = SourceInput::anonymous(source);
+        source.id = etas_core::SourceId(index as u32 + 1);
+        input.sources.push(source);
+    }
+    let output = Frontend.check_standard_library_source(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.checked.is_some());
+}
+
 fn item(checked: &CheckedProgram, name: &str) -> HirItemId {
     checked
         .items
@@ -56,6 +89,20 @@ public flow capture_fields<A, B, effect E>(jobs: { first: () -> A ![E], second: 
 public flow relay_fields<A, B, effect E>(jobs: { first: () -> A ![E], second: () -> B ![E] }) -> { first: () -> A ![E], second: () -> B ![E] } ![] {
     return jobs;
 }
+type ConditionalJobs = { first: () -> i32 ![], second: () -> bool ![] };
+impl ConditionalJobs {
+    flow select(first: bool) -> ConditionalJobs ![] {
+        return if first {
+            ConditionalJobs { first= () => 7, second= () => true }
+        } else {
+            ConditionalJobs { first= () => 8, second= () => false }
+        };
+    }
+}
+flow prepare_conditional_fields() -> (i32, bool) ![] {
+    let jobs = ConditionalJobs.select(true);
+    return ((jobs.first)(), (jobs.second)());
+}
 flow prepare_returned_fields() -> (i32, bool) ![] {
     let jobs = relay_fields({ first= () => 7, second= () => true });
     return ((jobs.first)(), (jobs.second)());
@@ -73,7 +120,7 @@ flow prepare_captured_pair() -> (i32, bool) ![] {
 }
 public flow capture_results<T, X, effect E>(jobs: Array<() -> T ![Error<X>, E]>) -> unit ![E] {
     return within((scheduler: Scheduler) => {
-    for job in jobs limit Iterations(18446744073709551615) {
+    for job in jobs {
         let task: Task<Result<T, X>, ![E]> = start(() => job()?);
     }
     return;
@@ -112,7 +159,7 @@ flow update_concrete() -> i32 ![] {
 }
 flow even(value: i32) -> bool ![] { if value == 0 { return true; } return odd(value - 1); }
 flow odd(value: i32) -> bool ![] { if value == 0 { return false; } return even(value - 1); }
-flow callback(value: () -> i32 ![]) -> i32 ![] { return value(); }
+flow callback(value: (i32) -> i32 ![]) -> i32 ![] { return value(7); }
 enum CallbackLookup<T> { Available(T), Empty, }
 alias NativeArray<T> = [T];
 spec OffsetIndex { flow offset(self) -> Option<usize> ![]; }
@@ -195,6 +242,7 @@ flow factory() -> (() -> unit ![Console.stdout_write]) ![] {
         "factory",
         "update_concrete",
         "prepare_returned_fields",
+        "prepare_conditional_fields",
         "prepare_deferred_callback",
     ] {
         assert_eq!(summary(name), S::IMMEDIATE, "{name}");
@@ -261,6 +309,18 @@ flow factory() -> (() -> unit ![Console.stdout_write]) ![] {
     assert!(graph.parameter_projections.contains(&vec![
         etas_code::descriptor::ValueProjectionStep::TupleElement(1)
     ]));
+    let factory = replayed
+        .public_metadata
+        .effect_summaries
+        .iter()
+        .find(|summary| summary.item.last().is_some_and(|name| name == "factory"))
+        .and_then(|summary| summary.returned_callables.as_ref())
+        .unwrap();
+    assert!(factory.values.iter().any(|node| {
+        node.behavior
+            .suspension
+            .is_some_and(|summary| summary.may_suspend)
+    }));
     let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
         std::path::Path::new("app.etasmeta"),
         &artifact.bytes,
@@ -315,10 +375,10 @@ flow compared<T>(values: Compared<T>) -> Iter<T> ![] {
 }
 flow total() -> i32 ![] {
     var result: i32 = 0;
-    for value in numbers(7, 4) limit Iterations(4) { result = result + value; }
+    for value in numbers(7, 4) { result = result + value; }
     let values = Compared { value= 3, compare= (left: i32, right: i32) => left - right };
     result = result + values.compare_self();
-    for value in compared(values) limit Iterations(1) { result = result + value; }
+    for value in compared(values) { result = result + value; }
     return result;
 }
 "#,
@@ -1019,4 +1079,84 @@ fn equivalent_effect_argument_sets_have_the_same_instance_identity() {
             .callable_application_fingerprint(&second, DescriptorLimits::default())
             .unwrap()
     );
+}
+
+#[test]
+fn recursive_collection_construction_exports_field_origins_after_balancing() {
+    let source = include_str!("fixtures/recursive_ordered_payloads.es");
+    let checked = check(source);
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(
+                PackageKey::from_name_and_version("recursive-collection", "0.1.0").unwrap(),
+            ),
+            package_id: "recursive-collection".into(),
+            package_version: "0.1.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: etas_package_metadata::blake3_hash(source.as_bytes()),
+            manifest_hash: etas_package_metadata::blake3_hash(b"recursive collection manifest"),
+            dependency_lock_hash: etas_package_metadata::blake3_hash(b"recursive collection lock"),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked,
+    )
+    .unwrap();
+    assert!(!artifact.bytes.is_empty());
+}
+
+#[test]
+fn returned_lambda_rows_complete_generic_arguments_per_value() {
+    let checked = check(
+        r#"
+module app;
+effect Gate { action tick() -> unit; }
+public flow execute<T, effect E>(body: () -> T ![E]) -> T ![E] {
+    return body();
+}
+flow choose(flag: bool) -> i32 ![Gate.tick] {
+    let work = execute(() => {
+        return if flag { () => 41 } else {
+            () => { perform Gate.tick(); return 42; }
+        };
+    });
+    return work();
+}
+flow main() -> i32 ![Gate.tick] {
+    let pure = execute(() => { return () => 42; });
+    let action = execute(() => {
+        return () => { perform Gate.tick(); return 42; };
+    });
+    return pure() + action() + choose(false);
+}
+"#,
+    );
+    let owner = item(&checked, "execute");
+    let bindings = checked
+        .types
+        .generic_instantiations
+        .values()
+        .filter(|fact| fact.type_bindings.iter().any(|(name, _)| name == "T"))
+        .collect::<Vec<_>>();
+    assert_eq!(bindings.len(), 3);
+    let mut widths = Vec::new();
+    for fact in bindings {
+        let application = checked
+            .checked_callable_application(owner, &fact.type_bindings, &fact.effect_row_bindings)
+            .unwrap();
+        let (_, ty) = fact
+            .type_bindings
+            .iter()
+            .find(|(name, _)| name == "T")
+            .unwrap();
+        let Some(Type::Function(flow)) = checked.type_store.get(*ty) else {
+            panic!("returned callable type");
+        };
+        widths.push(flow.effects.as_ref().unwrap().effects.len());
+        assert_eq!(application.signature().output, *ty);
+    }
+    widths.sort();
+    assert_eq!(widths, [0, 1, 1]);
 }

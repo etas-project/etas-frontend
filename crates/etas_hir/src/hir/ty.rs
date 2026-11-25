@@ -8,6 +8,12 @@ pub use ast::PrimitiveType as HirPrimitiveType;
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirType {
+    /// Checked definition-owned type template from an imported constructor.
+    Metadata {
+        ty: Box<etas_package_metadata::Type>,
+        parameters: Vec<SymbolId>,
+        span: Span,
+    },
     Existential {
         bounds: Vec<HirTypeParamBound>,
         span: Span,
@@ -58,7 +64,8 @@ pub enum HirType {
 impl HirType {
     pub fn span(&self) -> Span {
         match self {
-            Self::Arrow { span, .. }
+            Self::Metadata { span, .. }
+            | Self::Arrow { span, .. }
             | Self::Existential { span, .. }
             | Self::Handler { span, .. }
             | Self::Primitive { span, .. }
@@ -74,6 +81,7 @@ impl HirType {
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirFieldDecl {
+    pub annotations: Vec<crate::HirAnnotation>,
     pub symbol: SymbolId,
     pub ty: HirTypeId,
     pub visibility: ast::Visibility,

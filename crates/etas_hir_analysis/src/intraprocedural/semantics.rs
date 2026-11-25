@@ -1,7 +1,7 @@
 use etas_core::Span;
 use etas_hir::{
     HirArg, HirBlockId, HirExprId, HirGenericArg, HirHandlerArmId, HirPatId, HirStmtId,
-    ResolvedActionRef,
+    ResolvedActionRef, SymbolId,
 };
 
 use crate::intraprocedural::{AbstractDomain, Control};
@@ -72,6 +72,15 @@ pub trait HirAnalysisSemantics {
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain;
 
+    fn join_loop_state(
+        &mut self,
+        _body: HirBlockId,
+        state: &mut Self::Domain,
+        back_edge: &Self::Domain,
+    ) -> bool {
+        etas_utils::JoinSemiLattice::join_assign(state, back_edge)
+    }
+
     fn loop_fixpoint_incomplete(&mut self, _body: HirBlockId, state: Self::Domain) -> Self::Domain {
         self.incomplete_facts(state)
     }
@@ -99,6 +108,27 @@ pub trait HirAnalysisSemantics {
     }
 
     fn before_stmt(&mut self, _stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    fn enter_block(&mut self, _block: HirBlockId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    fn record_shorthand(
+        &mut self,
+        _symbol: SymbolId,
+        _span: Span,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        state
+    }
+
+    fn begin_loop(&mut self, _body: etas_hir::HirBlockId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    fn end_loop(&mut self, _body: etas_hir::HirBlockId, state: Self::Domain) -> Self::Domain {
         state
     }
 

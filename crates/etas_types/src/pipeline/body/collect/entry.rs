@@ -24,6 +24,7 @@ pub fn collect_body_item<E>(
         }
     }
     super::defaults::collect(ctx, state, checkpoint)?;
+    super::injections::collect(ctx, state, checkpoint)?;
     match item {
         HirItem::Flow(flow) => {
             let Some(block) = flow.body.as_block() else {

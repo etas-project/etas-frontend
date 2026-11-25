@@ -383,11 +383,7 @@ impl HirBuilder {
     }
 
     fn retry_stmt(&mut self, body: HirBlockId) -> HirStmtId {
-        self.stmt(HirStmt::Retry {
-            limits: Vec::new(),
-            body,
-            span: span(),
-        })
+        self.stmt(HirStmt::Retry { body, span: span() })
     }
 
     fn return_stmt(&mut self, value: Option<HirExprId>) -> HirStmtId {
@@ -672,11 +668,10 @@ fn visits_block_statements_and_final_expr_in_ordered_structure() {
 }
 
 #[test]
-fn loop_limits_are_visited_before_the_iterable_or_condition() {
+fn plain_loops_visit_the_iterable_or_condition_first() {
     for is_for in [true, false] {
         let mut builder = HirBuilder::default();
         let input = builder.literal();
-        let limit = builder.literal();
         let body = builder.block(vec![], None);
         let stmt = if is_for {
             let pat = builder
@@ -686,14 +681,12 @@ fn loop_limits_are_visited_before_the_iterable_or_condition() {
             builder.stmt(HirStmt::For {
                 pat,
                 iter: input,
-                limits: vec![limit],
                 body,
                 span: span(),
             })
         } else {
             builder.stmt(HirStmt::While {
                 cond: input,
-                limits: vec![limit],
                 body,
                 span: span(),
             })
@@ -702,48 +695,14 @@ fn loop_limits_are_visited_before_the_iterable_or_condition() {
         let semantics = TraceSemantics::new(builder.finish_with_roots([root]));
         let mut interpreter = HirAbstractInterpreter::new(semantics);
         interpreter.block(root, EventDomain::initial());
-        let expressions = &interpreter.semantics().started_exprs;
-        assert_eq!(expressions.first(), Some(&limit));
-        assert!(expressions.len() >= 2);
-        assert!(expressions[1..].iter().all(|expr| *expr == input));
-    }
-}
-
-#[test]
-fn terminal_loop_limit_prevents_iterable_or_condition_evaluation() {
-    for is_for in [true, false] {
-        let mut builder = HirBuilder::default();
-        let input = builder.literal();
-        let limit = builder.literal();
-        let body = builder.block(vec![], None);
-        let stmt = if is_for {
-            let pat = builder
-                .program
-                .pats
-                .alloc(etas_hir::HirPat::Wildcard { span: span() });
-            builder.stmt(HirStmt::For {
-                pat,
-                iter: input,
-                limits: vec![limit],
-                body,
-                span: span(),
-            })
-        } else {
-            builder.stmt(HirStmt::While {
-                cond: input,
-                limits: vec![limit],
-                body,
-                span: span(),
-            })
-        };
-        let root = builder.block(vec![stmt], None);
-        let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
-        semantics.terminal_exprs.insert(limit);
-        let mut interpreter = HirAbstractInterpreter::new(semantics);
-        let result = interpreter.block_control(root, EventDomain::initial());
-        assert!(result.normal_state().is_none());
-        assert!(result.error_state().is_some());
-        assert_eq!(interpreter.semantics().started_exprs, [limit]);
+        assert!(
+            interpreter
+                .semantics()
+                .started_exprs
+                .iter()
+                .all(|expr| *expr == input)
+        );
+        assert!(!interpreter.semantics().started_exprs.is_empty());
     }
 }
 
@@ -751,13 +710,11 @@ fn terminal_loop_limit_prevents_iterable_or_condition_evaluation() {
 fn while_condition_is_revisited_after_the_body() {
     let mut builder = HirBuilder::default();
     let cond = builder.literal();
-    let limit = builder.literal();
     let body_expr = builder.literal();
     let body_stmt = builder.expr_stmt(body_expr);
     let body = builder.block(vec![body_stmt], None);
     let stmt = builder.stmt(HirStmt::While {
         cond,
-        limits: vec![limit],
         body,
         span: span(),
     });
@@ -785,7 +742,6 @@ fn while_condition_preserves_initial_and_later_terminal_paths() {
     let body = builder.block(vec![body_stmt], None);
     let stmt = builder.stmt(HirStmt::While {
         cond,
-        limits: vec![],
         body,
         span: span(),
     });
@@ -814,7 +770,6 @@ fn terminal_initial_while_condition_does_not_visit_body() {
     let body = builder.block(vec![body_stmt], None);
     let stmt = builder.stmt(HirStmt::While {
         cond,
-        limits: vec![],
         body,
         span: span(),
     });
@@ -835,7 +790,6 @@ fn nonconverging_while_condition_marks_analysis_incomplete() {
     let body = builder.block(vec![], None);
     let stmt = builder.stmt(HirStmt::While {
         cond,
-        limits: vec![],
         body,
         span: span(),
     });
@@ -863,7 +817,6 @@ fn bounded_for_tracks_continue_and_each_iteration() {
     let stmt = builder.stmt(HirStmt::For {
         pat,
         iter: input,
-        limits: vec![],
         body,
         span: span(),
     });
@@ -900,7 +853,6 @@ fn bounded_for_budget_exhaustion_does_not_claim_bounded_completion() {
     let stmt = builder.stmt(HirStmt::For {
         pat,
         iter: input,
-        limits: vec![],
         body,
         span: span(),
     });
@@ -932,7 +884,6 @@ fn bounded_for_checks_cancellation_between_iterations() {
     let stmt = builder.stmt(HirStmt::For {
         pat,
         iter: input,
-        limits: vec![],
         body,
         span: span(),
     });
@@ -967,7 +918,6 @@ fn bounded_for_propagates_return_and_consumes_break() {
         let stmt = builder.stmt(HirStmt::For {
             pat,
             iter: input,
-            limits: vec![],
             body,
             span: span(),
         });

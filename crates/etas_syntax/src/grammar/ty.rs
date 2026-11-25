@@ -12,6 +12,10 @@ impl Parser<'_> {
             return self.handler_type();
         }
         let input = self.primary_type();
+        self.type_expr_after_primary(input)
+    }
+
+    pub(crate) fn type_expr_after_primary(&mut self, input: TypeExpr) -> TypeExpr {
         if self.cursor.eat_punct(Punct::Arrow).is_some() {
             let output = self.type_expr();
             let effect = self.effect_suffix();
@@ -71,37 +75,7 @@ impl Parser<'_> {
         if self.cursor.at_ident_like() {
             let path = self.path();
             let args = self.type_args();
-            let mut ty = if args.is_empty() && path.segments.len() == 1 {
-                if let Some(kind) = PrimitiveType::from_name(&path.segments[0].text) {
-                    TypeExpr::Primitive {
-                        kind,
-                        span: path.span,
-                    }
-                } else {
-                    TypeExpr::Path {
-                        span: path.span,
-                        path,
-                        args,
-                    }
-                }
-            } else {
-                let span = args.last().map_or(path.span, TypeExpr::span);
-                TypeExpr::Path {
-                    span: path.span.cover(span),
-                    path,
-                    args,
-                }
-            };
-            if self.cursor.eat_keyword(Keyword::Where).is_some() {
-                let predicate = self.expr();
-                let span = ty.span().cover(predicate.span());
-                ty = TypeExpr::Refined {
-                    base: Box::new(ty),
-                    predicate: Box::new(predicate),
-                    span,
-                };
-            }
-            return ty;
+            return self.path_type(path, args);
         }
         let span = self.cursor.peek().span;
         self.bump_error(
@@ -142,6 +116,10 @@ impl Parser<'_> {
         let mut fields = Vec::new();
         while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
             let before = self.cursor.position();
+            let mut annotations = Vec::new();
+            while self.cursor.at_punct(Punct::At) {
+                annotations.push(self.annotation());
+            }
             let visibility = if self.cursor.eat_keyword(Keyword::Private).is_some() {
                 Some(Visibility::Private)
             } else if self.cursor.eat_keyword(Keyword::Public).is_some() {
@@ -152,8 +130,12 @@ impl Parser<'_> {
             let name = self.name("expected record field");
             self.expect_punct(Punct::Colon, "expected `:` after record field");
             let ty = self.type_expr();
-            let span = name.span.cover(ty.span());
+            let span = annotations
+                .first()
+                .map_or(name.span, |annotation| annotation.span)
+                .cover(ty.span());
             fields.push(crate::ast::ty::FieldDecl {
+                annotations,
                 visibility,
                 name,
                 ty,
@@ -173,6 +155,40 @@ impl Parser<'_> {
         self.cursor
             .eat_punct(Punct::Colon)
             .map(|_| self.type_expr())
+    }
+
+    pub(crate) fn path_type(&mut self, path: Path, args: Vec<TypeExpr>) -> TypeExpr {
+        let mut ty = if args.is_empty() && path.segments.len() == 1 {
+            if let Some(kind) = PrimitiveType::from_name(&path.segments[0].text) {
+                TypeExpr::Primitive {
+                    kind,
+                    span: path.span,
+                }
+            } else {
+                TypeExpr::Path {
+                    span: path.span,
+                    path,
+                    args,
+                }
+            }
+        } else {
+            let span = args.last().map_or(path.span, TypeExpr::span);
+            TypeExpr::Path {
+                span: path.span.cover(span),
+                path,
+                args,
+            }
+        };
+        if self.cursor.eat_keyword(Keyword::Where).is_some() {
+            let predicate = self.expr();
+            let span = ty.span().cover(predicate.span());
+            ty = TypeExpr::Refined {
+                base: Box::new(ty),
+                predicate: Box::new(predicate),
+                span,
+            };
+        }
+        ty
     }
 
     pub(crate) fn type_params(&mut self) -> Vec<TypeParam> {

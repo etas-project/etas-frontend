@@ -66,7 +66,7 @@ fn loop_exits_preserve_value_branches_and_nested_loop_ownership() {
 flow digits() -> i32 {
     var total = 0;
     var position = 0;
-    while position < 4 limit Iterations(4) {
+    while position < 4 {
         position = position + 1;
         let digit: i32 = if position == 2 { continue; }
             else if position == 4 { break; }
@@ -78,8 +78,8 @@ flow digits() -> i32 {
 flow nested() -> i32 {
     return match true {
         true => {
-            while true limit Iterations(2) {
-                while true limit Iterations(1) { break; }
+            while true {
+                while true { break; }
                 return 7;
             }
             return 9;
@@ -89,7 +89,7 @@ flow nested() -> i32 {
 }
 flow matched_break() -> i32 {
     var total = 0;
-    while true limit Iterations(2) {
+    while true {
         match total { 0 => { total = 1; }, _ => { break; } };
     }
     return total;

@@ -335,6 +335,8 @@ impl EffectSemantics<'_> {
         };
         let mut inferred_produced = EffectRow::empty();
         let mut arm_facts = Vec::new();
+        let inject = self.registry.action_by_name("std.effects.Inject.get");
+        let mut dependency_keys = std::collections::BTreeSet::new();
         let mut unsupported = false;
         let captures = match self.lambda_value_captures(expr, &state) {
             Ok(captures) => captures,
@@ -361,6 +363,17 @@ impl EffectSemantics<'_> {
                 unsupported = true;
                 continue;
             };
+            if let crate::Effect::AppliedAction(instance) = &effect
+                && Some(&instance.action) == inject.as_ref()
+                && let [etas_types::EffectArgRef::Type(ty)] = instance.args.as_slice()
+                && !dependency_keys.insert(*ty)
+            {
+                self.diagnostics.push(Diagnostic::effect_check(
+                    EffectDiagnosticCode::DuplicateDependencyHandler,
+                    arm_data.span,
+                    "duplicate handler arm for the same Inject dependency type",
+                ));
+            }
             let arm_summary = self
                 .inputs
                 .unit_effects
@@ -1000,18 +1013,12 @@ impl EffectSemantics<'_> {
             HirExpr::StageCompose { stages, .. } => {
                 for stage in stages {
                     self.scan_handler_controls_in_expr(stage.expr, in_lambda, scan);
-                    for limit in &stage.limits {
-                        self.scan_handler_controls_in_expr(*limit, in_lambda, scan);
-                    }
                 }
             }
             HirExpr::Pipeline { input, stages, .. } => {
                 self.scan_handler_controls_in_expr(*input, in_lambda, scan);
                 for stage in stages {
                     self.scan_handler_controls_in_expr(stage.expr, in_lambda, scan);
-                    for limit in &stage.limits {
-                        self.scan_handler_controls_in_expr(*limit, in_lambda, scan);
-                    }
                 }
             }
             HirExpr::Record(record) => {

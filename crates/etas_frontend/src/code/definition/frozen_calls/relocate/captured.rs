@@ -3,13 +3,160 @@ use etas_effects::facts::{CallableEnvironment, CallableEnvironmentId, CallableVa
 use std::collections::BTreeSet;
 
 impl Relocation<'_> {
+    pub(super) fn value_origin(
+        &self,
+        origin: CallableValueOrigin,
+        pending: &mut Vec<CallableEnvironmentId>,
+        method_environments: &mut BTreeSet<CallableEnvironmentId>,
+        metadata_environments: &mut HashMap<
+            CallableEnvironmentId,
+            (CodeFingerprint, CallableEnvironmentId),
+        >,
+    ) -> Result<CallableValueOrigin, ProjectionError> {
+        Ok(match origin {
+            CallableValueOrigin::Projection(id) => {
+                CallableValueOrigin::Projection(self.parameter_projection(id)?)
+            }
+            CallableValueOrigin::Existential { pack, environment } => {
+                pending.push(environment);
+                CallableValueOrigin::Existential {
+                    pack: self.captured_expr(pack)?,
+                    environment,
+                }
+            }
+            CallableValueOrigin::ExternalReference { .. } => {
+                return Err(invalid(
+                    "captured external callable reference lacks checked relocation facts",
+                ));
+            }
+            CallableValueOrigin::ExternalFrozen { reflection } => {
+                let target = self.captured_expr(reflection)?;
+                let original = self
+                    .original
+                    .types
+                    .reflections
+                    .get(&reflection)
+                    .ok_or_else(|| {
+                        invalid("captured external reflection has no checked source target")
+                    })?;
+                let relocated =
+                    self.target.types.reflections.get(&target).ok_or_else(|| {
+                        invalid("captured external reflection has no checked target")
+                    })?;
+                if original.target != relocated.target {
+                    return Err(invalid("captured external reflection target changed"));
+                }
+                CallableValueOrigin::ExternalFrozen { reflection: target }
+            }
+            CallableValueOrigin::FrozenContract {
+                unit,
+                reference,
+                environment,
+            } => {
+                pending.extend(environment);
+                CallableValueOrigin::FrozenContract {
+                    unit: self.captured_unit(unit)?,
+                    reference: reference
+                        .map(|value| self.captured_expr(value))
+                        .transpose()?,
+                    environment,
+                }
+            }
+            CallableValueOrigin::MetadataSpecMethod {
+                invocation,
+                environment,
+            } => {
+                let (invocation, target_environment) =
+                    self.metadata_method_environment(invocation, environment)?;
+                if metadata_environments
+                    .insert(environment, (invocation, target_environment))
+                    .is_some_and(|previous| previous != (invocation, target_environment))
+                {
+                    return Err(invalid(
+                        "frozen method environment has conflicting target identities",
+                    ));
+                }
+                method_environments.insert(environment);
+                pending.push(environment);
+                CallableValueOrigin::MetadataSpecMethod {
+                    invocation,
+                    environment: target_environment,
+                }
+            }
+            CallableValueOrigin::Unit(unit) => CallableValueOrigin::Unit(self.captured_unit(unit)?),
+            CallableValueOrigin::Captured { unit, environment } => {
+                pending.push(environment);
+                CallableValueOrigin::Captured {
+                    unit: self.captured_unit(unit)?,
+                    environment,
+                }
+            }
+            CallableValueOrigin::SpecMethod { call, environment } => {
+                method_environments.insert(environment);
+                pending.push(environment);
+                CallableValueOrigin::SpecMethod {
+                    call: self.captured_expr(call)?,
+                    environment,
+                }
+            }
+            CallableValueOrigin::Metadata(source) => {
+                pending.extend(source.environment);
+                CallableValueOrigin::Metadata(source)
+            }
+            CallableValueOrigin::MetadataObject(source) => {
+                pending.extend(source.environment);
+                CallableValueOrigin::MetadataObject(source)
+            }
+            CallableValueOrigin::Parameter { owner, symbol } => CallableValueOrigin::Parameter {
+                owner: *self
+                    .returned_items
+                    .get(&owner)
+                    .ok_or_else(|| invalid("captured parameter has no target owner"))?,
+                symbol: *self
+                    .parameters
+                    .get(&symbol)
+                    .ok_or_else(|| invalid("captured parameter has no target symbol"))?,
+            },
+            CallableValueOrigin::EnumConstructor(symbol) => {
+                CallableValueOrigin::EnumConstructor(self.variant(symbol)?)
+            }
+            CallableValueOrigin::DerivedResponseDecoder(_) => {
+                return Err(invalid(
+                    "captured response decoder requires its checked inference handler",
+                ));
+            }
+            CallableValueOrigin::StdReference { value, environment } => {
+                pending.extend(environment);
+                CallableValueOrigin::StdReference {
+                    value: self.captured_expr(value)?,
+                    environment,
+                }
+            }
+            CallableValueOrigin::Reference {
+                unit,
+                value,
+                environment,
+            } => {
+                pending.extend(environment);
+                CallableValueOrigin::Reference {
+                    unit: self.captured_unit(unit)?,
+                    value: self.captured_expr(value)?,
+                    environment,
+                }
+            }
+            CallableValueOrigin::Unavailable { expr } => CallableValueOrigin::Unavailable {
+                expr: self.captured_expr(expr)?,
+            },
+        })
+    }
+
     pub fn captured_environments(
         &self,
         summary: &EffectSummary,
     ) -> Result<BTreeMap<CallableEnvironmentId, CallableEnvironment>, ProjectionError> {
-        let mut pending = Vec::new();
-        let mut method_environments = BTreeSet::new();
-        let mut metadata_environments = HashMap::new();
+        let mut pending = self.input_environments.borrow().clone();
+        let mut method_environments = self.input_method_environments.borrow().clone();
+        let mut metadata_environments = self.input_metadata_environments.borrow().clone();
         let mut traces = vec![&summary.action_trace];
         traces.extend(
             summary
@@ -65,7 +212,16 @@ impl Relocation<'_> {
         }
         let mut environments = BTreeMap::new();
         let mut visited = BTreeSet::new();
-        while let Some(id) = pending.pop() {
+        loop {
+            pending.extend(std::mem::take(&mut *self.input_environments.borrow_mut()));
+            method_environments.extend(self.input_method_environments.borrow().iter().copied());
+            metadata_environments.extend(
+                self.input_metadata_environments
+                    .borrow()
+                    .iter()
+                    .map(|(id, value)| (*id, *value)),
+            );
+            let Some(id) = pending.pop() else { break };
             if !visited.insert(id) {
                 continue;
             }
@@ -99,149 +255,12 @@ impl Relocation<'_> {
                 };
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
-                    let origin = match *origin {
-                        CallableValueOrigin::Projection(id) => {
-                            CallableValueOrigin::Projection(self.parameter_projection(id)?)
-                        }
-                        CallableValueOrigin::Existential { pack, environment } => {
-                            pending.push(environment);
-                            CallableValueOrigin::Existential {
-                                pack: self.captured_expr(pack)?,
-                                environment,
-                            }
-                        }
-                        CallableValueOrigin::ExternalReference { .. } => {
-                            return Err(invalid(
-                                "captured external callable reference lacks checked relocation facts",
-                            ));
-                        }
-                        CallableValueOrigin::ExternalFrozen { reflection } => {
-                            let target = self.captured_expr(reflection)?;
-                            let original = self
-                                .original
-                                .types
-                                .reflections
-                                .get(&reflection)
-                                .ok_or_else(|| {
-                                    invalid(
-                                        "captured external reflection has no checked source target",
-                                    )
-                                })?;
-                            let relocated =
-                                self.target.types.reflections.get(&target).ok_or_else(|| {
-                                    invalid("captured external reflection has no checked target")
-                                })?;
-                            if original.target != relocated.target {
-                                return Err(invalid("captured external reflection target changed"));
-                            }
-                            CallableValueOrigin::ExternalFrozen { reflection: target }
-                        }
-                        CallableValueOrigin::FrozenContract {
-                            unit,
-                            reference,
-                            environment,
-                        } => {
-                            pending.extend(environment);
-                            CallableValueOrigin::FrozenContract {
-                                unit: self.captured_unit(unit)?,
-                                reference: reference
-                                    .map(|value| self.captured_expr(value))
-                                    .transpose()?,
-                                environment,
-                            }
-                        }
-                        CallableValueOrigin::MetadataSpecMethod {
-                            invocation,
-                            environment,
-                        } => {
-                            let (invocation, target_environment) =
-                                self.metadata_method_environment(invocation, environment)?;
-                            if metadata_environments
-                                .insert(environment, (invocation, target_environment))
-                                .is_some_and(|previous| {
-                                    previous != (invocation, target_environment)
-                                })
-                            {
-                                return Err(invalid(
-                                    "frozen method environment has conflicting target identities",
-                                ));
-                            }
-                            method_environments.insert(environment);
-                            pending.push(environment);
-                            CallableValueOrigin::MetadataSpecMethod {
-                                invocation,
-                                environment: target_environment,
-                            }
-                        }
-                        CallableValueOrigin::Unit(unit) => {
-                            CallableValueOrigin::Unit(self.captured_unit(unit)?)
-                        }
-                        CallableValueOrigin::Captured { unit, environment } => {
-                            pending.push(environment);
-                            CallableValueOrigin::Captured {
-                                unit: self.captured_unit(unit)?,
-                                environment,
-                            }
-                        }
-                        CallableValueOrigin::SpecMethod { call, environment } => {
-                            method_environments.insert(environment);
-                            pending.push(environment);
-                            CallableValueOrigin::SpecMethod {
-                                call: self.captured_expr(call)?,
-                                environment,
-                            }
-                        }
-                        CallableValueOrigin::Metadata(source) => {
-                            pending.extend(source.environment);
-                            CallableValueOrigin::Metadata(source)
-                        }
-                        CallableValueOrigin::MetadataObject(source) => {
-                            pending.extend(source.environment);
-                            CallableValueOrigin::MetadataObject(source)
-                        }
-                        CallableValueOrigin::Parameter { owner, symbol } => {
-                            CallableValueOrigin::Parameter {
-                                owner: *self.returned_items.get(&owner).ok_or_else(|| {
-                                    invalid("captured parameter has no target owner")
-                                })?,
-                                symbol: *self.parameters.get(&symbol).ok_or_else(|| {
-                                    invalid("captured parameter has no target symbol")
-                                })?,
-                            }
-                        }
-                        CallableValueOrigin::EnumConstructor(symbol) => {
-                            CallableValueOrigin::EnumConstructor(self.variant(symbol)?)
-                        }
-                        CallableValueOrigin::DerivedResponseDecoder(_) => {
-                            return Err(invalid(
-                                "captured response decoder requires its checked inference handler",
-                            ));
-                        }
-                        CallableValueOrigin::StdReference { value, environment } => {
-                            pending.extend(environment);
-                            CallableValueOrigin::StdReference {
-                                value: self.captured_expr(value)?,
-                                environment,
-                            }
-                        }
-                        CallableValueOrigin::Reference {
-                            unit,
-                            value,
-                            environment,
-                        } => {
-                            pending.extend(environment);
-                            CallableValueOrigin::Reference {
-                                unit: self.captured_unit(unit)?,
-                                value: self.captured_expr(value)?,
-                                environment,
-                            }
-                        }
-                        CallableValueOrigin::Unavailable { expr } => {
-                            CallableValueOrigin::Unavailable {
-                                expr: self.captured_expr(expr)?,
-                            }
-                        }
-                    };
+                    let origin = self.value_origin(
+                        *origin,
+                        &mut pending,
+                        &mut method_environments,
+                        &mut metadata_environments,
+                    )?;
                     relocated.insert(origin);
                 }
                 parameters.insert(parameter, relocated);
@@ -263,6 +282,14 @@ impl Relocation<'_> {
                         position: *position,
                     },
                     P::Graph { .. } => *parameter,
+                    P::TypeParameter { subject } => P::TypeParameter {
+                        subject: self.ty(
+                            generic_scope.as_ref().ok_or_else(|| {
+                                invalid("captured type parameter has no checked relocation scope")
+                            })?,
+                            *subject,
+                        )?,
+                    },
                 };
                 let scope = generic_scope.as_ref().ok_or_else(|| {
                     invalid("captured generic value has no checked relocation scope")
@@ -286,6 +313,8 @@ impl Relocation<'_> {
             environments.insert(
                 target_id,
                 CallableEnvironment {
+                    invocation_origin: source.invocation_origin,
+                    invocation_inputs: Default::default(),
                     owner,
                     parameters,
                     generics,

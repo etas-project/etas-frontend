@@ -76,6 +76,14 @@ fn branch_conflict(
 }
 
 fn effect_conflict(left: &Effect, right: &Effect, registry: &EffectRegistry) -> EffectConflict {
+    let managed = |effect: &Effect| match effect {
+        Effect::Action(action) => registry.is_managed_agent_action(action),
+        Effect::AppliedAction(instance) => registry.is_managed_agent_action(&instance.action),
+        _ => false,
+    };
+    if managed(left) || managed(right) {
+        return EffectConflict::Disjoint;
+    }
     match (left, right) {
         (Effect::Action(left), Effect::Action(right)) => {
             action_conflict(left, None, right, None, registry)

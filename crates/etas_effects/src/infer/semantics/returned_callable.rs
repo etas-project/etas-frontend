@@ -4,6 +4,16 @@ use super::specialize::{EffectSpecializationError, TraceArgumentBindings};
 use super::{engine::EffectSemantics, shared::*};
 
 impl EffectSemantics<'_> {
+    pub(super) fn pending_source_return(&self, unit: EffectUnit) -> bool {
+        self.trace_equations.contains(unit)
+            && matches!(
+                unit.analysis_body_with_context(&self.context),
+                etas_hir_analysis::interprocedural::HirAnalysisBody::Block(_)
+                    | etas_hir_analysis::interprocedural::HirAnalysisBody::Expr(_)
+                    | etas_hir_analysis::interprocedural::HirAnalysisBody::HandlerArm(_)
+            )
+    }
+
     pub(crate) fn returned_callable_bindings(
         &self,
         returned: &BTreeSet<crate::CallableReturnSource>,
@@ -234,6 +244,25 @@ impl EffectSemantics<'_> {
             return Ok(false);
         }
         let Some(exits) = &summary.exits else {
+            if self.pending_source_return(callee) {
+                // This source producer is an equation in the active component.
+                // Before its first transfer its returned payload is bottom,
+                // not an opaque unknown. The solver revisits all dependent
+                // callers when concrete return alternatives become available.
+                let ty = self.types.facts.expr_types[&site.call];
+                let paths = self
+                    .value_payload_paths(ty)
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                for path in paths {
+                    state
+                        .local_latent_values
+                        .value_projections
+                        .entry((site.call, path))
+                        .or_default();
+                }
+                self.record_callable_result_sources(site.call, Vec::new(), state)?;
+                return Ok(true);
+            }
             return Ok(false);
         };
         let parameters = exits.callable_return_sources();
@@ -251,35 +280,29 @@ impl EffectSemantics<'_> {
             .map(|id| self.native_environment_bindings(id))
             .transpose()?
             .unwrap_or_default();
-        bindings.extend(self.call_trace_bindings(site, &targets)?);
+        bindings.extend(self.call_trace_bindings(site, &targets, state)?);
         let mut paths = exits
             .value_projections
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
-        if let Some(ty) = self.types.facts.expr_types.get(&site.call)
-            && let Some(actual_paths) = self.value_payload_paths(*ty)
-        {
-            paths.extend(actual_paths);
-        }
+        let actual_paths = self
+            .types
+            .facts
+            .expr_types
+            .get(&site.call)
+            .and_then(|ty| self.value_payload_paths(*ty));
+        paths.extend(actual_paths.iter().flatten().cloned());
         for path in paths {
-            let selected = exits
-                .value_projections
-                .iter()
-                .filter(|(prefix, _)| path.starts_with(prefix))
-                .max_by_key(|(prefix, _)| prefix.len());
-            let found = match selected {
-                Some((prefix, crate::ProjectedReturnSources::Known(returned))) => self
-                    .projected_return_bindings(
-                        returned,
-                        &path[prefix.len()..],
-                        &bindings,
-                        state,
-                        site.call,
-                        environment,
-                    ),
-                Some((_, crate::ProjectedReturnSources::Unavailable)) => None,
-                None => parameters.as_ref().and_then(|returned| {
+            let selected = super::return_projection::returned_positions(
+                exits
+                    .value_projections
+                    .iter()
+                    .map(|(path, sources)| (path.as_slice(), sources)),
+                &path,
+            );
+            let found = if selected.is_empty() {
+                parameters.as_ref().and_then(|returned| {
                     self.projected_return_bindings(
                         returned,
                         &path,
@@ -288,19 +311,42 @@ impl EffectSemantics<'_> {
                         site.call,
                         environment,
                     )
-                }),
+                })
+            } else {
+                selected
+                    .into_iter()
+                    .try_fold(BTreeSet::new(), |mut all, (sources, suffix)| {
+                        let crate::ProjectedReturnSources::Known(sources) = sources else {
+                            return None;
+                        };
+                        all.extend(self.projected_return_bindings(
+                            sources,
+                            &suffix,
+                            &bindings,
+                            state,
+                            site.call,
+                            environment,
+                        )?);
+                        Some(all)
+                    })
             };
             let sources = found
                 .unwrap_or_else(|| [LatentSource::Unavailable { expr: site.call }].into())
                 .into_iter()
                 .collect::<Vec<_>>();
             let key = (site.call, path.clone());
-            state
+            let position = state
                 .local_latent_values
                 .value_projections
                 .entry(key.clone())
-                .or_default()
-                .extend(sources.iter().copied());
+                .or_default();
+            if !sources
+                .iter()
+                .any(|source| matches!(source, LatentSource::Unavailable { .. }))
+            {
+                position.retain(|source| !matches!(source, LatentSource::Unavailable { expr } if *expr == site.call));
+            }
+            position.extend(sources.iter().copied());
             if !sources
                 .iter()
                 .any(|source| matches!(source, LatentSource::Unavailable { .. }))
@@ -333,9 +379,87 @@ impl EffectSemantics<'_> {
             )?;
             self.record_callable_result_sources(site.call, sources, state)?;
             Ok(true)
+        } else if let Some(paths) = actual_paths.filter(|paths| !paths.is_empty()) {
+            // A record may have complete checked leaf origins even when its
+            // aggregate return observation was not available in the template.
+            let complete = paths.iter().try_fold(BTreeSet::new(), |mut all, path| {
+                let sources = state
+                    .local_latent_values
+                    .value_projections
+                    .get(&(site.call, path.clone()))?;
+                if sources
+                    .iter()
+                    .any(|source| matches!(source, LatentSource::Unavailable { .. }))
+                {
+                    return None;
+                }
+                all.extend(sources.iter().copied());
+                Some(all)
+            });
+            if let Some(sources) = complete {
+                self.record_callable_result_sources(
+                    site.call,
+                    sources.into_iter().collect(),
+                    state,
+                )?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         } else {
             Ok(false)
         }
+    }
+
+    pub(super) fn checked_value_sources(&self, expr: HirExprId) -> Option<&BTreeSet<LatentSource>> {
+        self.call_results.value_sources(expr).filter(|sources| {
+            !sources
+                .iter()
+                .any(|source| matches!(source, LatentSource::Unavailable { .. }))
+        })
+    }
+
+    /// Read origins are collected from every control-flow state in a fresh
+    /// solver round. They resolve deferred captures only when all states have
+    /// checked origins; a known alternative never erases an unknown branch.
+    pub(super) fn record_checked_read_sources(
+        &mut self,
+        expr: HirExprId,
+        state: &EffectState,
+    ) -> Result<(), EffectSpecializationError> {
+        if !matches!(
+            self.hir.exprs.get(expr),
+            Some(
+                etas_hir::HirExpr::Path(_)
+                    | etas_hir::HirExpr::Field { .. }
+                    | etas_hir::HirExpr::Index { .. }
+            )
+        ) || (!self.expr_type_contains_flow(expr) && !self.expr_type_has_parameters(expr))
+        {
+            return Ok(());
+        }
+        let sources = self
+            .latent_sources_for_expr(state, expr)
+            .unwrap_or_else(|| vec![LatentSource::Unavailable { expr }]);
+        if let Some(unit) = state.unit {
+            self.checked_read_expressions
+                .entry(unit)
+                .or_default()
+                .insert(expr);
+        }
+        let mut reads = self.discovered_call_results.borrow_mut();
+        let previous = reads.values.get(&expr).cloned().unwrap_or_default();
+        let current = reads.values.entry(expr).or_default();
+        current.extend(sources);
+        self.close_origin_set(&previous, current);
+        if reads.values.len() + reads.values.values().map(BTreeSet::len).sum::<usize>()
+            > etas_package_metadata::MAX_METADATA_GRAPH_NODES
+        {
+            return Err(EffectSpecializationError::InvalidCallableEnvironment {
+                reason: "checked read-source graph exceeds the analysis node budget".into(),
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn record_callable_result_sources(
@@ -344,11 +468,10 @@ impl EffectSemantics<'_> {
         sources: Vec<LatentSource>,
         state: &mut EffectState,
     ) -> Result<(), EffectSpecializationError> {
-        if !sources.is_empty()
-            && !sources
-                .iter()
-                .any(|source| matches!(source, LatentSource::Unavailable { .. }))
-        {
+        let complete = !sources
+            .iter()
+            .any(|source| matches!(source, LatentSource::Unavailable { .. }));
+        if complete {
             let mut results = self.discovered_call_results.borrow_mut();
             results.record_value_sources(call, sources.iter().copied());
             if results.values.len() + results.values.values().map(BTreeSet::len).sum::<usize>()
@@ -358,6 +481,11 @@ impl EffectSemantics<'_> {
                     reason: "callable return-source graph exceeds the analysis node budget".into(),
                 });
             }
+        }
+        if complete && let Some(previous) = state.local_latent_values.values.get_mut(&call) {
+            previous.retain(
+                |source| !matches!(source, LatentSource::Unavailable { expr } if *expr == call),
+            );
         }
         state
             .local_latent_values

@@ -13,6 +13,18 @@ pub(super) struct MethodInstantiation {
     pub owner_bindings: std::collections::HashMap<etas_types::TypeId, etas_types::TypeId>,
 }
 
+fn contract_completion(summary: &mut crate::EffectSummary, output: etas_types::TypeId) {
+    let mut exits = crate::CallableExitSummary::default();
+    exits.record(
+        crate::CallableOutcome::Returned {
+            ty: output,
+            observation: crate::ReturnObservation::Any,
+        },
+        summary.action_trace.clone(),
+    );
+    summary.exits = Some(exits);
+}
+
 fn deferred_completion(
     summary: &mut crate::EffectSummary,
     target: crate::ParameterCallTarget,

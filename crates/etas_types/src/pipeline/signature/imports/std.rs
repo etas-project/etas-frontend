@@ -246,6 +246,44 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    for name in [
+        "Store",
+        "MemoryRegion",
+        "MemorySelection",
+        "MemoryPlace",
+        "MemoryTransaction",
+    ] {
+        if let Some(symbol) = registry.lookup_qualified(&["std", "memory", name])
+            && registry.declaration_key(symbol.id).is_some()
+            && let Some(ty) = lower_std_type_symbol(ctx, registry, symbol)
+        {
+            ctx.signature_facts
+                .known_std_types
+                .storage_resources
+                .insert(ty);
+        }
+    }
+    for (name, wrapper) in [
+        ("Trusted", crate::TrustWrapper::Trusted),
+        ("Untrusted", crate::TrustWrapper::Untrusted),
+        ("Public", crate::TrustWrapper::Public),
+        ("Sanitized", crate::TrustWrapper::Sanitized),
+        ("Secret", crate::TrustWrapper::Secret),
+    ] {
+        if let Some(symbol) = registry.lookup_qualified(&["std", "security", "trust", name])
+            && registry.declaration_key(symbol.id).is_some()
+            && let Some(ty) = lower_std_type_symbol(ctx, registry, symbol)
+        {
+            ctx.signature_facts
+                .known_std_types
+                .trust_wrappers
+                .insert(ty, wrapper);
+        }
+    }
+    ctx.signature_facts.known_std_types.source_slice = registry
+        .lookup_qualified(&["std", "collections", "Slice"])
+        .filter(|symbol| registry.declaration_key(symbol.id).is_some())
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.source_iterator = registry
         .lookup_qualified(&["std", "collections", "Iter"])
         .filter(|symbol| {

@@ -318,22 +318,30 @@ fn static_type_selector<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
 ) -> Option<TypeId> {
-    match ctx.ctx.hir.types.get(ty)?.clone() {
+    let selected = match ctx.ctx.hir.types.get(ty)?.clone() {
         HirType::Path { path, args, .. } => {
             if let Some(method) = crate::lower::type_ref::agent_context_ref(ctx.ctx, &path)
                 && args.is_empty()
             {
-                return Some(ctx.ctx.interner.intern(Type::AgentContext(method)));
-            }
-            let declaration = type_arg_from_path(ctx, &path)?;
-            if args.is_empty() {
-                Some(declaration)
+                Some(ctx.ctx.interner.intern(Type::AgentContext(method)))
             } else {
-                crate::lower::type_ref::lower_type_ref(ctx.ctx, ty)
+                let declaration = type_arg_from_path(ctx, &path)?;
+                if args.is_empty() {
+                    Some(declaration)
+                } else {
+                    crate::lower::type_ref::lower_type_ref(ctx.ctx, ty)
+                }
             }
         }
         _ => crate::lower::type_ref::lower_type_ref(ctx.ctx, ty),
+    };
+    if let Some(selected) = selected {
+        ctx.state
+            .provisional
+            .selector_type_refs
+            .insert(ty, selected);
     }
+    selected
 }
 
 fn static_path_selector<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: etas_hir::HirTypeId) -> bool {
@@ -464,9 +472,15 @@ fn type_arg_from_path<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<TypeId> {
-    let symbol = resolved_static_type_selector_symbol(path, |symbol| {
-        ctx.ctx.symbols.canonical_symbol(ctx.ctx.hir, symbol)
-    })?;
+    let symbol = ctx
+        .ctx
+        .symbols
+        .resolved_type_symbol(ctx.ctx.hir, path)
+        .or_else(|| {
+            resolved_static_type_selector_symbol(path, |symbol| {
+                ctx.ctx.symbols.canonical_symbol(ctx.ctx.hir, symbol)
+            })
+        })?;
     if let Some(bound) = ctx.ctx.bound_type_parameter(symbol) {
         return Some(bound);
     }

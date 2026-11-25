@@ -595,7 +595,10 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
                     etas_std::StdExecutionRole::Abort | etas_std::StdExecutionRole::CaptureData => {
                         assert!(suspension.proven_non_suspending())
                     }
-                    etas_std::StdExecutionRole::StorageContext
+                    etas_std::StdExecutionRole::CaptureStorage
+                    | etas_std::StdExecutionRole::RestoreStorage
+                    | etas_std::StdExecutionRole::StorageSchema
+                    | etas_std::StdExecutionRole::StorageContext
                     | etas_std::StdExecutionRole::StorageNonce
                     | etas_std::StdExecutionRole::StreamClock
                     | etas_std::StdExecutionRole::TaskStart
@@ -607,7 +610,10 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
                     | etas_std::StdExecutionRole::CurrentSession
                     | etas_std::StdExecutionRole::MessageContextCapture
                     | etas_std::StdExecutionRole::MessageContextRecord
-                    | etas_std::StdExecutionRole::PayloadConvert => {
+                    | etas_std::StdExecutionRole::PayloadConvert
+                    | etas_std::StdExecutionRole::ComparatorCapture
+                    | etas_std::StdExecutionRole::ComparatorSame
+                    | etas_std::StdExecutionRole::ReadScopeEnter => {
                         assert!(suspension.proven_non_suspending());
                     }
                     etas_std::StdExecutionRole::Checkpoint => {
@@ -814,28 +820,19 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
         panic!("source region");
     };
     assert_eq!(checked.types.spec_signatures[&region].name, "Region");
-    // Its installed query is derived from the ordinary source declaration.
-    assert!(
-        checked
-            .std_registry
-            .lookup_qualified(&["std", "fs", "IOError"])
-            .is_some_and(|symbol| matches!(&symbol.decl,
-                etas_std::StdDecl::Type(declaration) if declaration.runtime_role.is_none()))
-    );
+    // All three public module paths denote the single source enum.
     let error = checked.types.known_std_types.filesystem_io_error.unwrap();
     assert!(
-        matches!(checked.type_store.get(error), Some(etas_types::Type::Nominal(nominal))
-        if nominal.name == "std.fs.IOError" && nominal.representation.is_some())
+        matches!(checked.type_store.get(error), Some(etas_types::Type::Enum(owner))
+        if owner.name == "std.io.IOError")
     );
-    let Some(etas_types::Type::Nominal(declaration)) = checked.type_store.get(error) else {
-        unreachable!()
-    };
-    assert!(matches!(
-        checked.type_store.get(declaration.representation.unwrap()),
-        Some(etas_types::Type::Primitive(
-            etas_types::PrimitiveType::String
-        ))
-    ));
+    let variants = &checked.types.enum_layouts[&error].variants;
+    assert!(variants.iter().any(|variant| variant.name == "NotFound"));
+    assert!(
+        variants
+            .iter()
+            .any(|variant| variant.name == "LimitExceeded")
+    );
     let limit = checked.types.known_std_types.file_read_limit_error.unwrap();
     let variants = &checked.types.enum_layouts[&limit].variants;
     assert!(variants.iter().any(|variant| variant.name == "SdkOnly"));

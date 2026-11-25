@@ -71,6 +71,7 @@ impl EffectSemantics<'_> {
                         .and_then(|binding| match binding {
                             TraceArgumentBinding::Expression(expr) => self.hir.exprs.get(*expr),
                             TraceArgumentBinding::Origins(_)
+                            | TraceArgumentBinding::InputData { .. }
                             | TraceArgumentBinding::ProjectedExpression { .. }
                             | TraceArgumentBinding::ProjectedOrigins { .. }
                             | TraceArgumentBinding::AgentTools(_) => None,

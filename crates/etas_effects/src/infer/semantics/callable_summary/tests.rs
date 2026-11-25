@@ -27,6 +27,7 @@ flow base() -> unit ![Console.stdout_write] { perform Console.stdout_write("base
     let std_registry = etas_std::standard_registry();
     let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
     let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+        external_defaults: &[],
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
@@ -86,6 +87,9 @@ fn id(position: usize) -> CallableEnvironmentId {
     let key =
         etas_code::CodeFingerprint::of_bytes("test.callable-summary", &position.to_le_bytes());
     CallableEnvironmentId {
+        generic_context: None,
+        instance: None,
+        scope: None,
         origin: key,
         application: key,
     }
@@ -102,6 +106,8 @@ fn insert(
         .record_callable_environment(
             id(position),
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: unit.owner().unwrap(),
                 parameters: [(ParameterCallTarget::Native(parameter), origins)].into(),
                 generics: BTreeMap::new(),
@@ -137,11 +143,16 @@ fn a_recursive_capture_component_converges_and_retains_its_grounded_actions() {
         assert!(summary.requested_actions.effects.contains(&stdout));
         assert!(summary.action_trace.action_set().contains(&stdout));
         let mut pending = vec![&summary.action_trace];
-        let mut widened = false;
+        let mut recursive = false;
         while let Some(trace) = pending.pop() {
             match trace {
+                ActionTraceDomain::Shared(body) => pending.push(&body.body),
                 ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => {
-                    widened = true
+                    panic!("recursive trace lost its order")
+                }
+                ActionTraceDomain::Recursive { body, .. } => {
+                    recursive = true;
+                    pending.extend(body.iter().map(Box::as_ref));
                 }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     pending.extend(parts)
@@ -151,8 +162,8 @@ fn a_recursive_capture_component_converges_and_retains_its_grounded_actions() {
             }
         }
         assert!(
-            widened,
-            "the recursive component must retain its widened footprint"
+            recursive,
+            "the recursive component must retain its ordered equation"
         );
         assert_eq!(
             semantics
@@ -221,6 +232,8 @@ fn a_symbolic_descriptor_does_not_satisfy_an_unbound_invocation() {
             .record_callable_environment(
                 id(0),
                 CallableEnvironment {
+                    invocation_origin: None,
+                    invocation_inputs: Default::default(),
                     owner: unit.owner().unwrap(),
                     parameters: BTreeMap::new(),
                     generics: BTreeMap::new(),
@@ -238,6 +251,7 @@ fn a_symbolic_descriptor_does_not_satisfy_an_unbound_invocation() {
         let mut found = false;
         while let Some(trace) = pending.pop() {
             match trace {
+                ActionTraceDomain::Shared(body) => pending.push(&body.body),
                 ActionTraceDomain::ParameterCall { target, .. } => {
                     found |= *target == ParameterCallTarget::Native(parameter)
                 }
@@ -298,5 +312,36 @@ fn cancellation_during_callable_solving_does_not_publish_provisional_summaries()
         ));
         assert!(semantics.callable_summaries.borrow().summaries.is_empty());
         assert!(semantics.callable_summaries.borrow().interruption.is_some());
+    });
+}
+
+#[test]
+fn repeated_invocation_reuses_the_callable_creation_identity() {
+    with_semantics(None, |semantics, unit, base, _, _| {
+        let call = semantics
+            .hir
+            .exprs
+            .iter()
+            .find_map(|(id, expr)| matches!(expr, etas_hir::HirExpr::Call { .. }).then_some(id))
+            .unwrap();
+        let inputs = semantics
+            .intern_call_inputs(crate::facts::NativeCallInputs {
+                call,
+                scope: Some(unit),
+                context: None,
+                joined: false,
+                arguments: vec![],
+            })
+            .unwrap();
+        let state = crate::infer::semantics::state::EffectState::for_unit(unit);
+        let first = semantics
+            .applied_callable_origins(&[LatentSource::Unit(base)].into(), inputs, &state)
+            .unwrap();
+        let count = semantics.callable_environments.borrow().len();
+        let again = semantics
+            .applied_callable_origins(&first, inputs, &state)
+            .unwrap();
+        assert_eq!(again, first);
+        assert_eq!(semantics.callable_environments.borrow().len(), count);
     });
 }

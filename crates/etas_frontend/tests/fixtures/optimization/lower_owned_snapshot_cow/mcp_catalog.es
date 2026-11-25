@@ -10,7 +10,7 @@ flow append_audit(log: string, event: string) -> string {
 
 flow build_audit(name: string) -> string {
     var audit = "";
-    for stage in ["load", "snapshot", "isolate", "publish", "retain"] limit Iterations(5) {
+    for stage in ["load", "snapshot", "isolate", "publish", "retain"] {
         audit = append_audit(audit, name + ":" + stage);
     }
     return audit;

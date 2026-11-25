@@ -470,7 +470,7 @@ impl ProjectEnvironmentInput {
     }
 
     fn environment_fingerprint_for(&self, selected: Option<ExternalPackageId>) -> String {
-        let mut parts = vec!["frontend_project_environment:v10".to_owned()];
+        let mut parts = vec!["frontend_project_environment:v11".to_owned()];
         let mut stable_sources = self
             .stable_source_keys
             .iter()
@@ -568,6 +568,16 @@ impl ProjectEnvironmentInput {
         public_metadata.sort_by_key(|entry| entry.package);
         for metadata in public_metadata {
             parts.push(format!("public-package:{}", metadata.package.0));
+            let mut constructors = metadata.constructor_contracts.iter().collect::<Vec<_>>();
+            constructors.sort_by(|left, right| left.path.cmp(&right.path));
+            for contract in constructors {
+                parts.push(format!("constructor:{contract:?}"));
+            }
+            let mut callbacks = metadata.scoped_callbacks.iter().collect::<Vec<_>>();
+            callbacks.sort_by(|left, right| left.target.cmp(&right.target));
+            for contract in callbacks {
+                parts.push(format!("scoped-callback:{contract:?}"));
+            }
             for signature in &metadata.types {
                 parts.push(format!(
                     "type:{}",
@@ -813,6 +823,8 @@ pub struct ProjectExternalModuleInput {
 )]
 pub struct ProjectExternalPublicMetadataInput {
     #[serde(default)]
+    pub constructor_contracts: Vec<etas_package_metadata::ConstructorContract>,
+    #[serde(default)]
     pub scoped_callbacks: Vec<etas_package_metadata::ScopedCallbackContract>,
     pub package: ExternalPackageId,
     pub types: Vec<ProjectExternalNamedSignatureInput>,
@@ -835,6 +847,46 @@ pub struct ProjectExternalPublicMetadataInput {
     pub action_summaries: Vec<ProjectExternalActionSummaryInput>,
     pub trace_spec_summaries: Vec<ProjectExternalTraceSpecSummaryInput>,
     pub re_exports: Vec<ProjectExternalReExportInput>,
+}
+
+impl ProjectExternalPublicMetadataInput {
+    pub(crate) fn parameter_defaults(
+        &self,
+    ) -> impl Iterator<Item = &etas_package_metadata::ParameterDefault> {
+        self.flows
+            .iter()
+            .flat_map(|signature| &signature.parameter_defaults)
+            .chain(
+                self.agents
+                    .iter()
+                    .flat_map(|signature| &signature.parameter_defaults),
+            )
+            .chain(
+                self.tools
+                    .iter()
+                    .flat_map(|signature| &signature.parameter_defaults),
+            )
+            .chain(
+                self.actions
+                    .iter()
+                    .flat_map(|signature| &signature.parameter_defaults),
+            )
+            .chain(
+                self.methods
+                    .iter()
+                    .flat_map(|method| &method.parameter_defaults),
+            )
+            .chain(self.spec_signatures.iter().flat_map(|spec| {
+                spec.callable
+                    .iter()
+                    .chain(
+                        spec.methods
+                            .iter()
+                            .filter_map(|method| method.signature.as_ref()),
+                    )
+                    .flat_map(|signature| &signature.parameter_defaults)
+            }))
+    }
 }
 
 #[derive(
@@ -1173,6 +1225,8 @@ pub struct ProjectExternalRecordFieldInput {
 )]
 pub struct ProjectExternalEffectSummaryInput {
     #[serde(default)]
+    pub callable_body: Option<etas_package_metadata::CallableValueGraph>,
+    #[serde(default)]
     pub definition: Option<etas_code::DefinitionKey>,
     pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
@@ -1265,6 +1319,10 @@ pub enum ProjectExternalActionTraceInput {
     Seq(Vec<ProjectExternalActionTraceInput>),
     Choice(Vec<ProjectExternalActionTraceInput>),
     Repeat(Box<ProjectExternalActionTraceInput>),
+    Recursive {
+        id: etas_code::CodeFingerprint,
+        body: Option<Box<ProjectExternalActionTraceInput>>,
+    },
     UnknownOrder(Vec<ProjectExternalEffectRefInput>),
     Widened {
         actions: Vec<ProjectExternalEffectRefInput>,
@@ -1629,7 +1687,27 @@ impl CheckedProgramData {
     /// existential witnesses. An open spec invocation retains its candidate
     /// implementations until generic invocation preparation selects a witness.
     pub fn referenced_standard_methods(&self) -> std::collections::BTreeSet<etas_code::MethodId> {
-        self.types.referenced_external_methods()
+        let mut methods = self.types.referenced_external_methods();
+        methods.extend(self.types.value_equality_dependencies(&self.type_store));
+        // The model-step ABI reconstructs provider data through the checked
+        // source Map adapter, including when infer supplies the step implicitly.
+        if self
+            .types
+            .model_step_provider_map(&self.type_store)
+            .is_some()
+        {
+            methods.extend(
+                self.types
+                    .storage_methods()
+                    .filter_map(|(method, identity)| {
+                        let owner = identity.implementation().subject();
+                        (method.name == etas_std::SOURCE_STORAGE_BUILD
+                            && owner.declaration().last().is_some_and(|name| name == "Map"))
+                        .then(|| identity.clone())
+                    }),
+            );
+        }
+        methods
     }
 
     /// Source references, including function values, without unused prelude

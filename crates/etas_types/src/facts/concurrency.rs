@@ -8,6 +8,9 @@ use crate::{EffectRowRef, TypeId};
 pub struct ScopedCallbackFact {
     pub parameters: Vec<u32>,
     pub parameter_names: Vec<String>,
+    /// Callback results crossing a fresh resource owner, not just a task join.
+    #[serde(default)]
+    pub resource_boundaries: Vec<u32>,
 }
 
 #[derive(

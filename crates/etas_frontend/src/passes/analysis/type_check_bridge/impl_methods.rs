@@ -54,6 +54,7 @@ pub(super) fn signature(
     };
     Ok(etas_types::ExternalMethodInput {
         identity: method.identity.clone(),
+        internal: method.internal,
         self_type: package_type_input(&method.self_type).map_err(invalid)?,
         receiver: match method.receiver {
             etas_package_metadata::MethodReceiver::Value { slot } => {

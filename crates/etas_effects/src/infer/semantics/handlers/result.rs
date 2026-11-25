@@ -5,7 +5,9 @@ use etas_hir::HirItemId;
 use super::*;
 use crate::ActionTraceDomain;
 use crate::facts::CallableValueOrigin;
-use crate::infer::semantics::specialize::EffectSpecializationError;
+use crate::infer::semantics::specialize::{
+    EffectSpecializationError, TraceArgumentBinding, TraceArgumentBindings,
+};
 
 struct CheckedHandlerArm<'a> {
     fact: &'a HandlerArmFact,
@@ -72,6 +74,187 @@ impl EffectSemantics<'_> {
             });
         }
         Ok(Some(result))
+    }
+
+    pub(in crate::infer::semantics) fn record_resumed_request_sources(
+        &self,
+        request: HirExprId,
+        effect: &crate::Effect,
+        args: &[etas_hir::HirArg],
+        state: &mut EffectState,
+    ) -> Result<(), EffectSpecializationError> {
+        if !self.expr_type_contains_flow(request) && !self.expr_type_has_parameters(request) {
+            return Ok(());
+        }
+        let Some(owner) = state.owner else {
+            return Ok(());
+        };
+        if self.resume_selectors_need_bindings(effect, owner)? {
+            return Ok(());
+        }
+        let (_, Some(handlers)) = super::super::argument_values::enclosing_handlers(
+            self.hir,
+            request,
+            self.query_control,
+        )
+        .map_err(EffectSpecializationError::Interrupted)?
+        else {
+            return Ok(());
+        };
+        let coverage = EffectCoverage {
+            registry: self.registry,
+            types: &self.types.store,
+        };
+        let mut sources = BTreeSet::new();
+        for handler in handlers {
+            let span = self.hir.exprs[handler].span(&self.hir.blocks);
+            let Some(rows) = self.checked_handler_rows(handler, span) else {
+                return Ok(());
+            };
+            if rows.handled.open.is_none()
+                && !rows
+                    .handled
+                    .effects
+                    .iter()
+                    .any(|handled| coverage.covers(handled, effect))
+            {
+                continue;
+            }
+            let Some((literal, _)) = self
+                .immutable_handler_value(handler)
+                .map_err(EffectSpecializationError::Interrupted)?
+            else {
+                return Ok(());
+            };
+            if self.handler_captures_mutable_binding(literal)? {
+                return Ok(());
+            }
+            let Some(owner) = self.hir.index().expr_item.get(&literal).copied() else {
+                return Ok(());
+            };
+            let Some(arms) = self.checked_handler_arms(literal, Some(owner))? else {
+                return Ok(());
+            };
+            for arm in arms {
+                if self.resume_selectors_need_bindings(arm.action, owner)? {
+                    // Substitution could make an earlier arm match this request.
+                    return Ok(());
+                }
+                if !coverage.covers(arm.action, effect) {
+                    continue;
+                }
+                let Some(exits) = self
+                    .inputs
+                    .unit_effects
+                    .get(&arm.fact.unit)
+                    .and_then(|summary| summary.exits.as_ref())
+                else {
+                    return Ok(());
+                };
+                let Some(resumed) = exits.handler_resume_sources() else {
+                    return Ok(());
+                };
+                if !resumed.is_empty() {
+                    let EffectUnit::HandlerArm { arm, .. } = arm.fact.unit else {
+                        unreachable!()
+                    };
+                    let patterns = &self.hir.handler_arms[arm].patterns;
+                    let Some(bindings) = self.resume_payload_bindings(patterns, args) else {
+                        return Ok(());
+                    };
+                    sources.extend(
+                        self.returned_callable_bindings(&resumed, &bindings, state, request, None)?,
+                    );
+                }
+                if arm.unconditional {
+                    state
+                        .local_latent_values
+                        .record_value_sources(request, sources);
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn resume_selectors_need_bindings(
+        &self,
+        effect: &crate::Effect,
+        owner: HirItemId,
+    ) -> Result<bool, EffectSpecializationError> {
+        let crate::Effect::AppliedAction(action) = effect else {
+            return Ok(false);
+        };
+        let Some(parameters) = self.native_generic_interface(owner) else {
+            return Ok(true);
+        };
+        for argument in &action.args {
+            let etas_types::EffectArgRef::Type(ty) = argument else {
+                continue;
+            };
+            for (_, parameter) in &parameters {
+                if let Some(etas_types::Type::Named(named)) =
+                    self.types.store.get(parameter.subject)
+                    && let Some(symbol) = named.source_parameter
+                    && etas_types::type_contains_source_parameter(&self.types.store, *ty, symbol)?
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handler_captures_mutable_binding(
+        &self,
+        handler: HirExprId,
+    ) -> Result<bool, EffectSpecializationError> {
+        use etas_hir::{HirItem, HirReceiverMode, HirStmt, SymbolDef};
+        let captures = self.lambda_referenced_symbols(handler).map_err(|reason| {
+            EffectSpecializationError::InvalidCallableEnvironment {
+                reason: reason.into(),
+            }
+        })?;
+        Ok(captures.into_iter().any(|symbol| {
+            match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
+                Some(SymbolDef::Local { binding, .. }) => {
+                    matches!(self.hir.stmts.get(*binding), Some(HirStmt::Var { .. }))
+                }
+                Some(SymbolDef::Param { owner, .. }) => {
+                    matches!(self.hir.items.get(*owner), Some(HirItem::Flow(flow))
+                        if flow.receiver_mode == HirReceiverMode::Updating
+                            && flow.params.first() == Some(&symbol))
+                }
+                _ => false,
+            }
+        }))
+    }
+
+    fn resume_payload_bindings(
+        &self,
+        patterns: &[etas_hir::HirPatId],
+        args: &[etas_hir::HirArg],
+    ) -> Option<TraceArgumentBindings> {
+        if patterns.len() != args.len() {
+            return None;
+        }
+        let mut bindings = TraceArgumentBindings::new();
+        for (pattern, arg) in patterns.iter().zip(args) {
+            // Request parameter positions must be known before substituting a
+            // handler's payload parameters.
+            let etas_hir::HirArg::Positional(expr) = arg else {
+                return None;
+            };
+            for (symbol, path) in self.pattern_projection_bindings(*pattern).ok()? {
+                let argument = if path.is_empty() {
+                    TraceArgumentBinding::Expression(*expr)
+                } else {
+                    TraceArgumentBinding::ProjectedExpression { expr: *expr, path }
+                };
+                bindings.insert(crate::ParameterCallTarget::Native(symbol), argument);
+            }
+        }
+        Some(bindings)
     }
 
     pub(super) fn record_handle_result_sources(
@@ -320,6 +503,7 @@ mod tests {
         )
         .unwrap();
         let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+            external_defaults: &[],
             external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,

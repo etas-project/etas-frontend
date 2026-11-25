@@ -12,6 +12,14 @@ pub(super) fn target<E>(
     span: Span,
 ) -> Option<TypeId> {
     let ty = match fact {
+        SymbolTypeFact::Agent { signature } => {
+            let params = match ctx.ctx.interner.store().get(signature.component) {
+                Some(Type::Nominal(nominal)) => nominal.params.clone(),
+                _ => return None,
+            };
+            let arguments = type_arguments(ctx, &params, arguments, span)?;
+            apply(ctx, TypeConstructorId(signature.component.0), arguments)
+        }
         SymbolTypeFact::NominalType {
             constructor,
             params,

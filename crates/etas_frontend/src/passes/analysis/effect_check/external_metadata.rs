@@ -15,6 +15,9 @@ use crate::{
     ProjectExternalPublicMetadataInput, ProjectExternalTraceSpecClauseKindInput,
 };
 
+mod defaults;
+pub(super) use defaults::external_parameter_defaults;
+
 pub(super) fn external_implementations(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
@@ -547,7 +550,20 @@ fn external_effect_summary_metadata(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let graph = summary
+        .callable_body
+        .as_ref()
+        .or(summary.returned_callables.as_ref());
+    let body_root = summary
+        .callable_body
+        .as_ref()
+        .map(|graph| match graph.sources.as_slice() {
+            [etas_package_metadata::CallableValueSource::Value(root)] => Ok(*root),
+            _ => Err("external callable body does not own its root".to_owned()),
+        })
+        .transpose()?;
     Ok(etas_effects::ExternalEffectSummaryMetadata {
+        body_root,
         callable_contract,
         behavior: summary.behavior.clone(),
         handler_requests: summary.handler_requests.as_ref().map(|template| {
@@ -571,9 +587,7 @@ fn external_effect_summary_metadata(
                 })).collect::<Result<_, String>>()?,
             })
         }).transpose()?,
-        callable_graph_key: summary
-            .returned_callables
-            .as_ref()
+        callable_graph_key: graph
             .map(|graph| {
                 let graph_key = etas_package_metadata::callable_value_graph_fingerprint(graph)
                     .map_err(|error| error.to_string())?;
@@ -588,13 +602,11 @@ fn external_effect_summary_metadata(
                 ))
             })
             .transpose()?,
-        returned_callables: summary.returned_callables.clone(),
-        object_values: summary.returned_callables.as_ref()
+        returned_callables: graph.cloned(),
+        object_values: graph
             .map(|graph| crate::project::lower_callable_objects(graph, types))
             .transpose()?.unwrap_or_default(),
-        callable_values: summary
-            .returned_callables
-            .as_ref()
+        callable_values: graph
             .map(|graph| crate::project::lower_callable_graph(graph, types))
             .transpose()?
             .unwrap_or_default(),
@@ -706,6 +718,15 @@ fn external_action_trace(
                     .map(|child| external_action_trace(child, types))
                     .collect::<Result<Vec<_>, _>>()?,
             )
+        }
+        ProjectExternalActionTraceInput::Recursive { id, body } => {
+            etas_effects::ExternalActionTraceMetadata::Recursive {
+                id: *id,
+                body: body
+                    .as_ref()
+                    .map(|body| external_action_trace(body, types).map(Box::new))
+                    .transpose()?,
+            }
         }
         ProjectExternalActionTraceInput::Repeat(child) => {
             etas_effects::ExternalActionTraceMetadata::Repeat(Box::new(external_action_trace(

@@ -124,6 +124,22 @@ pub fn collect_stmt<E>(
             span,
         } => {
             let target_ty = collect_expr(ctx, target, None)?;
+            if let Some(etas_hir::HirExpr::Path(path)) = ctx.ctx.hir.exprs.get(target)
+                && let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
+                && let Some(etas_hir::HirItem::Flow(flow)) = ctx.ctx.hir.items.get(ctx.state.item)
+                && flow.receiver_mode != etas_hir::HirReceiverMode::None
+                && flow.params.first() == Some(&symbol)
+                && ctx
+                    .ctx
+                    .agent_signature(target_ty)
+                    .is_some_and(|agent| agent.state.is_some())
+            {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                    span,
+                    message: "an agent receiver cannot replace its instance identity".into(),
+                });
+            }
             ctx.validate(crate::ValidationRequest::WritablePlace { target, span });
             let value_ty = collect_expr(ctx, value, Some(target_ty))?;
             ctx.emit(TypeConstraint::Assignable {
@@ -137,13 +153,9 @@ pub fn collect_stmt<E>(
         HirStmt::For {
             pat,
             iter,
-            limits,
             body,
             span,
         } => {
-            for limit in limits {
-                collect_expr(ctx, limit, None)?;
-            }
             if ctx.ctx.hir.source_standard_types {
                 let element = ctx.fresh_type_var();
                 let cursor = ctx
@@ -229,15 +241,7 @@ pub fn collect_stmt<E>(
             collect_block(ctx, body, Some(unit))?;
             unit
         }
-        HirStmt::While {
-            cond,
-            limits,
-            body,
-            span,
-        } => {
-            for limit in limits {
-                collect_expr(ctx, limit, None)?;
-            }
+        HirStmt::While { cond, body, span } => {
             let bool_ty = ctx.primitive(PrimitiveType::Bool);
             let cond_ty = collect_expr(ctx, cond, Some(bool_ty))?;
             ctx.emit(TypeConstraint::Assignable {
@@ -247,12 +251,17 @@ pub fn collect_stmt<E>(
                 reason: AssignabilityReason::Other,
             });
             collect_block(ctx, body, Some(unit))?;
-            unit
-        }
-        HirStmt::Retry { limits, body, .. } => {
-            for limit in limits {
-                collect_expr(ctx, limit, None)?;
+            if matches!(
+                ctx.ctx.hir.exprs[cond],
+                etas_hir::HirExpr::Literal(etas_hir::HirLiteral::Bool { value: true, .. })
+            ) && !loop_has_break(ctx.ctx.hir, body)
+            {
+                ctx.primitive(PrimitiveType::Never)
+            } else {
+                unit
             }
+        }
+        HirStmt::Retry { body, .. } => {
             collect_block(ctx, body, Some(unit))?;
             unit
         }
@@ -318,4 +327,33 @@ pub fn collect_stmt<E>(
         }
     };
     Ok(ctx.record_stmt_type(stmt, ty))
+}
+
+fn loop_has_break(hir: &etas_hir::HirProgram, body: etas_hir::HirBlockId) -> bool {
+    use etas_hir::{HirExpr, HirTreeChild as Child};
+    let mut pending = vec![Child::Block(body)];
+    while let Some(child) = pending.pop() {
+        match child {
+            Child::Block(block) => {
+                let block = &hir.blocks[block];
+                pending.extend(block.stmts.iter().copied().map(Child::Stmt));
+                pending.extend(block.final_expr.map(Child::Expr));
+            }
+            Child::Stmt(stmt) => match hir.stmts[stmt] {
+                HirStmt::Break { .. } => return true,
+                HirStmt::For { .. } | HirStmt::While { .. } => {}
+                _ => etas_hir::for_each_stmt_child(hir, stmt, |child| pending.push(child)),
+            },
+            Child::Expr(expr) => {
+                if !matches!(
+                    hir.exprs[expr],
+                    HirExpr::Lambda { .. } | HirExpr::Handler { .. }
+                ) {
+                    etas_hir::for_each_expr_child(hir, expr, |child| pending.push(child));
+                }
+            }
+            Child::HandlerArm(_) | Child::Pattern(_) => {}
+        }
+    }
+    false
 }

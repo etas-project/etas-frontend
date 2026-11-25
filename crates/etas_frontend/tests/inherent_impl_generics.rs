@@ -106,3 +106,43 @@ flow main() -> i32 ![] {
         .unwrap();
     assert_eq!(get.owner_params[0].bounds.len(), 1);
 }
+
+#[test]
+fn inline_impl_bounds_share_the_complete_owner_parameter_scope() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app.main;
+spec Related<U>;
+spec Allowed;
+type Item = { value: i32 };
+impl Item ~ Related<string> + Allowed;
+type Pair<A, B> = { first: A, second: B };
+impl Pair<A ~ Related<B> + Allowed, B> {
+    public flow first(self) -> A ![] { return self.first; }
+}
+flow main() -> i32 ![] {
+    return Pair<Item, string> { first = Item { value = 7 }, second = "value" }.first().value;
+}
+"#,
+    )));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let method = checked
+        .types
+        .methods
+        .entries()
+        .find(|entry| entry.name == "first")
+        .unwrap();
+    assert_eq!(method.owner_params.len(), 2);
+    assert_eq!(
+        method
+            .owner_params
+            .iter()
+            .find(|parameter| parameter.name == "A")
+            .unwrap()
+            .bounds
+            .len(),
+        2
+    );
+    assert!(method.signature.generic_params.is_empty());
+}

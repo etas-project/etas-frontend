@@ -121,11 +121,6 @@ impl LowerCtx {
             } else {
                 iter
             };
-            let limits = stmt
-                .limits
-                .iter()
-                .map(|limit| self.lower_expr(limit, scope, item_id))
-                .collect();
             let body = self.hir.blocks.alloc(HirBlock {
                 id: HirBlockId(0),
                 stmts: Vec::new(),
@@ -148,7 +143,6 @@ impl LowerCtx {
             *self.hir.stmts.get_mut(id).unwrap() = HirStmt::For {
                 pat,
                 iter,
-                limits,
                 body,
                 span: stmt.span,
             };
@@ -176,20 +170,10 @@ impl LowerCtx {
             )),
             Stmt::While(stmt) => HirStmt::While {
                 cond: self.lower_expr(&stmt.condition, scope, item_id),
-                limits: stmt
-                    .limits
-                    .iter()
-                    .map(|limit| self.lower_expr(limit, scope, item_id))
-                    .collect(),
                 body: self.lower_block(&stmt.body, scope, item_id),
                 span: stmt.span,
             },
             Stmt::Retry(stmt) => HirStmt::Retry {
-                limits: stmt
-                    .limits
-                    .iter()
-                    .map(|limit| self.lower_expr(limit, scope, item_id))
-                    .collect(),
                 body: self.lower_block(&stmt.body, scope, item_id),
                 span: stmt.span,
             },

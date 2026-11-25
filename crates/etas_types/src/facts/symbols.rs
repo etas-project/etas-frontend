@@ -24,6 +24,9 @@ pub struct KnownStdTypes {
     pub result_enum: Option<TypeId>,
     pub option_enum: Option<TypeId>,
     pub source_iterator: Option<TypeId>,
+    pub source_slice: Option<TypeId>,
+    pub trust_wrappers: std::collections::BTreeMap<TypeId, crate::TrustWrapper>,
+    pub storage_resources: std::collections::BTreeSet<TypeId>,
     pub execution: KnownExecutionTypes,
     pub directory_list_limit_error: Option<TypeId>,
     pub file_read_limit_error: Option<TypeId>,
@@ -91,6 +94,20 @@ impl KnownExecutionTypes {
 }
 
 impl KnownStdTypes {
+    pub fn slice_element(&self, store: &crate::TypeStore, ty: TypeId) -> Option<TypeId> {
+        match store.get(ty)? {
+            crate::Type::Applied { constructor, args }
+                if self.source_slice == Some(TypeId(constructor.0)) =>
+            {
+                match args.as_slice() {
+                    [element] => Some(*element),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn runtime_value(&self, role: etas_std::StdValueRole) -> Option<TypeId> {
         self.runtime_values.get(&role).copied()
     }

@@ -9,6 +9,25 @@ impl LowerCtx {
         scope: ScopeId,
         item_id: HirItemId,
     ) -> HirTypeId {
+        self.lower_type_with_field_annotations(ty, scope, item_id, false)
+    }
+
+    pub(super) fn lower_stored_type(
+        &mut self,
+        ty: &TypeExpr,
+        scope: ScopeId,
+        item_id: HirItemId,
+    ) -> HirTypeId {
+        self.lower_type_with_field_annotations(ty, scope, item_id, true)
+    }
+
+    fn lower_type_with_field_annotations(
+        &mut self,
+        ty: &TypeExpr,
+        scope: ScopeId,
+        item_id: HirItemId,
+        stored_fields: bool,
+    ) -> HirTypeId {
         let hir_type = match ty {
             TypeExpr::Existential { bounds, span } => HirType::Existential {
                 bounds: bounds
@@ -69,6 +88,46 @@ impl LowerCtx {
                     .iter()
                     .enumerate()
                     .map(|(field_index, field)| {
+                        let mut injection = false;
+                        for annotation in &field.annotations {
+                            let is_inject = matches!(annotation.path.segments.as_slice(), [name] if name.text == "inject");
+                            let reason = if !stored_fields {
+                                Some("field annotations require a stored field of a named record type or agent")
+                            } else if !is_inject {
+                                Some("only `@inject` and `@inject(Action)` are supported on stored fields")
+                            } else if injection {
+                                Some("a stored field can have only one `@inject` annotation")
+                            } else if !matches!(annotation.args.as_slice(), [] | [ast::AnnotationArg::Positional(ast::Expr::Perform(_))]) {
+                                Some("`@inject` requires one action reference")
+                            } else { None };
+                            if let Some(reason) = reason {
+                                self.diagnostics.push(etas_core::Diagnostic::type_check(
+                                    etas_core::TypeDiagnosticCode::InvalidAnnotation,
+                                    annotation.span,
+                                    reason,
+                                ));
+                            }
+                            injection |= is_inject;
+                        }
+                        let mut annotations = self.lower_annotations(&field.annotations, scope, item_id);
+                        if stored_fields {
+                            for annotation in &mut annotations {
+                                if annotation.args.is_empty()
+                                    && matches!(annotation.path.segments.as_slice(), [name] if name.name == "inject")
+                                {
+                                    let span = annotation.span;
+                                    let (effect, action) = ast::EffectRef::typed_injection(field.ty.clone(), span);
+                                    let value = self.lower_expr(&ast::Expr::Perform(ast::PerformExpr {
+                                        effect,
+                                        action,
+                                        generic_args: Vec::new(),
+                                        args: Vec::new(),
+                                        span,
+                                    }), scope, item_id);
+                                    annotation.args.push(crate::HirAnnotationArg::Positional { value, span });
+                                }
+                            }
+                        }
                         let ty = self.lower_type(&field.ty, scope, item_id);
                         let symbol = self.alloc_symbol_with_def(SymbolData {
                             name: field.name.text.clone(),
@@ -88,6 +147,7 @@ impl LowerCtx {
                             definition_span: field.name.span,
                         });
                         HirFieldDecl {
+                            annotations,
                             symbol,
                             ty,
                             visibility: field.visibility.unwrap_or(ast::Visibility::Public),

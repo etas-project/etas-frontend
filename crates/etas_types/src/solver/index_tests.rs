@@ -13,6 +13,7 @@ fn index_shape_propagation_does_not_publish_checked_facts_or_accept_invalid_indi
     let specs = SpecFacts::default();
     let input = index::IndexAccessSolveInput {
         spec_facts: &specs,
+        known: &crate::KnownStdTypes::default(),
         expr: etas_hir::HirExprId(0),
         base,
         index,
@@ -50,6 +51,7 @@ fn index_shape_propagation_reuses_key_bindings_when_checking_the_result() {
         types.store(),
         &index::IndexAccessSolveInput {
             spec_facts: &specs,
+            known: &crate::KnownStdTypes::default(),
             expr: etas_hir::HirExprId(0),
             base,
             index,
@@ -78,6 +80,7 @@ fn index_shape_propagation_rejects_missing_primitive_facts() {
         types.store(),
         &index::IndexAccessSolveInput {
             spec_facts: &specs,
+            known: &crate::KnownStdTypes::default(),
             expr: etas_hir::HirExprId(0),
             base,
             index,
@@ -108,11 +111,13 @@ fn bytes_slice_returns_bytes_and_publishes_checked_sequence_fact() {
         types.store(),
         index::SliceAccessSolveInput {
             spec_facts: &SpecFacts::default(),
+            known: &crate::KnownStdTypes::default(),
             expr,
             base,
             start: bound,
             end: bound,
             output,
+            index_error: None,
             origin: ConstraintOrigin {
                 span: Span::new(SourceId(7), TextRange::default()),
             },

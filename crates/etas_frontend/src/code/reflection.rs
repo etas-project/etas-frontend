@@ -23,13 +23,13 @@ struct ReflectionSite {
 }
 
 pub(crate) enum ReflectionTargetError {
-    Invalid(&'static str),
+    Invalid(String),
     Interrupted(PipelineInterruption),
 }
 
 impl From<&'static str> for ReflectionTargetError {
     fn from(reason: &'static str) -> Self {
-        Self::Invalid(reason)
+        Self::Invalid(reason.to_owned())
     }
 }
 
@@ -103,13 +103,25 @@ impl CheckedReflectionTargets {
             for (index, parameter) in value.iter().enumerate() {
                 checkpoint(control)?;
                 let index = u32::try_from(index).map_err(|_| {
-                    ReflectionTargetError::Invalid("foreign parameter index is invalid")
+                    ReflectionTargetError::Invalid("foreign parameter index is invalid".into())
                 })?;
                 let identity =
                     etas_types::ty::CanonicalTypeParameterIdentity::new(owner.clone(), index)
-                        .map_err(ReflectionTargetError::Invalid)?;
+                        .map_err(|reason| ReflectionTargetError::Invalid(reason.to_owned()))?;
                 if store.parameter_identity(parameter.subject) != Some(&identity) {
-                    return Err("foreign parameter lacks its checked binder identity".into());
+                    return Err(ReflectionTargetError::Invalid(format!(
+                        "foreign parameter lacks its checked binder identity: declaration `{}`, parameter `{}` at position {index}, subject {:?}, expected {identity:?}, actual {:?}",
+                        owner
+                            .module()
+                            .iter()
+                            .chain(owner.declaration())
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join("."),
+                        parameter.name,
+                        parameter.subject,
+                        store.parameter_identity(parameter.subject),
+                    )));
                 }
             }
             if original
@@ -139,7 +151,7 @@ impl CheckedReflectionTargets {
             .validate(original, store, control)
             .map_err(|error| match error {
                 etas_types::facts::specs::RelocatedSpecValidationError::Invalid(reason) => {
-                    ReflectionTargetError::Invalid(reason)
+                    ReflectionTargetError::Invalid(reason.to_owned())
                 }
                 etas_types::facts::specs::RelocatedSpecValidationError::Interrupted(error) => {
                     ReflectionTargetError::Interrupted(error)

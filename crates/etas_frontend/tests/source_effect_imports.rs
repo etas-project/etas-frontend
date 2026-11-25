@@ -195,3 +195,40 @@ flow main() -> unit ![] {
     assert!(summary.default_actions.is_empty());
     assert_eq!(summary.requested_actions.effects.len(), 2);
 }
+
+#[test]
+fn qualified_reexported_enum_keeps_its_identity_in_effect_arguments() {
+    let mut project = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; public flow main(value: facade.Failure) -> unit ![Error<facade.Failure>] {
+            handle { () } with { Error<facade.Failure>.raise(error) => { finish (); } };
+            return;
+        }",
+    ));
+    project.options.entry_policy = EntryPolicy::Optional;
+    for (id, text) in [
+        (1, "module model; public enum Failure { Missing }"),
+        (2, "module facade; public import model.Failure;"),
+    ] {
+        let mut source = SourceInput::anonymous(text);
+        source.id = SourceId(id);
+        project.sources.push(source);
+    }
+    let output = Frontend.check_project(project);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let signature = checked
+        .types
+        .item_signatures
+        .values()
+        .find_map(|signature| match signature {
+            etas_types::ItemSignature::Flow(signature) if signature.params.len() == 1 => {
+                Some(signature)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(checked.type_store.get(signature.params[0]), Some(etas_types::Type::Enum(owner))
+        if owner.name == "model.Failure")
+    );
+}

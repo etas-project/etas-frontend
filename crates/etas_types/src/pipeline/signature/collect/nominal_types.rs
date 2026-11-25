@@ -29,12 +29,23 @@ pub fn collect_nominal_types(
                     ));
                     continue;
                 };
-                let component = ctx.interner.intern(Type::Nominal(NominalTypeRef {
-                    read_only_erased_view: false,
-                    name,
-                    params: Vec::new(),
-                    representation: None,
-                }));
+                let imported = ctx
+                    .external_type_paths
+                    .get(&name.split('.').map(str::to_owned).collect::<Vec<_>>())
+                    .copied()
+                    .filter(|ty| matches!(ctx.interner.store().get(*ty), Some(Type::Nominal(_))));
+                let component = imported.unwrap_or_else(|| {
+                    ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                        read_only_erased_view: false,
+                        name,
+                        params: decl
+                            .type_params
+                            .iter()
+                            .map(|symbol| ctx.hir.symbols.get(*symbol).unwrap().name.clone())
+                            .collect(),
+                        representation: None,
+                    }))
+                });
                 let definition_type = crate::lower::code::agent_definition_type(
                     &mut ctx.interner,
                     &ctx.signature_facts.known_std_types.code,
@@ -45,6 +56,7 @@ pub fn collect_nominal_types(
                     SymbolTypeFact::Agent {
                         signature: crate::AgentSignature {
                             component,
+                            state: None,
                             definition_type,
                             default_entry: None,
                         },
@@ -166,6 +178,19 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
         .collect::<Vec<_>>();
     for item in items {
         match item {
+            HirItem::Agent(decl) => {
+                let generics =
+                    super::callables::callable_generic_params(ctx, state, &decl.type_params);
+                let representation = decl.state.and_then(|state| lower_type_ref(ctx, state));
+                if let Some(SymbolTypeFact::Agent { signature }) =
+                    state.symbol_types.get_mut(&decl.symbol)
+                {
+                    signature.state = representation;
+                    ctx.signature_facts
+                        .type_generics
+                        .insert(signature.component, generics);
+                }
+            }
             HirItem::Type(decl) => {
                 let generics =
                     super::callables::callable_generic_params(ctx, state, &decl.type_params);

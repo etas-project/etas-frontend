@@ -25,6 +25,16 @@ fn invalid(reason: &str) -> EffectSpecializationError {
 fn node_count(snapshot: &CallableEnvironment) -> usize {
     1 + snapshot.generics.len()
         + snapshot
+            .invocation_inputs
+            .values()
+            .map(|parameters| {
+                1 + parameters
+                    .values()
+                    .map(|sources| 1 + sources.len())
+                    .sum::<usize>()
+            })
+            .sum::<usize>()
+        + snapshot
             .parameters
             .values()
             .map(|sources| 1 + sources.len())
@@ -32,6 +42,39 @@ fn node_count(snapshot: &CallableEnvironment) -> usize {
 }
 
 impl EffectSemantics<'_> {
+    pub(super) fn callable_invocation_context(id: CallableEnvironmentId) -> CodeFingerprint {
+        CodeFingerprint::of_parts(
+            "etas.effects.invocation-context.v1",
+            [
+                id.scope
+                    .as_ref()
+                    .map_or(&[][..], |scope| scope.as_bytes().as_slice()),
+                id.origin.as_bytes().as_slice(),
+                id.application.as_bytes().as_slice(),
+            ],
+        )
+    }
+
+    pub(super) fn callable_environment_scope(
+        &self,
+        owner: etas_hir::HirItemId,
+    ) -> Result<CodeFingerprint, EffectSpecializationError> {
+        let declaration = self
+            .hir
+            .items
+            .get(owner)
+            .ok_or_else(|| invalid("capture owner is missing"))?;
+        let path = declaration
+            .symbol()
+            .and_then(|symbol| self.hir.declaration_path(symbol));
+        let scope = serde_json::to_vec(&(path, declaration.span()))
+            .map_err(|_| invalid("capture scope has no checked identity"))?;
+        Ok(CodeFingerprint::of_bytes(
+            "etas.effects.capture-owner-scope.v1",
+            &scope,
+        ))
+    }
+
     pub(crate) fn callable_environment_site(
         &self,
         expr: HirExprId,
@@ -46,10 +89,17 @@ impl EffectSemantics<'_> {
         bytes.extend_from_slice(&span.source.0.to_le_bytes());
         bytes.extend_from_slice(&span.range.start.0.to_le_bytes());
         bytes.extend_from_slice(&span.range.end.0.to_le_bytes());
-        Ok(CodeFingerprint::of_bytes(
-            "etas.effects.callable-capture-site.v1",
-            &bytes,
-        ))
+        let site = CodeFingerprint::of_bytes("etas.effects.callable-capture-site.v1", &bytes);
+        self.capture_sites
+            .borrow_mut()
+            .entry(site)
+            .and_modify(|previous| {
+                if *previous != Some(expr) {
+                    *previous = None;
+                }
+            })
+            .or_insert(Some(expr));
+        Ok(site)
     }
 
     pub(crate) fn callable_environment(
@@ -73,7 +123,7 @@ impl EffectSemantics<'_> {
             for source in sources.iter().copied() {
                 if let LatentSource::Unavailable { expr } = source
                     && self.context.view().index().expr_item.get(&expr) == Some(&snapshot.owner)
-                    && let Some(known) = self.call_results.value_sources(expr)
+                    && let Some(known) = self.checked_value_sources(expr)
                 {
                     if nodes + resolved.len() + known.len()
                         > etas_package_metadata::MAX_METADATA_GRAPH_NODES
@@ -98,6 +148,65 @@ impl EffectSemantics<'_> {
         Ok(snapshot)
     }
 
+    /// One frame joins the contributions of its input equations. Re-evaluating
+    /// the same equation refines that contribution, preserving other callers.
+    pub(super) fn record_invocation_environment(
+        &self,
+        id: CallableEnvironmentId,
+        inputs: CodeFingerprint,
+        mut snapshot: CallableEnvironment,
+    ) -> Result<(), EffectSpecializationError> {
+        let previous = self.callable_environments.borrow().get(&id).cloned();
+        let mut contributions = previous
+            .as_ref()
+            .map(|previous| previous.invocation_inputs.clone())
+            .unwrap_or_default();
+        if let Some(previous) = contributions.get(&inputs) {
+            for (target, sources) in &mut snapshot.parameters {
+                if let Some(previous) = previous.get(target) {
+                    self.close_origin_set(previous, sources);
+                }
+            }
+        }
+        contributions.insert(inputs, std::mem::take(&mut snapshot.parameters));
+        for contribution in contributions.values() {
+            for (target, sources) in contribution {
+                snapshot
+                    .parameters
+                    .entry(*target)
+                    .or_default()
+                    .extend(sources);
+            }
+        }
+        if let Some(previous) = &previous {
+            let mut contracts = previous.clone();
+            // Restored frames retain their checked aggregate; fresh analysis
+            // frames have contributions that can be refined independently.
+            if !previous.invocation_inputs.is_empty() {
+                contracts.parameters.clear();
+            }
+            snapshot.join_assign(&contracts).map_err(invalid)?;
+        }
+        snapshot.invocation_inputs = contributions;
+        if previous.as_ref() == Some(&snapshot) {
+            return Ok(());
+        }
+        let nodes = self
+            .callable_environment_nodes
+            .get()
+            .saturating_sub(previous.as_ref().map_or(0, node_count))
+            .saturating_add(node_count(&snapshot));
+        if nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
+            return Err(invalid(
+                "callable environment graph exceeds the analysis node budget",
+            ));
+        }
+        Arc::make_mut(&mut self.callable_environments.borrow_mut()).insert(id, snapshot);
+        self.callable_environment_nodes.set(nodes);
+        self.callable_summaries.borrow_mut().invalidate();
+        Ok(())
+    }
+
     pub(crate) fn record_callable_environment(
         &self,
         id: CallableEnvironmentId,
@@ -113,15 +222,51 @@ impl EffectSemantics<'_> {
             // transfer has supplied its complete, scoped return-source evidence.
             for (parameter, sources) in &mut previous.parameters {
                 if let Some(current) = joined.parameters.get(parameter) {
+                    let refined_application = !current.is_empty()
+                        && current.iter().all(|source| {
+                            !matches!(
+                                source,
+                                LatentSource::Unavailable { .. }
+                                    | LatentSource::Parameter { .. }
+                                    | LatentSource::Projection(_)
+                            )
+                        })
+                        && self.concrete_application_base(
+                            *parameter,
+                            joined
+                                .parameters
+                                .iter()
+                                .map(|(target, sources)| (*target, sources)),
+                        );
+                    if refined_application {
+                        sources.retain(|source| {
+                            !matches!(
+                                source,
+                                LatentSource::Unavailable { .. }
+                                    | LatentSource::Parameter { .. }
+                                    | LatentSource::Projection(_)
+                            )
+                        });
+                    }
                     sources.retain(|source| match source {
-                        LatentSource::Unavailable { expr } => self.call_results.value_sources(*expr).is_none()
+                        LatentSource::Unavailable { expr } => self.checked_value_sources(*expr).is_none()
                             || current.is_empty()
                             || current.iter().any(|source| matches!(source, LatentSource::Unavailable { expr: missing } if missing == expr)),
                         _ => true,
                     });
                 }
             }
-            joined.join_assign(&previous).map_err(invalid)?;
+            joined.join_assign(&previous).map_err(|reason| {
+                invalid(&format!(
+                    "{reason}: environment {id:?}, existing owner {:?}, incoming owner {:?}",
+                    previous.owner, joined.owner
+                ))
+            })?;
+            for (parameter, sources) in &mut joined.parameters {
+                if let Some(previous) = previous.parameters.get(parameter) {
+                    self.close_origin_set(previous, sources);
+                }
+            }
         }
         let nodes = self
             .callable_environment_nodes
@@ -180,6 +325,9 @@ impl EffectSemantics<'_> {
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
         self.instantiate_callable_environment_mapped(root, bindings, state, arguments, |id| {
             CallableEnvironmentId {
+                generic_context: None,
+                instance: id.instance,
+                scope: None,
                 origin: id.origin,
                 application,
             }
@@ -196,15 +344,12 @@ impl EffectSemantics<'_> {
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
         self.instantiate_callable_environment_mapped(root, bindings, state, arguments, |id| {
             CallableEnvironmentId {
-                // Retain the nested creation site, while all recursive returns use
-                // the current instantiated caller context instead of growing a chain.
-                origin: CodeFingerprint::of_parts(
-                    "etas.effects.returned-capture-origin.v1",
-                    [
-                        id.origin.as_bytes().as_slice(),
-                        id.application.as_bytes().as_slice(),
-                    ],
-                ),
+                generic_context: None,
+                instance: Some(id.lexical_instance()),
+                scope: None,
+                // Retain the first lexical creation/application coordinate.
+                // Repeated returns rebind the frame instead of hashing a chain.
+                origin: id.origin,
                 application,
             }
         })
@@ -212,11 +357,17 @@ impl EffectSemantics<'_> {
 
     /// Select checked zero-argument return positions without turning the
     /// captured callable into a symbolic parameter or executing its effects.
-    fn descriptor_projected_origins(
+    pub(super) fn descriptor_projected_origins(
         &self,
         sources: &BTreeSet<LatentSource>,
         path: &[etas_code::descriptor::ValueProjectionStep],
+        state: &EffectState,
     ) -> Option<BTreeSet<LatentSource>> {
+        if let Some(inputs) = etas_code::descriptor::ValueProjectionStep::call_inputs(path).first()
+        {
+            let application = self.native_call_inputs(*inputs)?.call;
+            return self.project_value_origins(sources, path, state, application);
+        }
         if let Some(origins) = self.project_parameter_origins(sources.iter().copied(), path) {
             return Some(origins);
         }
@@ -249,116 +400,107 @@ impl EffectSemantics<'_> {
                 )
                 .ok()?;
             let exits = summary.exits.as_ref()?;
-            let selected = exits
-                .value_projections
-                .iter()
-                .filter(|(prefix, _)| rest.starts_with(prefix))
-                .max_by_key(|(prefix, _)| prefix.len());
-            let (returned, suffix) = match selected {
-                Some((prefix, crate::ProjectedReturnSources::Known(returned))) => {
-                    (returned.clone(), &rest[prefix.len()..])
+            let selected = super::return_projection::returned_positions(
+                exits
+                    .value_projections
+                    .iter()
+                    .map(|(path, sources)| (path.as_slice(), sources)),
+                rest,
+            );
+            let selected = if selected.is_empty() {
+                vec![(exits.callable_return_sources()?, rest.to_vec())]
+            } else {
+                let mut positions = Vec::new();
+                for (sources, suffix) in selected {
+                    let crate::ProjectedReturnSources::Known(sources) = sources else {
+                        return None;
+                    };
+                    positions.push((sources.clone(), suffix));
                 }
-                Some((_, crate::ProjectedReturnSources::Unavailable)) => return None,
-                None => {
-                    // An aggregate projection selects all of its callable
-                    // leaf positions, excluding unrelated sibling payloads.
-                    let mut descendants = exits
-                        .value_projections
-                        .iter()
-                        .filter(|(position, _)| position.starts_with(rest))
-                        .peekable();
-                    if descendants.peek().is_some() {
-                        let mut returned = BTreeSet::new();
-                        for (_, position) in descendants {
-                            let crate::ProjectedReturnSources::Known(found) = position else {
-                                return None;
-                            };
-                            returned.extend(found.iter().cloned());
-                        }
-                        (returned, &rest[rest.len()..])
-                    } else {
-                        (exits.callable_return_sources()?, rest)
-                    }
-                }
+                positions
             };
             let snapshot = environment
                 .map(|id| self.callable_environment(id))
                 .transpose()
                 .ok()?;
-            let mut origins = BTreeSet::new();
-            for returned in returned {
-                use crate::CallableReturnSource as R;
-                match returned {
-                    R::Captured { unit, environment } => {
-                        origins.insert(LatentSource::Captured { unit, environment });
-                    }
-                    R::AnonymousFlow(unit) => {
-                        origins.insert(match environment {
-                            Some(environment) => LatentSource::Captured { unit, environment },
-                            None => LatentSource::Unit(unit),
-                        });
-                    }
-                    R::SourceItem(item) => {
-                        origins.insert(LatentSource::Unit(crate::EffectUnit::Item(item)));
-                    }
-                    R::FrozenContract {
-                        unit,
-                        reference,
-                        environment,
-                    } => {
-                        origins.insert(LatentSource::FrozenContract {
+            for (returned, suffix) in selected {
+                let mut origins = BTreeSet::new();
+                for returned in returned {
+                    use crate::CallableReturnSource as R;
+                    match returned {
+                        R::Captured { unit, environment } => {
+                            origins.insert(LatentSource::Captured { unit, environment });
+                        }
+                        R::AnonymousFlow(unit) => {
+                            origins.insert(match environment {
+                                Some(environment) => LatentSource::Captured { unit, environment },
+                                None => LatentSource::Unit(unit),
+                            });
+                        }
+                        R::SourceItem(item) => {
+                            origins.insert(LatentSource::Unit(crate::EffectUnit::Item(item)));
+                        }
+                        R::FrozenContract {
                             unit,
                             reference,
                             environment,
-                        });
-                    }
-                    R::Metadata(source) => {
-                        origins.insert(LatentSource::Metadata(source));
-                    }
-                    R::MetadataObject(source) => {
-                        origins.insert(LatentSource::MetadataObject(source));
-                    }
-                    R::Existential { pack, environment } => {
-                        origins.insert(LatentSource::Existential { pack, environment });
-                    }
-                    R::ExternalFrozen { reflection } => {
-                        origins.insert(LatentSource::ExternalFrozen { reflection });
-                    }
-                    R::ExternalReference { value, frozen } => {
-                        origins.insert(LatentSource::ExternalReference { value, frozen });
-                    }
-                    R::Parameter(symbol) => {
-                        origins.extend(
-                            snapshot
-                                .as_ref()?
-                                .parameters
-                                .get(&ParameterCallTarget::Native(symbol))?
-                                .iter()
-                                .copied(),
-                        );
-                    }
-                    R::Projection(id) => {
-                        if let Some(bound) = snapshot.as_ref().and_then(|snapshot| {
-                            snapshot
-                                .parameters
-                                .get(&ParameterCallTarget::Projection(id))
-                        }) {
-                            origins.extend(bound.iter().copied());
-                        } else {
-                            let projection = self.parameter_projection(id)?;
-                            let roots = snapshot
-                                .as_ref()?
-                                .parameters
-                                .get(&ParameterCallTarget::Native(projection.parameter))?;
+                        } => {
+                            origins.insert(LatentSource::FrozenContract {
+                                unit,
+                                reference,
+                                environment,
+                            });
+                        }
+                        R::Metadata(source) => {
+                            origins.insert(LatentSource::Metadata(source));
+                        }
+                        R::MetadataObject(source) => {
+                            origins.insert(LatentSource::MetadataObject(source));
+                        }
+                        R::Existential { pack, environment } => {
+                            origins.insert(LatentSource::Existential { pack, environment });
+                        }
+                        R::ExternalFrozen { reflection } => {
+                            origins.insert(LatentSource::ExternalFrozen { reflection });
+                        }
+                        R::ExternalReference { value, frozen } => {
+                            origins.insert(LatentSource::ExternalReference { value, frozen });
+                        }
+                        R::Parameter(symbol) => {
                             origins.extend(
-                                self.descriptor_projected_origins(roots, &projection.path)?,
+                                snapshot
+                                    .as_ref()?
+                                    .parameters
+                                    .get(&ParameterCallTarget::Native(symbol))?
+                                    .iter()
+                                    .copied(),
                             );
                         }
+                        R::Projection(id) => {
+                            if let Some(bound) = snapshot.as_ref().and_then(|snapshot| {
+                                snapshot
+                                    .parameters
+                                    .get(&ParameterCallTarget::Projection(id))
+                            }) {
+                                origins.extend(bound.iter().copied());
+                            } else {
+                                let projection = self.parameter_projection(id)?;
+                                let roots = snapshot
+                                    .as_ref()?
+                                    .parameters
+                                    .get(&ParameterCallTarget::Native(projection.parameter))?;
+                                origins.extend(self.descriptor_projected_origins(
+                                    roots,
+                                    &projection.path,
+                                    state,
+                                )?);
+                            }
+                        }
+                        R::Reference(_) => return None,
                     }
-                    R::Reference(_) => return None,
                 }
+                result.extend(self.descriptor_projected_origins(&origins, &suffix, state)?);
             }
-            result.extend(self.descriptor_projected_origins(&origins, suffix)?);
         }
         Some(result)
     }
@@ -374,13 +516,49 @@ impl EffectSemantics<'_> {
         let owner = state
             .owner
             .ok_or_else(|| invalid("capture instantiation has no checked owner"))?;
+        // Scope is a separate coordinate: restoring a frame repeatedly does
+        // not manufacture a history of hashed application sites.
+        let scope = self.callable_environment_scope(owner)?;
+        // Resolve each checked frame's complete generic context before naming
+        // its edges. Different instantiations never occupy one identity slot.
         let mut pending = vec![root];
-        let mut visited = BTreeSet::new();
-        while let Some(id) = pending.pop() {
-            if !visited.insert(id) {
+        let mut originals = BTreeMap::new();
+        let mut identities = BTreeMap::new();
+        let mut generic_contexts = BTreeMap::new();
+        while let Some(source) = pending.pop() {
+            if originals.contains_key(&source) {
                 continue;
             }
-            let original = self.callable_environment(id)?;
+            let original = self.callable_environment(source)?;
+            for origin in original.parameters.values().flatten() {
+                let child = match origin {
+                    LatentSource::Metadata(source) => source.environment,
+                    LatentSource::MetadataObject(source) => source.environment,
+                    LatentSource::Existential { environment, .. }
+                    | LatentSource::Captured { environment, .. }
+                    | LatentSource::SpecMethod { environment, .. }
+                    | LatentSource::MetadataSpecMethod { environment, .. } => Some(*environment),
+                    LatentSource::FrozenContract { environment, .. }
+                    | LatentSource::Reference { environment, .. }
+                    | LatentSource::StdReference { environment, .. } => *environment,
+                    _ => None,
+                };
+                pending.extend(child);
+            }
+            let generics =
+                self.substitute_generic_values(original.generics.clone(), arguments, state.owner)?;
+            let mut id = mapped(source);
+            if id.instance.is_none() && source.scope != Some(scope) {
+                id.instance = Some(source.lexical_instance());
+            }
+            id.scope = Some(scope);
+            id.generic_context = CallableEnvironment::generic_identity(&generics);
+            identities.insert(source, id);
+            generic_contexts.insert(source, generics);
+            originals.insert(source, original);
+        }
+        let mapped = |id| identities[&id];
+        for (id, original) in originals {
             let mut parameters = BTreeMap::new();
             for (parameter, sources) in original.parameters {
                 let mut resolved = BTreeSet::new();
@@ -402,7 +580,7 @@ impl EffectSemantics<'_> {
                                 )? {
                                     let origins = match &binding {
                                         super::specialize::TraceArgumentBinding::ProjectedOrigins { sources, path } =>
-                                            self.descriptor_projected_origins(sources, path).ok_or_else(|| {
+                                            self.descriptor_projected_origins(sources, path, state).ok_or_else(|| {
                                                 self.callable_summaries.borrow().interruption.clone()
                                                     .map(EffectSpecializationError::Interrupted)
                                                     .unwrap_or_else(|| {
@@ -425,12 +603,10 @@ impl EffectSemantics<'_> {
                         }
 
                         LatentSource::MetadataObject(mut object) => {
-                            pending.extend(object.environment);
                             object.environment = object.environment.map(mapped);
                             resolved.insert(LatentSource::MetadataObject(object));
                         }
                         LatentSource::Existential { pack, environment } => {
-                            pending.push(environment);
                             resolved.insert(LatentSource::Existential {
                                 pack,
                                 environment: mapped(environment),
@@ -441,7 +617,6 @@ impl EffectSemantics<'_> {
                             reference,
                             environment,
                         } => {
-                            pending.extend(environment);
                             resolved.insert(LatentSource::FrozenContract {
                                 unit,
                                 reference,
@@ -458,20 +633,17 @@ impl EffectSemantics<'_> {
                         }
                         LatentSource::Metadata(mut source) => {
                             if let Some(parent) = source.environment {
-                                pending.push(parent);
                                 source.environment = Some(mapped(parent));
                             }
                             resolved.insert(LatentSource::Metadata(source));
                         }
                         LatentSource::Captured { unit, environment } => {
-                            pending.push(environment);
                             resolved.insert(LatentSource::Captured {
                                 unit,
                                 environment: mapped(environment),
                             });
                         }
                         LatentSource::SpecMethod { call, environment } => {
-                            pending.push(environment);
                             resolved.insert(LatentSource::SpecMethod {
                                 call,
                                 environment: mapped(environment),
@@ -481,7 +653,6 @@ impl EffectSemantics<'_> {
                             invocation,
                             environment,
                         } => {
-                            pending.push(environment);
                             resolved.insert(LatentSource::MetadataSpecMethod {
                                 invocation,
                                 environment: mapped(environment),
@@ -492,7 +663,6 @@ impl EffectSemantics<'_> {
                             value,
                             environment,
                         } => {
-                            pending.extend(environment);
                             resolved.insert(LatentSource::Reference {
                                 unit,
                                 value,
@@ -500,7 +670,6 @@ impl EffectSemantics<'_> {
                             });
                         }
                         LatentSource::StdReference { value, environment } => {
-                            pending.extend(environment);
                             resolved.insert(LatentSource::StdReference {
                                 value,
                                 environment: environment.map(mapped),
@@ -516,13 +685,13 @@ impl EffectSemantics<'_> {
             self.record_callable_environment(
                 mapped(id),
                 CallableEnvironment {
+                    invocation_origin: original.invocation_origin,
+                    invocation_inputs: Default::default(),
                     owner,
                     parameters,
-                    generics: self.substitute_generic_values(
-                        original.generics,
-                        arguments,
-                        state.owner,
-                    )?,
+                    generics: generic_contexts
+                        .remove(&id)
+                        .expect("prepared capture generics"),
                 },
             )?;
         }

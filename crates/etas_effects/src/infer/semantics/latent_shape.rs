@@ -22,6 +22,7 @@ pub(crate) struct LatentTypeShapes {
 
 impl LatentTypeShapes {
     pub(crate) fn build(types: &TypeOutput) -> Self {
+        let specs = etas_types::SpecFacts::from(types.facts.as_ref());
         let mut result = Self {
             shapes: vec![Shape::default(); types.store.len()],
             opaque_parameters: types
@@ -35,7 +36,15 @@ impl LatentTypeShapes {
                                 .type_param_bounds
                                 .get(&symbol)
                                 .is_some_and(|bounds| !bounds.is_empty())
-                        }) =>
+                        }) && !etas_types::numeric_family::supports(
+                            &types.store,
+                            &specs,
+                            ty,
+                        ) && !etas_types::data_equality::parameter_has_equality(
+                            &types.store,
+                            &specs,
+                            ty,
+                        ) =>
                     {
                         Some(ty)
                     }

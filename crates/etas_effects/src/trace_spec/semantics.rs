@@ -19,6 +19,8 @@ use crate::{EffectFacts, EffectRegistry, EffectSummary, EffectUnit};
 use super::domain::{TraceSpecState, TraceSpecSummary};
 
 pub struct TraceSpecSemantics<'a> {
+    loop_traces: crate::infer::ordered_trace::LoopTraces,
+    trace_equations: crate::infer::recursive_trace::TraceEquations,
     hir: &'a etas_hir::HirRevision,
     context: HirAnalysisContext,
     types: &'a etas_types::TypeOutput,
@@ -38,6 +40,8 @@ impl<'a> TraceSpecSemantics<'a> {
         trace_spec_items: BTreeSet<HirItemId>,
     ) -> Self {
         Self {
+            loop_traces: Default::default(),
+            trace_equations: Default::default(),
             hir,
             context: HirAnalysisContext::new(hir),
             types,
@@ -219,6 +223,42 @@ impl<'a> TraceSpecSemantics<'a> {
 
 impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
     type Domain = TraceSpecState;
+
+    fn begin_loop(&mut self, body: etas_hir::HirBlockId, mut state: Self::Domain) -> Self::Domain {
+        state.action_trace = self
+            .loop_traces
+            .begin((state.unit, body, None), &state.action_trace);
+        state
+    }
+
+    fn end_loop(&mut self, body: etas_hir::HirBlockId, mut state: Self::Domain) -> Self::Domain {
+        state.action_trace = self
+            .loop_traces
+            .finish((state.unit, body, None), &state.action_trace);
+        state
+    }
+
+    fn join_loop_state(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        state: &mut Self::Domain,
+        back_edge: &Self::Domain,
+    ) -> bool {
+        let previous = state.clone();
+        let header = if back_edge.unit.is_some() {
+            Some(
+                self.loop_traces
+                    .join((previous.unit, body, None), &back_edge.action_trace),
+            )
+        } else {
+            None
+        };
+        etas_utils::JoinSemiLattice::join_assign(state, back_edge);
+        if let Some(header) = header {
+            state.action_trace = header;
+        }
+        previous != *state
+    }
 
     fn analysis_context(&self) -> &HirAnalysisContext {
         &self.context
@@ -452,6 +492,26 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
     type Domain = TraceSpecState;
     type Summary = TraceSpecSummary;
 
+    fn begin_component(&mut self, units: &[EffectUnit], cyclic: bool) {
+        self.trace_equations.begin(units, cyclic);
+    }
+
+    fn end_component(
+        &mut self,
+        units: &[EffectUnit],
+        summaries: &mut etas_hir_analysis::interprocedural::SummaryStore<
+            EffectUnit,
+            TraceSpecSummary,
+        >,
+    ) {
+        for unit in units {
+            if let Some(mut summary) = summaries.get(*unit).cloned() {
+                summary.action_trace = self.trace_equations.close(&summary.action_trace);
+                summaries.insert(*unit, summary);
+            }
+        }
+    }
+
     fn body_of(&self, unit: Self::Unit) -> HirAnalysisBody {
         unit.analysis_body_with_context(&self.context)
     }
@@ -470,10 +530,12 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
 
     fn stabilize_summary(
         &mut self,
-        _context: UnitContext<Self::Unit>,
+        context: UnitContext<Self::Unit>,
         mut summary: Self::Summary,
         current: Option<&Self::Summary>,
     ) -> Self::Summary {
+        self.trace_equations
+            .summarize_trace(context.unit, &mut summary.action_trace);
         summary.action_trace = summary
             .action_trace
             .stabilize_for_fixpoint(current.map(|summary| &summary.action_trace));

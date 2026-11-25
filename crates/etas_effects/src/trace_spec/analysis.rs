@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{EffectOutput, EffectPipelineError, EffectRegistry, EffectUnit};
 
 use super::model::{TraceSpecClause, TraceSpecModelStore};
-use super::monitor::{TemporalMonitorResult, require_before};
+use super::monitor::{TemporalMonitorCache, TemporalMonitorResult};
 use super::semantics::TraceSpecSemantics;
 use super::validate::reject_item_for_trace_spec;
 use crate::diagnostic_anchor::{DiagnosticAnchor, materialize_effect_diagnostic};
@@ -1022,6 +1022,7 @@ fn collect_clause_outcomes(
     types: &etas_types::TypeOutput,
     control: Option<&dyn etas_utils::PipelineExecutionControl>,
 ) -> Result<BTreeMap<etas_hir::HirItemId, ClauseConformanceOutcomes>, EffectPipelineError> {
+    let mut monitor_cache = TemporalMonitorCache::new(registry, types);
     let mut clause_outcomes = BTreeMap::new();
     for (item, conformances) in &models.referenced_by_item {
         let Some(summary) = summaries.get(EffectUnit::Item(*item)) else {
@@ -1039,6 +1040,7 @@ fn collect_clause_outcomes(
                 registry,
                 types,
                 control,
+                &mut monitor_cache,
             )?,
         );
     }
@@ -1052,6 +1054,7 @@ fn analyze_clause_groups(
     registry: &EffectRegistry,
     types: &etas_types::TypeOutput,
     control: Option<&dyn etas_utils::PipelineExecutionControl>,
+    monitor_cache: &mut TemporalMonitorCache<'_>,
 ) -> Result<ClauseConformanceOutcomes, EffectPipelineError> {
     let requested = Arc::new(requested_actions.clone());
     let mut item_outcomes = Vec::with_capacity(conformances.len());
@@ -1065,7 +1068,7 @@ fn analyze_clause_groups(
                         .checkpoint()
                         .map_err(EffectPipelineError::Interrupted)?;
                 }
-                let temporal =
+                let mut temporal =
                     |guard: &super::model::TraceSpecPattern,
                      target: &super::model::TraceSpecPattern| {
                         ClauseOutcome::Temporal(TemporalClauseOutcome {
@@ -1073,7 +1076,7 @@ fn analyze_clause_groups(
                             guard: guard.clone(),
                             target: target.clone(),
                             disposition: TemporalStaticDisposition::from_monitor(
-                                require_before(trace, guard, target, registry, types),
+                                monitor_cache.require_before(trace, guard, target),
                                 requested_actions.open.is_some(),
                             ),
                         })
@@ -1144,6 +1147,7 @@ fn collect_external_outcomes(
                 .push(summary);
         }
     }
+    let mut monitor_cache = TemporalMonitorCache::new(registry, types);
     let mut output = BTreeMap::new();
     for (item, conformances) in &models.external_referenced_by_item {
         if let Some(control) = control {
@@ -1186,6 +1190,7 @@ fn collect_external_outcomes(
             registry,
             types,
             control,
+            &mut monitor_cache,
         )?;
         let permissions = analyze_permission_groups(
             conformances,

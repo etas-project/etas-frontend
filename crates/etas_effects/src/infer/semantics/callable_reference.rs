@@ -28,7 +28,9 @@ impl EffectSemantics<'_> {
         let MethodTarget::Source { callable, .. } = fact.method.target else {
             return None;
         };
-        let MethodReceiver::Value { slot } = fact.method.receiver else {
+        let (MethodReceiver::Value { slot } | MethodReceiver::Updating { slot }) =
+            fact.method.receiver
+        else {
             unreachable!()
         };
         let unit = EffectUnit::Item(callable);
@@ -41,20 +43,26 @@ impl EffectSemantics<'_> {
         }
         .unwrap_or_default();
         let site = self.callable_environment_site(value).ok()?;
+        let generics = self.lexical_generic_values(state.owner?).ok()?;
         let environment = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(state.owner?).ok()?),
             origin: site,
             application: site,
         };
         self.record_callable_environment(
             environment,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: state.owner?,
                 parameters: [(
                     crate::ParameterCallTarget::Native(receiver),
                     sources.into_iter().collect(),
                 )]
                 .into(),
-                generics: self.lexical_generic_values(state.owner?).ok()?,
+                generics,
             },
         )
         .ok()?;
@@ -73,7 +81,7 @@ impl EffectSemantics<'_> {
         let reference = self
             .callable_reference_for_source(source)
             .ok_or_else(|| invalid("callable reference has no checked signature"))?;
-        let summary = match source {
+        let mut summary = match source {
             LatentSource::Reference { unit, value, .. } => {
                 let summary = self
                     .latent_leaf_summary(LatentSource::Unit(unit), span)
@@ -122,6 +130,20 @@ impl EffectSemantics<'_> {
                 ));
             }
         };
+        if let LatentSource::Reference { value, .. } = source
+            && let Some(bound) = self.types.facts.bound_method_values.get(&value)
+            && bound.method.kind == etas_types::facts::methods::MethodCallKind::AgentRequest
+        {
+            let context = bound
+                .method
+                .request_context
+                .ok_or_else(|| invalid("bound Agent request has no checked method identity"))?;
+            let mut boundary = self
+                .managed_agent_boundary("call", context, span)
+                .ok_or_else(|| invalid("Agentic.call metadata identity is missing"))?;
+            boundary.seq_assign(&summary);
+            summary = boundary;
+        }
         let (types, rows) = self.reference_environment_bindings(&reference)?;
         let parameters = self.reference_environment_type_parameters(&reference)?;
         self.specialize_summary_with_residual_bindings(

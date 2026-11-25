@@ -7,6 +7,12 @@ pub(super) fn validate(
 ) -> Result<(), ExternalEnvironmentValidationError> {
     for metadata in &environment.external_public_metadata {
         let fail = |reason| ExternalEnvironmentValidationError::package(metadata.package, reason);
+        for default in metadata.parameter_defaults() {
+            if let Some(graph) = &default.callable_value {
+                etas_package_metadata::validate_callable_value_graph(graph)
+                    .map_err(|error| fail(error.to_string()))?;
+            }
+        }
         for signature in &metadata.flows {
             declaration(
                 &signature.param_names,

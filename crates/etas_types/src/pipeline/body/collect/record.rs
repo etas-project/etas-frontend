@@ -28,6 +28,14 @@ pub fn collect_record<E>(
             "record constructor is not resolved to a type or named enum variant",
         );
     }
+    let agent_state =
+        constructor_target.and_then(|target| match ctx.ctx.agent_state_type(target) {
+            Ok(state) => state,
+            Err(error) => {
+                super::enum_variant::invalid(ctx, record.span, error.to_string());
+                None
+            }
+        });
     let primitive = constructor_target.and_then(|ty| {
         crate::value_representation::checked_primitive_input(
             ctx.ctx.interner.store(),
@@ -37,7 +45,7 @@ pub fn collect_record<E>(
     });
     let primitive_field =
         primitive.map(|input| (input.name(), input.materialize(&mut ctx.ctx.interner)));
-    let field_hint_target = constructor_target.or(expected);
+    let field_hint_target = agent_state.or(constructor_target).or(expected);
     let range = constructor_target
         .and_then(|ty| crate::value_representation::range_fields(ctx.ctx.interner.store(), ty));
     let target_fields = if let Some(range) = &range {
@@ -71,7 +79,23 @@ pub fn collect_record<E>(
                 .find(|candidate| candidate.name == name)
                 .map(|candidate| candidate.ty)
         });
-        let ty = collect_field_value(ctx, field, expected_field)?;
+        let previous_bindings = record.injections.as_ref().filter(|injections| {
+            matches!(field, HirFieldInit::Named { value, .. } if injections.values.contains(value))
+        }).map(|injections| {
+            let parameters = &injections.parameters;
+            let arguments = constructor_target.and_then(|target| match ctx.ctx.interner.store().get(target) {
+                Some(Type::Applied { args, .. }) => Some(args.clone()),
+                _ => None,
+            }).unwrap_or_default();
+            let previous = ctx.ctx.construction_parameters.clone();
+            ctx.ctx.construction_parameters.extend(parameters.iter().copied().zip(arguments));
+            previous
+        });
+        let result = collect_field_value(ctx, field, expected_field);
+        if let Some(previous) = previous_bindings {
+            ctx.ctx.construction_parameters = previous;
+        }
+        let ty = result?;
         fields.push(FieldType { name, ty });
     }
     if let Some((name, input)) = primitive_field {
@@ -119,6 +143,15 @@ pub fn collect_record<E>(
         return Ok(constructor_target.expect("explicit range constructor target"));
     }
     let actual = ctx.ctx.interner.intern(Type::Record(RecordType { fields }));
+    if let Some(state) = agent_state {
+        ctx.emit(TypeConstraint::Assignable {
+            from: actual,
+            to: state,
+            origin: ConstraintOrigin { span: record.span },
+            reason: AssignabilityReason::Constructor,
+        });
+        return Ok(constructor_target.unwrap());
+    }
     let ty = if let Some(expected) = constructor_target {
         ctx.emit(TypeConstraint::Constructible {
             target: expected,

@@ -73,6 +73,56 @@ impl HirTreeIndexBuilder<'_> {
                 }
             }
         }
+        self.index_field_annotations();
+    }
+
+    fn index_field_annotations(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        let mut values = Vec::new();
+        for (_, ty) in self.program.types.iter() {
+            let crate::HirType::Record { fields, .. } = ty else {
+                continue;
+            };
+            for field in fields {
+                if field.annotations.is_empty() || !seen.insert(field.symbol) {
+                    continue;
+                }
+                let crate::SymbolDef::Field { owner, .. } = self
+                    .program
+                    .symbols
+                    .get(field.symbol)
+                    .expect("record field symbol")
+                    .def
+                else {
+                    unreachable!("stored field symbol");
+                };
+                for (annotation, value) in field.annotations.iter().enumerate() {
+                    for (arg, value) in value.args.iter().enumerate() {
+                        let (crate::HirAnnotationArg::Positional { value, .. }
+                        | crate::HirAnnotationArg::Named { value, .. }) = value;
+                        values.push((owner, field.symbol, annotation as u32, arg as u32, *value));
+                    }
+                }
+            }
+        }
+        for (owner, field, annotation, arg, value) in values {
+            let body = HirBodyRef::new(
+                owner,
+                HirBodyKind::FieldAnnotation {
+                    field,
+                    annotation,
+                    arg,
+                },
+            );
+            self.insert_body(
+                owner,
+                body,
+                HirOwner::Item(owner),
+                item_scope(&self.program.items[owner]),
+            );
+            self.index_expr(value, HirOwner::Body(body), owner);
+            self.index.body_exprs.entry(body).or_default().push(value);
+        }
     }
 
     fn index_scopes(&mut self) {
@@ -137,6 +187,16 @@ impl HirTreeIndexBuilder<'_> {
             HirItem::Impl(item) => {
                 for (index, impl_item) in item.items.iter().enumerate() {
                     if let crate::HirImplItem::Callable { item: callable } = impl_item {
+                        if matches!(self.program.items[*callable], HirItem::Tool(_)) {
+                            self.index
+                                .item_children
+                                .entry(item_id)
+                                .or_default()
+                                .push(*callable);
+                            self.insert_item_module(*callable, self.index.item_module[&item_id]);
+                            self.index_item(*callable);
+                            continue;
+                        }
                         let crate::HirItem::Flow(flow) = &self.program.items[*callable] else {
                             self.missing(
                                 HirTreeNodeKind::Body,
@@ -371,7 +431,7 @@ impl HirTreeIndexBuilder<'_> {
         &mut self,
         expr_id: HirExprId,
         item_id: HirItemId,
-        owner: HirOwner,
+        _owner: HirOwner,
         expr_stack: &mut Vec<(HirExprId, HirOwner)>,
     ) {
         let Some(expr) = self.program.exprs.get(expr_id) else {
@@ -431,32 +491,6 @@ impl HirTreeIndexBuilder<'_> {
                     }
                 }
             }
-            HirExpr::StageCompose { stages, .. } | HirExpr::Pipeline { stages, .. } => {
-                for (stage_index, stage) in stages.iter().enumerate() {
-                    for (limit_index, limit) in stage.limits.iter().enumerate() {
-                        let body_ref = HirBodyRef::new(
-                            item_id,
-                            HirBodyKind::StageLimit {
-                                expr: expr_id,
-                                stage: stage_index as u32,
-                                limit: limit_index as u32,
-                            },
-                        );
-                        self.insert_body(
-                            item_id,
-                            body_ref,
-                            HirOwner::Expr(expr_id),
-                            self.scope_for_index_owner(owner),
-                        );
-                        self.index
-                            .body_exprs
-                            .entry(body_ref)
-                            .or_default()
-                            .push(*limit);
-                        expr_stack.push((*limit, HirOwner::Body(body_ref)));
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -472,7 +506,9 @@ impl HirTreeIndexBuilder<'_> {
         // A declaration without a source body must remain external to analyses.
         if !matches!(
             body.kind,
-            HirBodyKind::AnnotationArg { .. } | HirBodyKind::ParameterDefault { .. }
+            HirBodyKind::AnnotationArg { .. }
+                | HirBodyKind::ParameterDefault { .. }
+                | HirBodyKind::FieldAnnotation { .. }
         ) {
             self.index.item_body.entry(item).or_insert(body);
         }
@@ -634,43 +670,6 @@ impl HirTreeIndexBuilder<'_> {
         let scopes = self.index.scope_by_owner.entry(owner).or_default();
         if !scopes.contains(&scope) {
             scopes.push(scope);
-        }
-    }
-
-    fn scope_for_index_owner(&self, owner: HirOwner) -> Option<ScopeId> {
-        if let Some(scope) = self
-            .index
-            .scope_by_owner
-            .get(&owner)
-            .and_then(|scopes| scopes.first().copied())
-        {
-            return Some(scope);
-        }
-        match owner {
-            HirOwner::Module(module) => self.program.modules_arena.get(module).map(|m| m.scope),
-            HirOwner::Item(item) => self.program.items.get(item).and_then(item_scope),
-            HirOwner::Body(body) => self
-                .index
-                .scope_by_owner
-                .get(&HirOwner::Body(body))
-                .and_then(|scopes| scopes.first().copied()),
-            HirOwner::Block(block) => self.program.blocks.get(block).map(|block| block.scope),
-            HirOwner::Stmt(stmt) => self
-                .index
-                .stmt_block
-                .get(&stmt)
-                .and_then(|block| self.scope_for_index_owner(HirOwner::Block(*block))),
-            HirOwner::Expr(expr) => self
-                .index
-                .expr_owner
-                .get(&expr)
-                .and_then(|owner| self.scope_for_index_owner(*owner)),
-            HirOwner::HandlerArm(arm) => self.program.handler_arms.get(arm).map(|arm| arm.scope),
-            HirOwner::Pattern(pat) => self
-                .index
-                .pat_owner
-                .get(&pat)
-                .and_then(|owner| self.scope_for_index_owner(*owner)),
         }
     }
 

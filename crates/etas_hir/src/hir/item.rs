@@ -411,6 +411,8 @@ pub enum HirToolBody {
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirAgentDecl {
     pub symbol: SymbolId,
+    pub type_params: Vec<SymbolId>,
+    pub state: Option<HirTypeId>,
     pub params: Vec<SymbolId>,
     pub output_type: Option<HirTypeId>,
     pub effects: Option<HirEffectRow>,

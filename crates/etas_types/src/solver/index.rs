@@ -8,6 +8,7 @@ use crate::{
 
 pub struct IndexAccessSolveInput<'a> {
     pub spec_facts: &'a crate::SpecFacts,
+    pub known: &'a crate::KnownStdTypes,
     pub expr: etas_hir::HirExprId,
     pub base: TypeId,
     pub index: TypeId,
@@ -25,9 +26,13 @@ enum IndexShape {
 
 fn index_shape(
     store: &TypeStore,
+    known: &crate::KnownStdTypes,
     base: TypeId,
     origin: ConstraintOrigin,
 ) -> Result<IndexShape, SolverFailure> {
+    if let Some(value) = known.slice_element(store, base) {
+        return Ok(IndexShape::Sequence { value });
+    }
     match store.get(base) {
         Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
             Ok(IndexShape::Sequence { value: *value })
@@ -64,7 +69,7 @@ pub(super) fn infer_index_access(
 ) -> SolverReport {
     let mut report = SolverReport::default();
     let base = resolve_substitution(store, input.substitutions, input.base);
-    let shape = match index_shape(store, base, input.origin) {
+    let shape = match index_shape(store, input.known, base, input.origin) {
         Ok(shape) => shape,
         Err(failure) => {
             report.push(failure);
@@ -104,6 +109,7 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
     }
     let IndexAccessSolveInput {
         spec_facts,
+        known,
         expr,
         base,
         index,
@@ -115,7 +121,7 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
     let base = resolve_substitution(store, substitutions, base);
     let index = resolve_substitution(store, substitutions, index);
     let output = resolve_substitution(store, substitutions, output);
-    let shape = match index_shape(store, base, origin) {
+    let shape = match index_shape(store, known, base, origin) {
         Ok(shape) => shape,
         Err(failure) => {
             report.push(failure);
@@ -157,11 +163,13 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
 
 pub struct SliceAccessSolveInput<'a> {
     pub spec_facts: &'a crate::SpecFacts,
+    pub known: &'a crate::KnownStdTypes,
     pub expr: etas_hir::HirExprId,
     pub base: TypeId,
     pub start: TypeId,
     pub end: TypeId,
     pub output: TypeId,
+    pub index_error: Option<TypeId>,
     pub origin: ConstraintOrigin,
     pub substitutions: &'a Substitution,
 }
@@ -169,11 +177,13 @@ pub struct SliceAccessSolveInput<'a> {
 pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -> SolverReport {
     let SliceAccessSolveInput {
         spec_facts,
+        known,
         expr,
         base,
         start,
         end,
         output,
+        index_error,
         origin,
         substitutions,
     } = input;
@@ -190,54 +200,71 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
             message: "slice bounds must satisfy Index".to_owned(),
         });
     }
-    match store.get(base) {
-        Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
-            let value = resolve_substitution(store, substitutions, *value);
-            let slice = first_type_id(store, Type::Slice(value)).unwrap_or(output);
-            unify_or_assign(store, slice, output, origin, &mut unifier, &mut report);
-            report.record_slice_kind(
-                expr,
-                CheckedSliceKind::Sequence {
-                    base,
-                    start,
-                    end,
-                    output,
-                },
-            );
+    let element = known
+        .slice_element(store, base)
+        .or_else(|| match store.get(base) {
+            Some(Type::Array(value) | Type::List(value) | Type::Slice(value)) => Some(*value),
+            _ => None,
+        });
+    if let Some(value) = element {
+        let value = resolve_substitution(store, substitutions, value);
+        let shape = match known.source_slice {
+            Some(owner) => Type::Applied {
+                constructor: crate::TypeConstructorId(owner.0),
+                args: vec![value],
+            },
+            None => Type::Slice(value),
+        };
+        let slice = first_type_id(store, shape).unwrap_or(output);
+        unify_or_assign(store, slice, output, origin, &mut unifier, &mut report);
+        report.record_slice_kind(
+            expr,
+            CheckedSliceKind::Sequence {
+                base,
+                start,
+                end,
+                output,
+            },
+        );
+    } else {
+        match store.get(base) {
+            Some(Type::Primitive(PrimitiveType::Bytes)) => {
+                unify_or_assign(store, base, output, origin, &mut unifier, &mut report);
+                report.record_slice_kind(
+                    expr,
+                    CheckedSliceKind::Sequence {
+                        base,
+                        start,
+                        end,
+                        output,
+                    },
+                );
+            }
+            Some(Type::Range { index }) => {
+                let index = resolve_substitution(store, substitutions, *index);
+                let range = first_type_id(store, Type::Range { index }).unwrap_or(output);
+                unify_or_assign(store, range, output, origin, &mut unifier, &mut report);
+                report.record_slice_kind(
+                    expr,
+                    CheckedSliceKind::Range {
+                        range: base,
+                        start,
+                        end,
+                        output,
+                    },
+                );
+            }
+            _ => report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                span: origin.span,
+                message: "value is not sliceable".to_owned(),
+            }),
         }
-        Some(Type::Primitive(PrimitiveType::Bytes)) => {
-            unify_or_assign(store, base, output, origin, &mut unifier, &mut report);
-            report.record_slice_kind(
-                expr,
-                CheckedSliceKind::Sequence {
-                    base,
-                    start,
-                    end,
-                    output,
-                },
-            );
-        }
-        Some(Type::Range { index }) => {
-            let index = resolve_substitution(store, substitutions, *index);
-            let range = first_type_id(store, Type::Range { index }).unwrap_or(output);
-            unify_or_assign(store, range, output, origin, &mut unifier, &mut report);
-            report.record_slice_kind(
-                expr,
-                CheckedSliceKind::Range {
-                    range: base,
-                    start,
-                    end,
-                    output,
-                },
-            );
-        }
-        _ => report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-            span: origin.span,
-            message: "value is not sliceable".to_owned(),
-        }),
     }
     if report.failures.is_empty() {
+        if let Some(error) = index_error {
+            report.record_checked_index_error(expr, error);
+        }
         report.substitutions.extend(&unifier.into_substitution());
     }
     report

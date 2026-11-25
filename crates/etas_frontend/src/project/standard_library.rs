@@ -20,6 +20,45 @@ use crate::{
     },
 };
 
+impl CheckedProgramData {
+    pub fn checked_standard_callable_row(
+        &self,
+        callable: &etas_code::CallableId,
+        item: etas_hir::HirItemId,
+    ) -> Result<etas_types::EffectRowRef, String> {
+        let signature = instantiation::signature(&self.types, item)
+            .ok_or("standard library body has no checked signature")?;
+        if let Some(contract) = self
+            .effects
+            .public_contracts
+            .iter()
+            .find(|contract| contract.item == item)
+        {
+            return instantiation::checked_row(
+                &contract.public_row,
+                &self.effect_registry,
+                Some(signature),
+                std::iter::empty(),
+            );
+        }
+        // Private Etas reconstruction methods are available only through their
+        // identified compiler ABI. Their checked, explicit row is the contract.
+        if let Some(identity) = callable.as_method()
+            && self.types.storage_methods().any(|(method, known)| {
+                known == identity
+                    && matches!(method.target,
+                    etas_types::method::MethodTarget::Source { callable, .. } if callable == item)
+            })
+            && let Some(row) = &signature.effects
+        {
+            return Ok(row.clone());
+        }
+        Err(format!(
+            "std body {callable:?} has no checked effect contract for its ABI"
+        ))
+    }
+}
+
 impl StandardLibrary {
     /// Function values cross the SDK boundary with the solved public effect
     /// row. Keep this ABI alongside the authored signature before execution.
@@ -160,19 +199,9 @@ impl StandardLibrary {
                     }
                 }
             }
-            let contract = self
+            let row = self
                 .program
-                .effects
-                .public_contracts
-                .iter()
-                .find(|contract| contract.item == item)
-                .ok_or("std body has no checked public effect contract")?;
-            let row = instantiation::checked_row(
-                &contract.public_row,
-                &self.program.effect_registry,
-                Some(signature),
-                std::iter::empty(),
-            )?;
+                .checked_standard_callable_row(&callable, item)?;
             let flow = etas_types::FlowType {
                 input: signature.params.clone(),
                 output: signature.output,
@@ -300,7 +329,7 @@ impl StandardLibrary {
         let source = Arc::new(catalog(Arc::new(consumer.clone()))?);
         let base_program = effects::import(&source, &self.program)?;
         let target = catalog(base_program.clone())?;
-        let correspondence =
+        let mut correspondence =
             NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
         // Callback actions may carry caller-owned selectors that do not appear
         // in the callback's public escaping row. Import their checked nominal
@@ -359,7 +388,8 @@ impl StandardLibrary {
         request_outputs.dedup();
         roots.extend(&request_types);
         roots.extend(&request_outputs);
-        let imported_methods = methods::select(source.checked_program(), &source, &target, &roots)?;
+        let imported_methods = methods::select(source.checked_program(), &source, &target, &roots)
+            .map_err(|error| format!("select consumer methods: {error}"))?;
         let mut additional_specs = Vec::new();
         for method in &imported_methods {
             let declaration = method.declaration;
@@ -399,7 +429,7 @@ impl StandardLibrary {
                 budget: &budget,
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("consumer type/spec closure: {e}"))?;
         let identities = reachable
             .iter()
             .filter_map(|ty| {
@@ -409,23 +439,15 @@ impl StandardLibrary {
             })
             .collect();
         let mut interner = TypeInterner::from_store(base_program.type_store.as_ref().clone());
+        correspondence
+            .reserve_parameters(&source, &reachable, &mut interner, &budget)
+            .map_err(|e| relocation_error("consumer binder relocation", &consumer.type_store, e))?;
         let mut declarations = correspondence.declarations().clone();
-        let parameters = source.native_type_parameters();
         for ty in &reachable {
             if declarations.contains_key(ty) {
                 continue;
             }
-            if let Some(identity) = parameters.get(ty) {
-                let Some(etas_types::Type::Named(parameter)) = consumer.type_store.get(*ty) else {
-                    return Err("checked generic parameter has no named type".into());
-                };
-                let target = interner
-                    .intern_canonical_parameter(identity.clone(), parameter.name.clone())
-                    .map_err(str::to_owned)?;
-                declarations.insert(*ty, target);
-            } else if let Some(etas_types::Type::AgentContext(context)) =
-                consumer.type_store.get(*ty)
-            {
+            if let Some(etas_types::Type::AgentContext(context)) = consumer.type_store.get(*ty) {
                 let method =
                     match context {
                         etas_types::AgentContextRef::Source(symbol) => {
@@ -457,7 +479,7 @@ impl StandardLibrary {
                 budget: &budget,
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| relocation_error("consumer into std", &consumer.type_store, e))?;
         let mut interner = foreign.interner;
         let declarations = foreign.declarations;
         let mut foreign_type_bindings = base_program
@@ -482,7 +504,8 @@ impl StandardLibrary {
             &mut interner,
             &declarations,
             correspondence.effect_names(),
-        )?;
+        )
+        .map_err(|error| format!("consumer method relocation: {error}"))?;
         foreign_type_bindings
             .extend_methods_checked(&source, &method_declarations, &control)
             .map_err(|e| e.to_string())?;
@@ -501,10 +524,14 @@ impl StandardLibrary {
             .with_spec_identities(&spec_plan.mapping);
 
             for ty in request_types {
-                control_roots.push(relocation.substitute(ty).map_err(|e| e.to_string())?);
+                control_roots.push(relocation.substitute(ty).map_err(|e| {
+                    relocation_error("consumer argument relocation", &consumer.type_store, e)
+                })?);
             }
             for output in &mut request_outputs {
-                *output = relocation.substitute(*output).map_err(|e| e.to_string())?;
+                *output = relocation.substitute(*output).map_err(|e| {
+                    relocation_error("consumer argument relocation", &consumer.type_store, e)
+                })?;
             }
             for (_, callable, application) in calls {
                 let owner = target
@@ -515,13 +542,23 @@ impl StandardLibrary {
                     .map(|argument| {
                         Ok(match argument {
                             NativeGenericArgument::Type(ty) => NativeGenericArgument::Type(
-                                relocation.substitute(ty).map_err(|e| e.to_string())?,
+                                relocation.substitute(ty).map_err(|e| {
+                                    relocation_error(
+                                        "consumer argument relocation",
+                                        &consumer.type_store,
+                                        e,
+                                    )
+                                })?,
                             ),
                             NativeGenericArgument::EffectRow(row) => {
                                 NativeGenericArgument::EffectRow(
-                                    relocation
-                                        .substitute_effect_row(row)
-                                        .map_err(|e| e.to_string())?,
+                                    relocation.substitute_effect_row(row).map_err(|e| {
+                                        relocation_error(
+                                            "consumer argument relocation",
+                                            &consumer.type_store,
+                                            e,
+                                        )
+                                    })?,
                                 )
                             }
                         })
@@ -555,13 +592,23 @@ impl StandardLibrary {
                     .map(|argument| {
                         Ok(match argument {
                             NativeGenericArgument::Type(ty) => NativeGenericArgument::Type(
-                                relocation.substitute(ty).map_err(|e| e.to_string())?,
+                                relocation.substitute(ty).map_err(|e| {
+                                    relocation_error(
+                                        "consumer argument relocation",
+                                        &consumer.type_store,
+                                        e,
+                                    )
+                                })?,
                             ),
                             NativeGenericArgument::EffectRow(row) => {
                                 NativeGenericArgument::EffectRow(
-                                    relocation
-                                        .substitute_effect_row(row)
-                                        .map_err(|e| e.to_string())?,
+                                    relocation.substitute_effect_row(row).map_err(|e| {
+                                        relocation_error(
+                                            "consumer argument relocation",
+                                            &consumer.type_store,
+                                            e,
+                                        )
+                                    })?,
                                 )
                             }
                         })
@@ -578,7 +625,13 @@ impl StandardLibrary {
                             .ok_or("std method invocation has no checked owner binder")?;
                         Ok((
                             authored.owner_params[position].subject,
-                            relocation.substitute(argument).map_err(|e| e.to_string())?,
+                            relocation.substitute(argument).map_err(|e| {
+                                relocation_error(
+                                    "consumer argument relocation",
+                                    &consumer.type_store,
+                                    e,
+                                )
+                            })?,
                         ))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -678,7 +731,8 @@ impl StandardLibrary {
             &seeds[first_consumer_call..],
             limits,
             &control,
-        )?;
+        )
+        .map_err(|error| format!("prepare std method owner: {error}"))?;
         let caller = Arc::new(catalog(Arc::new(consumer.clone()))?);
         let imported = program.types.methods.entries().filter(|method| {
             matches!(&method.target, etas_types::method::MethodTarget::External { identity } if program.foreign_method(identity).is_some())
@@ -695,6 +749,22 @@ impl StandardLibrary {
 }
 
 struct Continue;
+
+fn relocation_error(
+    context: &str,
+    store: &etas_types::TypeStore,
+    error: etas_types::TypeSubstitutionError,
+) -> String {
+    if let etas_types::TypeSubstitutionError::MissingTypeIdentity(ty) = &error {
+        format!(
+            "{context}: {error}; type {:?}; binder {:?}",
+            store.get(*ty),
+            store.parameter_identity(*ty)
+        )
+    } else {
+        format!("{context}: {error}")
+    }
+}
 
 impl etas_utils::PipelineExecutionControl for Continue {
     fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {

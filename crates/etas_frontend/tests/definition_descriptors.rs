@@ -378,6 +378,7 @@ fn check_trace_plan_source_links(
         diagnostics: vec![],
     };
     let pipeline = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_defaults: &[],
         external_implementations: &[],
         source_snapshots: &snapshots,
         residual_identity: None,
@@ -1860,6 +1861,108 @@ flow directory(value: Directory) -> Directory { return value; }
     assert!(
         matches!(&tree_enum[1].payload, VariantPayloadInfo::Named(fields) if fields.len() == 2 && fields[0].name == "left")
     );
+}
+
+#[test]
+fn shared_action_traces_remain_a_dag_in_definition_descriptions() {
+    let mut source = String::from(
+        "module app; effect Audit { action tick() -> unit; }\n\
+         flow f0() -> unit ![Audit.tick] { perform Audit.tick(); }\n",
+    );
+    for level in 1..=18 {
+        let previous = level - 1;
+        source.push_str(&format!(
+            "flow f{level}() -> unit ![Audit.tick] {{ f{previous}(); f{previous}(); }}\n",
+        ));
+    }
+    let mut checked = checked(&source);
+    let item = flow(&checked, "f18");
+    let encoded = bincode::serde::encode_to_vec(
+        &checked.effects.item_effects[&item].action_trace,
+        bincode::config::standard(),
+    )
+    .unwrap();
+    let (restored, used): (etas_effects::ActionTraceDomain, _) =
+        bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+    assert_eq!(used, encoded.len());
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+        .item_effects
+        .get_mut(&item)
+        .unwrap()
+        .action_trace = restored;
+    let identities =
+        DefinitionIdentityIndex::build(&checked, &origins(&checked, "shared:app@1")).unwrap();
+    let item = flow(&checked, "f18");
+    let HirItem::Flow(declaration) = &checked.hir.items[item] else {
+        unreachable!()
+    };
+    let callable =
+        etas_code::CallableId::declaration(identities.symbol(declaration.symbol).unwrap().clone())
+            .unwrap();
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    let signature = etas_frontend::code::descriptor::ProjectedSignature {
+        ty: project_flow(&mut projector, &checked, &identities, item),
+    };
+    let analysis = projector
+        .project_analysis(&callable, item, signature)
+        .unwrap();
+    let graph = projector.finish().unwrap();
+    fn events(
+        graph: &DescriptorGraph,
+        node: TraceInfoRef,
+        memo: &mut HashMap<TraceInfoRef, u64>,
+    ) -> u64 {
+        if let Some(count) = memo.get(&node) {
+            return *count;
+        }
+        let count = match graph.trace(node).unwrap() {
+            TraceInfo::Empty => 0,
+            TraceInfo::Event(_) => 1,
+            TraceInfo::Seq(parts) => parts.iter().map(|part| events(graph, *part, memo)).sum(),
+            other => panic!("expected an exact sequential trace, got {other:?}"),
+        };
+        memo.insert(node, count);
+        count
+    }
+    assert_eq!(
+        events(&graph, analysis.trace.unwrap(), &mut HashMap::new()),
+        1 << 18
+    );
+    assert!(graph.data().traces.len() < 512);
+}
+
+#[test]
+fn pure_recursive_control_flow_projects_to_one_empty_action_trace() {
+    let checked = checked(
+        "module app;\n\
+         flow scan(n: i32) -> unit ![] { if n > 0 { scan(n - 1); } return; }\n\
+         flow twice(n: i32) -> unit ![] { scan(n); scan(n); }\n\
+         flow entry(n: i32) -> unit ![] { twice(n); twice(n); }",
+    );
+    let identities =
+        DefinitionIdentityIndex::build(&checked, &origins(&checked, "epsilon:app@1")).unwrap();
+    let item = flow(&checked, "entry");
+    let HirItem::Flow(declaration) = &checked.hir.items[item] else {
+        unreachable!()
+    };
+    let callable =
+        etas_code::CallableId::declaration(identities.symbol(declaration.symbol).unwrap().clone())
+            .unwrap();
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    let signature = etas_frontend::code::descriptor::ProjectedSignature {
+        ty: project_flow(&mut projector, &checked, &identities, item),
+    };
+    let analysis = projector
+        .project_analysis(&callable, item, signature)
+        .unwrap();
+    let graph = projector.finish().unwrap();
+    assert!(matches!(
+        graph.trace(analysis.trace.unwrap()),
+        Some(TraceInfo::Empty)
+    ));
+    assert!(graph.data().traces.len() < 16);
 }
 
 #[test]

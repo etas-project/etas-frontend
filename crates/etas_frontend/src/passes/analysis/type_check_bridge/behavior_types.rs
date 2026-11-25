@@ -4,6 +4,12 @@ pub(super) fn collect(
     metadata: &ProjectExternalPublicMetadataInput,
 ) -> Result<Vec<etas_types::ExternalTypeInput>, crate::code::descriptor::ProjectionError> {
     let mut types = Vec::new();
+    for graph in metadata
+        .parameter_defaults()
+        .filter_map(|default| default.callable_value.as_ref())
+    {
+        collect_parts(&mut types, vec![Part::Graph(graph)])?;
+    }
     for summary in &metadata.effect_summaries {
         if let Some(behavior) = summary
             .default_handler_effects
@@ -27,7 +33,10 @@ pub(super) fn collect(
                 }
                 crate::ProjectExternalActionTraceInput::Seq(parts)
                 | crate::ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
-                crate::ProjectExternalActionTraceInput::Repeat(part)
+                crate::ProjectExternalActionTraceInput::Recursive {
+                    body: Some(part), ..
+                }
+                | crate::ProjectExternalActionTraceInput::Repeat(part)
                 | crate::ProjectExternalActionTraceInput::DefaultHandler { body: part, .. } => {
                     traces.push(part)
                 }
@@ -69,7 +78,11 @@ pub(super) fn collect(
                 }
             }
         }
-        if let Some(graph) = &summary.returned_callables {
+        for graph in summary
+            .callable_body
+            .iter()
+            .chain(&summary.returned_callables)
+        {
             collect_parts(&mut types, vec![Part::Graph(graph)])?;
             for node in &graph.values {
                 for ty in node.params.iter().chain(std::iter::once(&node.output)) {
@@ -183,6 +196,7 @@ fn collect_parts(
                         &footprint.requested_actions,
                         &footprint.default_actions,
                         &footprint.handled_actions,
+                        &footprint.required_authority,
                     ]
                     .into_iter()
                     .map(Part::Row),

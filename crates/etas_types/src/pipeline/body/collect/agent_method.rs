@@ -141,6 +141,13 @@ fn collect_selected_call<E>(
     expected: Option<TypeId>,
 ) -> Result<Option<TypeId>, E> {
     ctx.checkpoint()?;
+    if ctx
+        .ctx
+        .agent_signature(component)
+        .is_some_and(|agent| agent.state.is_some())
+    {
+        return Ok(None);
+    }
     let facts = ctx
         .ctx
         .signature_base

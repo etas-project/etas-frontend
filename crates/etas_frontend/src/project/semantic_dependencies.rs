@@ -28,6 +28,15 @@ impl CheckedSemanticDependencies {
     pub(crate) fn build(checked: &crate::CheckedProgramData) -> Result<Self, String> {
         use SemanticDependency::{Definition, Type};
         let mut graph = Self::default();
+        let mut storage_callbacks = BTreeMap::<_, BTreeSet<_>>::new();
+        for (method, _) in checked.types.storage_methods() {
+            if let etas_types::method::MethodTarget::Source { callable, .. } = method.target {
+                storage_callbacks
+                    .entry(method.name.as_str())
+                    .or_default()
+                    .insert(Definition(callable));
+            }
+        }
         for (ty, value) in checked.type_store.iter() {
             graph
                 .edges
@@ -46,6 +55,24 @@ impl CheckedSemanticDependencies {
         )?;
         for (item, declaration) in checked.hir.items.iter() {
             let mut dependencies = BTreeSet::new();
+            // The storage ABI dispatches logical collection traversal to checked
+            // Etas adapters. These executable edges have no authored call site.
+            if let HirItem::Flow(flow) = declaration
+                && let etas_hir::HirFlowBody::Runtime { role, .. } = flow.body
+            {
+                let callback = match role {
+                    etas_std::StdExecutionRole::CaptureStorage => {
+                        Some(etas_std::SOURCE_STORAGE_VIEW)
+                    }
+                    etas_std::StdExecutionRole::RestoreStorage => {
+                        Some(etas_std::SOURCE_STORAGE_BUILD)
+                    }
+                    _ => None,
+                };
+                if let Some(callbacks) = callback.and_then(|name| storage_callbacks.get(name)) {
+                    dependencies.extend(callbacks);
+                }
+            }
             if matches!(
                 declaration,
                 HirItem::Flow(_) | HirItem::Tool(_) | HirItem::Agent(_) | HirItem::TopLevelLet(_)
@@ -140,6 +167,19 @@ impl CheckedSemanticDependencies {
             | etas_types::method::MethodTarget::Agent { callable, .. } = method.target
             {
                 graph.record(Definition(callable), checked, method);
+            }
+        }
+        for (method, _) in checked.types.value_equality_methods() {
+            if let etas_types::method::MethodTarget::Source { callable, .. } = method.target {
+                let owner = match checked.type_store.get(method.receiver_type) {
+                    Some(etas_types::Type::Applied { constructor, .. }) => TypeId(constructor.0),
+                    _ => method.receiver_type,
+                };
+                graph
+                    .edges
+                    .entry(Type(owner))
+                    .or_default()
+                    .insert(Definition(callable));
             }
         }
         let index = checked.hir.index();

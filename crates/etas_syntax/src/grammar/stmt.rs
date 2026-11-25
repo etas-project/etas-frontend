@@ -382,12 +382,10 @@ impl Parser<'_> {
         let pattern = self.pattern();
         self.expect_keyword(Keyword::In, "expected `in` in for statement");
         let iter = self.expr_before_block();
-        let limits = self.limit_clauses();
         let body = self.block();
         ForStmt {
             pattern,
             iter,
-            limits,
             span: start.cover(body.span),
             body,
         }
@@ -396,11 +394,9 @@ impl Parser<'_> {
     pub(crate) fn while_stmt(&mut self) -> WhileStmt {
         let start = self.expect_keyword(Keyword::While, "expected `while`");
         let condition = self.expr_before_block();
-        let limits = self.limit_clauses();
         let body = self.block();
         WhileStmt {
             condition,
-            limits,
             span: start.cover(body.span),
             body,
         }
@@ -408,39 +404,11 @@ impl Parser<'_> {
 
     pub(crate) fn retry_stmt(&mut self) -> RetryStmt {
         let start = self.expect_keyword(Keyword::Retry, "expected `retry`");
-        let limits = self.limit_clauses();
         let body = self.block();
         RetryStmt {
-            limits,
             span: start.cover(body.span),
             body,
         }
-    }
-
-    pub(crate) fn limit_clauses(&mut self) -> Vec<Expr> {
-        let mut limits = Vec::new();
-        while self.cursor.eat_keyword(Keyword::Limit).is_some() {
-            limits.extend(self.limit_list());
-        }
-        limits
-    }
-
-    pub(crate) fn limit_list(&mut self) -> Vec<Expr> {
-        self.limit_list_using(Self::expr)
-    }
-
-    pub(crate) fn limit_list_using(&mut self, parse: fn(&mut Self) -> Expr) -> Vec<Expr> {
-        let mut limits = Vec::new();
-        loop {
-            limits.push(parse(self));
-            if self.cursor.eat_punct(Punct::Comma).is_none() {
-                break;
-            }
-            if self.cursor.at_punct(Punct::LBrace) {
-                break;
-            }
-        }
-        limits
     }
 
     pub(crate) fn starts_assignment_stmt(&self) -> bool {

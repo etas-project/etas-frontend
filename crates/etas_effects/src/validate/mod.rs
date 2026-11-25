@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 mod callable_specs;
 mod spec_methods;
+mod strict_callbacks;
 
 use etas_core::{Diagnostic, EffectDiagnosticCode};
 use etas_hir::{
@@ -24,6 +25,9 @@ impl EffectContractValidator {
         types: &etas_types::TypeOutput,
         registry: &EffectRegistry,
         tool_bindings: &[ToolProviderBindingMetadata],
+        external_implementations: &[crate::AnchoredExternalMetadata<
+            crate::ExternalSpecImplementationMetadata,
+        >],
         effects: &mut EffectOutput,
         reachable_items: Option<&BTreeSet<HirItemId>>,
     ) -> Result<(), EffectPipelineError> {
@@ -40,6 +44,7 @@ impl EffectContractValidator {
         validator.validate_callable_specs();
         validator.validate_spec_method_effects()?;
         validator.validate_external_spec_method_effects()?;
+        validator.validate_strict_callbacks(external_implementations);
         validator.validate_latent_effect_bounds()?;
         validator.materialize_public_contracts();
         Ok(())
@@ -310,7 +315,7 @@ impl ContractValidator<'_, '_> {
     }
 
     fn materialize_public_contracts(&mut self) {
-        let public_methods = self
+        let mut public_methods = self
             .types
             .facts
             .methods
@@ -326,6 +331,12 @@ impl ContractValidator<'_, '_> {
                 }
             })
             .collect::<BTreeSet<_>>();
+        public_methods.extend(self.types.facts.value_equality_methods().filter_map(
+            |(method, _)| match method.target {
+                etas_types::method::MethodTarget::Source { callable, .. } => Some(callable),
+                _ => None,
+            },
+        ));
         for (item, hir_item) in self.hir.items.iter() {
             if !self.item_is_reachable(item) {
                 continue;

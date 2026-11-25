@@ -1191,6 +1191,13 @@ impl BodySignatureReferenceCollector<'_> {
             HirType::Record { fields, .. } => {
                 for field in fields {
                     self.visit_type(field.ty);
+                    for annotation in &field.annotations {
+                        for argument in &annotation.args {
+                            let (etas_hir::HirAnnotationArg::Positional { value, .. }
+                            | etas_hir::HirAnnotationArg::Named { value, .. }) = argument;
+                            self.visit_expr_type_references(*value);
+                        }
+                    }
                 }
             }
             HirType::Tuple { elems, .. } => {
@@ -1205,7 +1212,7 @@ impl BodySignatureReferenceCollector<'_> {
                 self.visit_type(*base);
                 self.visit_expr_type_references(*predicate);
             }
-            HirType::Primitive { .. } | HirType::Error { .. } => {}
+            HirType::Metadata { .. } | HirType::Primitive { .. } | HirType::Error { .. } => {}
         }
     }
 
@@ -1430,6 +1437,9 @@ fn item_signature_fingerprint_parts(
         }
         ItemSignature::Agent(signature) => {
             parts.push("kind:agent".to_owned());
+            if let Some(state) = signature.state {
+                parts.push(format!("state:{}", type_fingerprint_part(state, store)?));
+            }
             parts.push(format!(
                 "component:{}",
                 type_fingerprint_part(signature.component, store)?
@@ -1886,6 +1896,22 @@ fn hir_type_signature_part(ty: HirTypeId, hir: &HirProgram) -> String {
                 .join(",")
         ),
         HirType::Record { fields, .. } => {
+            let injections = fields
+                .iter()
+                .filter(|field| !field.annotations.is_empty())
+                .map(|field| {
+                    format!(
+                        "{}:{}",
+                        symbol_name(hir, field.symbol),
+                        field
+                            .annotations
+                            .iter()
+                            .map(|annotation| hir_field_annotation_signature_part(annotation, hir))
+                            .collect::<Vec<_>>()
+                            .join("+")
+                    )
+                })
+                .collect::<Vec<_>>();
             let mut fields = fields
                 .iter()
                 .map(|field| {
@@ -1897,7 +1923,12 @@ fn hir_type_signature_part(ty: HirTypeId, hir: &HirProgram) -> String {
                 })
                 .collect::<Vec<_>>();
             fields.sort();
-            format!("record{{{}}}", fields.join(","))
+            let record = format!("record{{{}}}", fields.join(","));
+            if injections.is_empty() {
+                record
+            } else {
+                format!("{record}:defaults[{}]", injections.join(","))
+            }
         }
         HirType::Tuple { elems, .. } => format!(
             "tuple({})",
@@ -1913,8 +1944,50 @@ fn hir_type_signature_part(ty: HirTypeId, hir: &HirProgram) -> String {
         HirType::Refined { base, .. } => {
             format!("refined<{}>", hir_type_signature_part(*base, hir))
         }
+        HirType::Metadata { ty, .. } => format!("imported:{ty:?}"),
         HirType::Error { .. } => "error".to_owned(),
     }
+}
+
+fn hir_field_annotation_signature_part(
+    annotation: &etas_hir::HirAnnotation,
+    hir: &HirProgram,
+) -> String {
+    let arguments = annotation
+        .args
+        .iter()
+        .map(|argument| {
+            let (etas_hir::HirAnnotationArg::Positional { value, .. }
+            | etas_hir::HirAnnotationArg::Named { value, .. }) = argument;
+            match &hir.exprs[*value] {
+                HirExpr::Perform {
+                    action,
+                    generic_args,
+                    ..
+                } => {
+                    let arguments = generic_args
+                        .iter()
+                        .map(|argument| match argument {
+                            etas_hir::HirGenericArg::Type(ty) => hir_type_signature_part(*ty, hir),
+                            etas_hir::HirGenericArg::EffectRow(row) => {
+                                hir_effect_row_signature_part(row, hir)
+                            }
+                            etas_hir::HirGenericArg::Wildcard { .. } => "_".into(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!(
+                        "{}.{}<{arguments}>",
+                        hir_effect_ref_signature_part(&action.effect, hir),
+                        action.action
+                    )
+                }
+                _ => "invalid-provider".into(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}({arguments})", path_signature_part(&annotation.path))
 }
 
 fn hir_effect_row_signature_part(row: &etas_hir::HirEffectRow, hir: &HirProgram) -> String {

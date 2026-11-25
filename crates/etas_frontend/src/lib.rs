@@ -11,6 +11,7 @@ mod project;
 mod residual;
 mod session;
 mod static_annotation;
+pub use project::{StorageLayoutDescription, StorageLayoutDescriptionError};
 
 pub use artifact::{
     ArtifactDependencySummary, ArtifactReuseStatsSummary, DiskCacheAccess,

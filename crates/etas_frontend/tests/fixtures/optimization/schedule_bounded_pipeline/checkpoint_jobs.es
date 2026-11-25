@@ -22,7 +22,7 @@ flow append_audit(log: string, event: string) -> string {
 
 flow build_audit(name: string) -> string {
     var audit = "";
-    for event in ["admit", "queue", "schedule", "drain", "complete"] limit Iterations(5) {
+    for event in ["admit", "queue", "schedule", "drain", "complete"] {
         audit = append_audit(audit, name + ":" + event);
     }
     return audit;
@@ -33,10 +33,10 @@ flow main() -> string {
     let audit = build_audit(name);
     var prepared = "";
     var published = "";
-    for task_a in ["job-01", "job-02", "job-03", "job-04", "job-05", "job-06", "job-07", "job-08"] limit Iterations(8) {
+    for task_a in ["job-01", "job-02", "job-03", "job-04", "job-05", "job-06", "job-07", "job-08"] {
         prepared = stage_prepare(prepared, task_a);
     }
-    for task_b in ["job-01", "job-02", "job-03", "job-04", "job-05", "job-06", "job-07", "job-08"] limit Iterations(8) {
+    for task_b in ["job-01", "job-02", "job-03", "job-04", "job-05", "job-06", "job-07", "job-08"] {
         published = stage_publish(published, task_b);
     }
     return audit + ":" + prepared + ":" + published;

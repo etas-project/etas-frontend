@@ -48,7 +48,7 @@ pub(super) fn prepare(
     }
     let source = Arc::new(catalog(Arc::new(library.clone()))?);
     let target = catalog(Arc::new(owner.clone()))?;
-    let correspondence =
+    let mut correspondence =
         NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
     let mut roots = default_types.iter().copied().collect::<Vec<_>>();
     let mut rows = Vec::new();
@@ -92,8 +92,14 @@ pub(super) fn prepare(
                 .map(|identity| (*ty, identity.clone()))
         })
         .collect::<HashMap<_, _>>();
+    let mut interner = TypeInterner::from_store(owner.type_store.as_ref().clone());
+    correspondence
+        .reserve_parameters(&source, &reachable, &mut interner, &budget)
+        .map_err(|error| {
+            super::relocation_error("std binder relocation", &library.type_store, error)
+        })?;
     let foreign = etas_types::ty::relocate_foreign_type_graph(
-        TypeInterner::from_store(owner.type_store.as_ref().clone()),
+        interner,
         etas_types::ty::ForeignTypeGraphInput {
             source: &library.type_store,
             facts: &library.types,
@@ -107,7 +113,7 @@ pub(super) fn prepare(
             budget: &budget,
         },
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| super::relocation_error("std into consumer", &library.type_store, e))?;
     let mut interner = foreign.interner;
     let declarations = foreign.declarations;
     let mut bindings = owner
@@ -136,9 +142,9 @@ pub(super) fn prepare(
         )
         .with_spec_identities(&specs.mapping);
         for ty in default_types {
-            relocation
-                .substitute(ty)
-                .map_err(|error| error.to_string())?;
+            relocation.substitute(ty).map_err(|e| {
+                super::relocation_error("std argument relocation", &library.type_store, e)
+            })?;
         }
         for application in applications {
             let (origin, item, imported) = library
@@ -156,12 +162,22 @@ pub(super) fn prepare(
                 .map(|argument| {
                     Ok(match argument {
                         NativeGenericArgument::Type(ty) => NativeGenericArgument::Type(
-                            relocation.substitute(*ty).map_err(|e| e.to_string())?,
+                            relocation.substitute(*ty).map_err(|e| {
+                                super::relocation_error(
+                                    "std argument relocation",
+                                    &library.type_store,
+                                    e,
+                                )
+                            })?,
                         ),
                         NativeGenericArgument::EffectRow(row) => NativeGenericArgument::EffectRow(
-                            relocation
-                                .substitute_effect_row(row.clone())
-                                .map_err(|e| e.to_string())?,
+                            relocation.substitute_effect_row(row.clone()).map_err(|e| {
+                                super::relocation_error(
+                                    "std argument relocation",
+                                    &library.type_store,
+                                    e,
+                                )
+                            })?,
                         ),
                     })
                 })
@@ -177,9 +193,13 @@ pub(super) fn prepare(
                         .ok_or("SDK method invocation has no checked owner binder")?;
                     Ok((
                         source_method.owner_params[position].subject,
-                        relocation
-                            .substitute(*argument)
-                            .map_err(|e| e.to_string())?,
+                        relocation.substitute(*argument).map_err(|e| {
+                            super::relocation_error(
+                                "std argument relocation",
+                                &library.type_store,
+                                e,
+                            )
+                        })?,
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -200,7 +220,7 @@ pub(super) fn prepare(
             max_depth: limits.max_expansion_depth,
             budget: &budget,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| super::relocation_error("std spec relocation", &library.type_store, e))?;
     let (facts, reflection_targets) = owner
         .reflection_targets
         .extend_checked_types(

@@ -95,7 +95,8 @@ pub fn analyze(
     let type_lookup = TypeLookupIndex::new(&types.store);
     let specs = etas_types::SpecFacts::from(types.facts.as_ref());
     let payload_shapes = crate::infer::semantics::latent_shape::LatentTypeShapes::build(types);
-    let mut graph = BTreeMap::new();
+    let value_inputs = instances::ValueInputs::new(hir, effects);
+    let mut graph = BTreeMap::<Instance, Node>::new();
     let mut graph_size = 0usize;
     let mut pending_instances = effects
         .unit_effects
@@ -171,13 +172,51 @@ pub fn analyze(
                     },
                     _ => None,
                 };
+                if let Some(
+                    role @ (etas_std::StdExecutionRole::CaptureStorage
+                    | etas_std::StdExecutionRole::RestoreStorage),
+                ) = execution
+                {
+                    let member = if role == etas_std::StdExecutionRole::CaptureStorage {
+                        etas_std::SOURCE_STORAGE_VIEW
+                    } else {
+                        etas_std::SOURCE_STORAGE_BUILD
+                    };
+                    for (method, identity) in types
+                        .facts
+                        .storage_methods()
+                        .filter(|(m, _)| m.name == member)
+                    {
+                        match &method.target {
+                            MethodTarget::Source { callable, .. } => {
+                                node.calls
+                                    .insert(Instance::declaration(EffectUnit::Item(*callable)));
+                            }
+                            MethodTarget::External { .. } => {
+                                node.local.join(
+                                    imported
+                                        .get(&etas_code::CallableId::method(identity.clone()))
+                                        .copied()
+                                        .unwrap_or(SuspensionSummary::UNKNOWN),
+                                );
+                            }
+                            _ => {
+                                node.local.join(SuspensionSummary::UNKNOWN);
+                            }
+                        }
+                    }
+                }
                 node.local.join(match execution {
                     Some(
                         etas_std::StdExecutionRole::Abort
                         | etas_std::StdExecutionRole::CaptureData
+                        | etas_std::StdExecutionRole::CaptureStorage
+                        | etas_std::StdExecutionRole::RestoreStorage
+                        | etas_std::StdExecutionRole::StorageSchema
                         | etas_std::StdExecutionRole::StorageContext
                         | etas_std::StdExecutionRole::StorageNonce
                         | etas_std::StdExecutionRole::StreamClock
+                        | etas_std::StdExecutionRole::ReadScopeEnter
                         | etas_std::StdExecutionRole::CurrentSession
                         | etas_std::StdExecutionRole::MessageContextCapture
                         | etas_std::StdExecutionRole::MessageContextRecord
@@ -186,6 +225,8 @@ pub fn analyze(
                         | etas_std::StdExecutionRole::AgentWithBody
                         | etas_std::StdExecutionRole::CallableWithBody
                         | etas_std::StdExecutionRole::ToolReference
+                        | etas_std::StdExecutionRole::ComparatorCapture
+                        | etas_std::StdExecutionRole::ComparatorSame
                         | etas_std::StdExecutionRole::TaskStart
                         | etas_std::StdExecutionRole::TaskCancel,
                     ) => SuspensionSummary::IMMEDIATE,
@@ -194,6 +235,7 @@ pub fn analyze(
                         | etas_std::StdExecutionRole::Requeue
                         | etas_std::StdExecutionRole::Park
                         | etas_std::StdExecutionRole::ScopeEnter
+                        | etas_std::StdExecutionRole::ResourceScope
                         | etas_std::StdExecutionRole::TaskNextCompletion,
                     ) => SuspensionSummary::SUSPENDING,
                     None => SuspensionSummary::UNKNOWN,
@@ -249,11 +291,7 @@ pub fn analyze(
                             // expression. They need their own target proof.
                             node.local.join(SuspensionSummary::UNKNOWN);
                         }
-                        HirExpr::StageCompose { stages, .. } => {
-                            for stage in stages {
-                                pending.extend(stage.limits.iter().copied().map(Child::Expr));
-                            }
-                        }
+                        HirExpr::StageCompose { .. } => {}
                         HirExpr::Index { base, index, .. } => {
                             // Checked indexing either returns or raises the same
                             // non-resumable Error ABI; Try capture is synchronous.
@@ -287,6 +325,14 @@ pub fn analyze(
         if let Some(cursor) = instance.cursor {
             iteration::successors(calls, unit, cursor, &mut node);
         }
+        node.calls = node
+            .calls
+            .into_iter()
+            .map(|mut callee| {
+                instances::retain_value_dependencies(effects, &value_inputs, &mut callee);
+                callee
+            })
+            .collect();
         pending_instances.extend(
             node.calls
                 .iter()
@@ -447,7 +493,7 @@ fn call(context: CallContext<'_>, call: HirExprId, callee: Option<HirExprId>, no
                             );
                         }
                     }
-                } else {
+                } else if !etas_types::data_equality::is_hash_member(context.specs, member) {
                     node.local.join(SuspensionSummary::UNKNOWN);
                 }
                 return;

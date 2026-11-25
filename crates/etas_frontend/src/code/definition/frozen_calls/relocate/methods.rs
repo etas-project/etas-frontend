@@ -9,6 +9,9 @@ impl Relocation<'_> {
     ) -> Result<(CodeFingerprint, CallableEnvironmentId), ProjectionError> {
         let invocation = self.metadata_method(invocation, environment)?;
         let id = CallableEnvironmentId {
+            generic_context: environment.generic_context,
+            instance: environment.instance,
+            scope: None,
             origin: CodeFingerprint::of_parts(
                 "etas.effects.frozen-method-environment.v1",
                 [

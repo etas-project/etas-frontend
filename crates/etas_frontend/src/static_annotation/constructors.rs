@@ -1,6 +1,6 @@
 use etas_code::descriptor::AnnotationConstructorKind;
 use etas_hir::{ResolveResult, ResolvedPath, SymbolDef};
-use etas_std::{RequirementSemantics, StdDecl};
+use etas_std::StdDecl;
 
 pub(super) fn kind(
     checked: &crate::CheckedProgramData,
@@ -9,6 +9,15 @@ pub(super) fn kind(
     let ResolveResult::Resolved(symbol) = path.resolution else {
         return Err("annotation constructor is not resolved".into());
     };
+    if etas_types::facts::enums::standard_limit_constructor(
+        &checked.hir,
+        &checked.std_registry,
+        symbol,
+    )
+    .is_some()
+    {
+        return Ok(AnnotationConstructorKind::Limit);
+    }
     let symbol = checked
         .hir
         .symbols
@@ -22,11 +31,6 @@ pub(super) fn kind(
         .lookup_qualified(path)
         .ok_or("annotation constructor is absent from the checked standard registry")?;
     match &symbol.decl {
-        StdDecl::Requirement(requirement)
-            if matches!(requirement.semantics, RequirementSemantics::Limit(_)) =>
-        {
-            Ok(AnnotationConstructorKind::Limit)
-        }
         StdDecl::Flow(flow)
             if symbol.qualified_path.as_slice()
                 == ["std", "runtime", "trace", symbol.name.as_str()]

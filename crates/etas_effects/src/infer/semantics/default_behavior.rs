@@ -93,8 +93,15 @@ impl EffectSemantics<'_> {
                     .collect::<Option<_>>()?,
             },
         };
-        let (requirements, trace_spec_obligations) =
+        let (mut requirements, trace_spec_obligations) =
             self.method_requirements(&input.requirements).ok()?;
+        let authority = self.external_effect_row_from_metadata(&input.required_authority)?;
+        if authority.open.is_some() || authority.effects.iter().any(|right| !right.is_action()) {
+            return None;
+        }
+        for right in authority.effects.iter() {
+            requirements.insert(crate::RequirementFact::HostAuthority(right.clone()));
+        }
         let (determinism, support) = behavior::lower(&input.behavior);
         let mut residual_checks = crate::ResidualCheckSet::default();
         for reference in &input.residual_checks {

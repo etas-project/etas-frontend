@@ -17,7 +17,7 @@ flow append_audit(log: string, event: string) -> string {
 
 flow build_audit(name: string) -> string {
     var audit = "";
-    for stage in ["configure", "authorize", "acquire", "execute", "release"] limit Iterations(5) {
+    for stage in ["configure", "authorize", "acquire", "execute", "release"] {
         audit = append_audit(audit, name + ":" + stage);
     }
     return audit;
@@ -27,7 +27,7 @@ flow main() -> string {
     let name = scenario_name();
     let audit = build_audit(name);
     var output = "";
-    for task in ["request-01", "request-02", "request-03", "request-04", "request-05", "request-06", "request-07", "request-08"] limit Iterations(8) {
+    for task in ["request-01", "request-02", "request-03", "request-04", "request-05", "request-06", "request-07", "request-08"] {
         let resource = acquire_resource("http_session-shared");
         output = output + resource + ":" + task;
     }

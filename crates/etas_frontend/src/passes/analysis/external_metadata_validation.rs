@@ -916,6 +916,14 @@ pub(super) fn validate_external_metadata(
     for contract in &metadata.scoped_callbacks {
         if contract.parameters.is_empty()
             || contract
+                .resource_boundaries
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || contract
+                .resource_boundaries
+                .iter()
+                .any(|slot| !contract.parameters.contains(slot))
+            || contract
                 .parameters
                 .windows(2)
                 .any(|pair| pair[0] >= pair[1])
@@ -1855,7 +1863,10 @@ fn validate_effect_summaries(
                     ProjectExternalActionTraceInput::ParameterCall { .. } => parameter_calls = true,
                     ProjectExternalActionTraceInput::Seq(parts)
                     | ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
-                    ProjectExternalActionTraceInput::Repeat(part) => traces.push(part),
+                    ProjectExternalActionTraceInput::Recursive {
+                        body: Some(part), ..
+                    }
+                    | ProjectExternalActionTraceInput::Repeat(part) => traces.push(part),
                     ProjectExternalActionTraceInput::Widened {
                         parameter_calls: calls,
                         ..
@@ -1872,7 +1883,11 @@ fn validate_effect_summaries(
         if let Some(requests) = &summary.handler_requests {
             requests::validate(requests, scope, parameter_names)?;
         }
-        if let Some(graph) = &summary.returned_callables {
+        for graph in summary
+            .callable_body
+            .iter()
+            .chain(&summary.returned_callables)
+        {
             if graph
                 .values
                 .iter()
@@ -2012,7 +2027,8 @@ fn validate_action_trace_semantics(
                 root_parameter_count,
             )
         }
-        ProjectExternalActionTraceInput::Empty => Ok(()),
+        ProjectExternalActionTraceInput::Recursive { body: None, .. }
+        | ProjectExternalActionTraceInput::Empty => Ok(()),
         ProjectExternalActionTraceInput::Event { action, .. } => validate_effect_ref(action, scope),
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
             let roots = match parameter {
@@ -2050,7 +2066,10 @@ fn validate_action_trace_semantics(
             }
             Ok(())
         }
-        ProjectExternalActionTraceInput::Repeat(child) => validate_action_trace_semantics(
+        ProjectExternalActionTraceInput::Recursive {
+            body: Some(child), ..
+        }
+        | ProjectExternalActionTraceInput::Repeat(child) => validate_action_trace_semantics(
             child,
             scope,
             parameter_names,
@@ -2626,11 +2645,15 @@ fn validate_action_trace_resource_bounds(
             | ProjectExternalActionTraceInput::Choice(children) => {
                 stack.extend(children.iter().map(|child| (child, next)));
             }
-            ProjectExternalActionTraceInput::Repeat(child)
+            ProjectExternalActionTraceInput::Recursive {
+                body: Some(child), ..
+            }
+            | ProjectExternalActionTraceInput::Repeat(child)
             | ProjectExternalActionTraceInput::DefaultHandler { body: child, .. } => {
                 stack.push((child, next))
             }
-            ProjectExternalActionTraceInput::Empty
+            ProjectExternalActionTraceInput::Recursive { body: None, .. }
+            | ProjectExternalActionTraceInput::Empty
             | ProjectExternalActionTraceInput::Event { .. }
             | ProjectExternalActionTraceInput::ParameterCall { .. }
             | ProjectExternalActionTraceInput::UnknownOrder(_)

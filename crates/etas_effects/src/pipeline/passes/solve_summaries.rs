@@ -45,6 +45,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
         };
         let analysis = run_effect_analysis(
             EffectAnalysisInput {
+                external_defaults: context.input.external_defaults,
                 external_parameter_projections: std::sync::Arc::new(
                     frozen_calls.external_parameter_projections.clone(),
                 ),

@@ -33,12 +33,19 @@ impl EffectSemantics<'_> {
                 let value = reference_value(source)
                     .ok_or_else(|| invalid("returned reference is not a checked function value"))?;
                 let id = CallableEnvironmentId {
+                    generic_context: CallableEnvironment::generic_identity(&generics),
+                    instance: None,
+                    scope: Some(self.callable_environment_scope(state.owner.ok_or_else(
+                        || invalid("returned reference has no application owner"),
+                    )?)?),
                     origin: self.callable_environment_site(value)?,
                     application: self.callable_environment_site(application)?,
                 };
                 self.record_callable_environment(
                     id,
                     CallableEnvironment {
+                        invocation_origin: None,
+                        invocation_inputs: Default::default(),
                         owner: state.owner.ok_or_else(|| {
                             invalid("returned reference has no application owner")
                         })?,
@@ -180,14 +187,10 @@ impl EffectSemantics<'_> {
                             .1
                     };
                     V::Type(
-                        etas_types::TypeSubstitutionEngine::existing_indexed(
-                            &self.types.store,
-                            self.type_lookup(),
-                            &substitutions,
-                        )
-                        .with_type_parameters(&type_parameters)
-                        .with_effect_arguments(&row_arguments)
-                        .substitute(ty)?,
+                        self.type_substitution(&substitutions)
+                            .with_type_parameters(&type_parameters)
+                            .with_effect_arguments(&row_arguments)
+                            .substitute(ty)?,
                     )
                 }
                 etas_types::CallableGenericParamKind::Effect => {
@@ -211,6 +214,9 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| invalid("reference has no checked creation expression"))?;
         let site = self.callable_environment_site(value)?;
         let id = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(application_owner)?),
             origin: etas_code::CodeFingerprint::of_bytes(
                 "etas.effects.reference-invocation.v1",
                 site.as_bytes(),
@@ -220,6 +226,8 @@ impl EffectSemantics<'_> {
         self.record_callable_environment(
             id,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: application_owner,
                 parameters: reference
                     .environment

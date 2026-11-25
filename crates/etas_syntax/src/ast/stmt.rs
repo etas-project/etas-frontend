@@ -107,7 +107,6 @@ pub enum MatchArmBody {
 pub struct ForStmt {
     pub pattern: Pattern,
     pub iter: Expr,
-    pub limits: Vec<Expr>,
     pub body: Block,
     pub span: Span,
 }
@@ -115,14 +114,12 @@ pub struct ForStmt {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct WhileStmt {
     pub condition: Expr,
-    pub limits: Vec<Expr>,
     pub body: Block,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct RetryStmt {
-    pub limits: Vec<Expr>,
     pub body: Block,
     pub span: Span,
 }

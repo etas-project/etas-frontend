@@ -218,6 +218,9 @@ impl Relocation<'_> {
                         }
                         ExternalActionTraceMetadata::Seq(parts)
                         | ExternalActionTraceMetadata::Choice(parts) => pending.extend(parts),
+                        ExternalActionTraceMetadata::Recursive { body, .. } => {
+                            pending.extend(body.iter_mut().map(Box::as_mut))
+                        }
                         ExternalActionTraceMetadata::Repeat(part) => pending.push(part),
                         ExternalActionTraceMetadata::UnknownOrder(actions) => {
                             for action in actions {
@@ -295,6 +298,7 @@ impl Relocation<'_> {
             &mut value.requested_actions,
             &mut value.default_actions,
             &mut value.handled_actions,
+            &mut value.required_authority,
         ] {
             self.graph_row(row, scope)?;
         }

@@ -182,6 +182,7 @@ pub struct RecordType {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FieldDecl {
+    pub annotations: Vec<super::Annotation>,
     pub visibility: Option<Visibility>,
     pub name: crate::ast::Name,
     pub ty: TypeExpr,
@@ -215,6 +216,25 @@ pub struct EffectRef {
     pub path: Path,
     pub args: Vec<EffectArg>,
     pub span: Span,
+}
+
+impl EffectRef {
+    /// Canonical action head for constructor injection and typed handler arms.
+    pub fn typed_injection(ty: TypeExpr, span: Span) -> (Self, super::Name) {
+        let name = |text: &str| super::Name {
+            text: text.into(),
+            span,
+        };
+        let effect = Self {
+            path: Path {
+                segments: ["std", "effects", "Inject"].into_iter().map(name).collect(),
+                span,
+            },
+            args: vec![EffectArg::Type(ty)],
+            span,
+        };
+        (effect, name("get"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

@@ -10,7 +10,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
-pub(super) const MAGIC: &[u8; 8] = b"ETASPUB2";
+pub(super) const MAGIC: &[u8; 8] = b"ETASPUB3";
 
 #[derive(Serialize, Deserialize)]
 struct InstalledPublication {

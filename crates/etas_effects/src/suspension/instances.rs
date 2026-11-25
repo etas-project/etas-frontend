@@ -39,6 +39,240 @@ impl Instance {
     }
 }
 
+/// A closure's checked return origins belong to its captured application.
+/// The declaration summary is used only when no such application was analyzed.
+pub(super) fn checked_summary(
+    effects: &crate::EffectFacts,
+    unit: EffectUnit,
+    environment: Option<CallableEnvironmentId>,
+) -> Option<&crate::EffectSummary> {
+    if let Some(environment) = environment {
+        match effects
+            .captured_callables
+            .get(&crate::facts::CapturedCallableId { unit, environment })
+        {
+            Some(crate::facts::CapturedCallableAnalysis::Solved(summary)) => {
+                return Some(summary);
+            }
+            Some(crate::facts::CapturedCallableAnalysis::Unavailable { .. }) => return None,
+            None => {}
+        }
+    }
+    effects.unit_effects.get(&unit)
+}
+
+/// Checked invocation dependencies, distinct from merely carrying data that
+/// might contain a callable. Grouping lexical expressions also covers captures
+/// whose execution is analyzed as a separate anonymous unit.
+pub(super) struct ValueInputs {
+    parameters: BTreeMap<EffectUnit, BTreeSet<crate::ParameterCallTarget>>,
+    origins: BTreeMap<etas_hir::HirItemId, BTreeSet<CallableValueOrigin>>,
+}
+
+impl ValueInputs {
+    pub fn new(hir: &etas_hir::HirRevision, effects: &crate::EffectFacts) -> Self {
+        let parameters = effects
+            .unit_effects
+            .iter()
+            .map(|(unit, summary)| {
+                (
+                    *unit,
+                    summary
+                        .action_trace
+                        .parameter_calls()
+                        .into_iter()
+                        .map(|call| call.target)
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut origins = BTreeMap::<_, BTreeSet<_>>::new();
+        for (expr, sources) in effects
+            .dynamic_call_sources
+            .iter()
+            .chain(&effects.iteration_call_sources)
+        {
+            if let Some(owner) = hir.index().expr_item.get(expr) {
+                origins.entry(*owner).or_default().extend(sources);
+            }
+        }
+        Self {
+            parameters,
+            origins,
+        }
+    }
+}
+
+/// Canonicalize the proof key using invoked parameters and their transitive
+/// capture dependencies. A generic data field is not an invocation dependency.
+pub(super) fn retain_value_dependencies(
+    effects: &crate::EffectFacts,
+    inputs: &ValueInputs,
+    instance: &mut Instance,
+) {
+    use crate::ParameterCallTarget as Target;
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Dependency {
+        Unit(EffectUnit),
+        Parameter(Target),
+        Environment(CallableEnvironmentId),
+    }
+    let owner = |unit| match unit {
+        EffectUnit::Item(owner)
+        | EffectUnit::AnonymousFlow { owner, .. }
+        | EffectUnit::HandlerArm { owner, .. }
+        | EffectUnit::ParameterDefault { owner, .. } => owner,
+    };
+    let mut pending = vec![Dependency::Unit(instance.unit)];
+    if instance.cursor.is_some() {
+        use crate::{CallableReturnSource as Return, ProjectedReturnSources};
+        use etas_code::descriptor::ValueProjectionStep as Step;
+        let tail = vec![
+            Step::VariantPayload {
+                variant: "Some".into(),
+                position: 0,
+            },
+            Step::TupleElement(1),
+            Step::Field("next".into()),
+        ];
+        if let Some(ProjectedReturnSources::Known(sources)) =
+            checked_summary(effects, instance.unit, instance.environment)
+                .and_then(|summary| summary.exits.as_ref())
+                .and_then(|exits| exits.value_projections.get(&tail))
+        {
+            for source in sources {
+                match source {
+                    Return::Parameter(symbol) => {
+                        pending.push(Dependency::Parameter(Target::Native(*symbol)))
+                    }
+                    Return::Projection(id) => {
+                        pending.push(Dependency::Parameter(Target::Projection(*id)))
+                    }
+                    Return::SourceItem(item) => {
+                        pending.push(Dependency::Unit(EffectUnit::Item(*item)))
+                    }
+                    Return::AnonymousFlow(unit) => pending.push(Dependency::Unit(*unit)),
+                    Return::Captured { unit, environment } => {
+                        pending.push(Dependency::Unit(*unit));
+                        pending.push(Dependency::Environment(*environment));
+                    }
+                    Return::Reference(reference) => {
+                        if let crate::CallableReferenceTarget::Source(item) = reference.target {
+                            pending.push(Dependency::Unit(EffectUnit::Item(item)));
+                        }
+                        pending.extend(reference.environment.map(Dependency::Environment));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut retained = BTreeSet::new();
+    while let Some(dependency) = pending.pop() {
+        if !seen.insert(dependency) {
+            continue;
+        }
+        let sources = match dependency {
+            Dependency::Unit(unit) => {
+                pending.extend(
+                    inputs
+                        .parameters
+                        .get(&unit)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .map(Dependency::Parameter),
+                );
+                inputs
+                    .origins
+                    .get(&owner(unit))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>()
+            }
+            Dependency::Parameter(target) => {
+                retained.insert(target);
+                let mut sources = instance
+                    .values
+                    .get(&target)
+                    .or_else(|| {
+                        instance
+                            .environment
+                            .and_then(|id| effects.callable_environments.get(&id))
+                            .and_then(|snapshot| snapshot.parameters.get(&target))
+                    })
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>();
+                if let Target::Projection(id) = target {
+                    if let Some(projection) = effects.parameter_projections.get(&id) {
+                        pending.push(Dependency::Parameter(Target::Native(projection.parameter)));
+                        for inputs in projection.call_inputs.values() {
+                            for argument in &inputs.arguments {
+                                sources.extend(&argument.sources);
+                                sources.extend(
+                                    argument
+                                        .projections
+                                        .iter()
+                                        .flat_map(|projection| &projection.sources),
+                                );
+                            }
+                        }
+                    }
+                }
+                sources
+            }
+            Dependency::Environment(environment) => effects
+                .callable_environments
+                .get(&environment)
+                .into_iter()
+                .flat_map(|snapshot| snapshot.parameters.values().flatten())
+                .copied()
+                .collect(),
+        };
+        for source in sources {
+            match source {
+                CallableValueOrigin::Parameter { symbol, .. } => {
+                    pending.push(Dependency::Parameter(Target::Native(symbol)));
+                }
+                CallableValueOrigin::Projection(id) => {
+                    pending.push(Dependency::Parameter(Target::Projection(id)));
+                }
+                CallableValueOrigin::Unit(unit) => pending.push(Dependency::Unit(unit)),
+                CallableValueOrigin::Captured { unit, environment } => {
+                    pending.push(Dependency::Unit(unit));
+                    pending.push(Dependency::Environment(environment));
+                }
+                CallableValueOrigin::Reference {
+                    unit, environment, ..
+                }
+                | CallableValueOrigin::FrozenContract {
+                    unit, environment, ..
+                } => {
+                    pending.push(Dependency::Unit(unit));
+                    pending.extend(environment.map(Dependency::Environment));
+                }
+                CallableValueOrigin::StdReference { environment, .. } => {
+                    pending.extend(environment.map(Dependency::Environment));
+                }
+                CallableValueOrigin::Existential { environment, .. }
+                | CallableValueOrigin::SpecMethod { environment, .. }
+                | CallableValueOrigin::MetadataSpecMethod { environment, .. } => {
+                    pending.push(Dependency::Environment(environment));
+                }
+                _ => {}
+            }
+        }
+    }
+    instance
+        .values
+        .retain(|target, _| retained.contains(target));
+}
+
 pub(super) enum Witness {
     Source(Instance),
     External(etas_code::CallableId),
@@ -83,7 +317,9 @@ fn bind(
         TypeSubstitutionEngine::existing_indexed(&context.types.store, context.type_lookup, &names)
             .with_type_parameters(&inherited)
             .with_execution_control(context.control);
-    let mut bindings = HashMap::new();
+    // A captured callable can still refer to its caller's type binders after
+    // this call introduces another declaration scope.
+    let mut bindings = inherited.clone();
     for (parameter, argument) in owner {
         bindings.insert(*parameter, substitution.substitute(*argument).ok()?);
     }
@@ -317,7 +553,8 @@ pub(super) fn witness(
         .facts
         .methods
         .resolve_witness(&context.types.store, context.specs, receiver, &args, member)
-        .ok()??;
+        .ok()?;
+    let witness = witness?;
     match &witness.declaration.target {
         MethodTarget::Source { callable, .. } => {
             let unit = EffectUnit::Item(*callable);
@@ -325,18 +562,153 @@ pub(super) fn witness(
                 return None;
             }
             let owner = witness.owner_bindings.into_iter().collect::<Vec<_>>();
-            bind(
+            let bound = bind(
                 context,
                 unit,
                 &owner,
                 &call.signature.generic_params,
                 Some(&call.instantiation),
-            )
-            .map(Witness::Source)
+            );
+            bound.map(Witness::Source)
         }
         MethodTarget::External { identity } => Some(Witness::External(
             etas_code::CallableId::method(identity.clone()),
         )),
         _ => None,
     }
+}
+
+/// Select the callable position before an invocation, keeping its checked
+/// argument recipe for the eventual concrete implementation.
+pub(super) fn application(
+    context: CallContext<'_>,
+    source: CallableValueOrigin,
+) -> Option<(
+    BTreeSet<CallableValueOrigin>,
+    u32,
+    std::sync::Arc<crate::facts::NativeCallInputs>,
+)> {
+    use crate::ParameterCallTarget as Target;
+    use etas_code::descriptor::ValueProjectionStep as Step;
+    let CallableValueOrigin::Projection(id) = source else {
+        return None;
+    };
+    let projection = context.effects.parameter_projections.get(&id)?;
+    let [prefix @ .., Step::Invocation { inputs }] = projection.path.as_slice() else {
+        return None;
+    };
+    let root = Target::Native(projection.parameter);
+    let selected = context
+        .values
+        .iter()
+        .chain(
+            context
+                .environment
+                .and_then(|id| context.effects.callable_environments.get(&id))
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.parameters),
+        )
+        .find_map(|(target, sources)| {
+            let found = if prefix.is_empty() {
+                *target == root
+            } else {
+                match target {
+                    Target::Projection(id) => context
+                        .effects
+                        .parameter_projections
+                        .get(id)
+                        .is_some_and(|candidate| {
+                            candidate.parameter == projection.parameter && candidate.path == prefix
+                        }),
+                    _ => false,
+                }
+            };
+            found.then_some(sources)
+        })?;
+    let sources = resolve(context, selected);
+    if sources.is_empty() {
+        return None;
+    }
+    Some((
+        sources,
+        *inputs,
+        projection.call_inputs.get(inputs)?.clone(),
+    ))
+}
+
+pub(super) fn application_arguments(
+    context: CallContext<'_>,
+    inputs: &crate::facts::NativeCallInputs,
+    mut instance: Instance,
+    captured: Option<CallableEnvironmentId>,
+) -> Option<Instance> {
+    use crate::ParameterCallTarget as Target;
+    let parameters = match instance.unit {
+        EffectUnit::Item(item) => match context.hir.items.get(item)? {
+            etas_hir::HirItem::Flow(flow) => &flow.params,
+            etas_hir::HirItem::Tool(tool) => &tool.params,
+            etas_hir::HirItem::Agent(agent) => &agent.params,
+            _ => return None,
+        },
+        EffectUnit::AnonymousFlow { value, .. } => match context.hir.exprs.get(value)? {
+            etas_hir::HirExpr::Lambda { params, .. } => params,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let parameters = parameters
+        .iter()
+        .copied()
+        .filter(|parameter| {
+            !captured
+                .and_then(|id| context.effects.callable_environments.get(&id))
+                .is_some_and(|snapshot| {
+                    snapshot
+                        .parameters
+                        .contains_key(&Target::Native(*parameter))
+                })
+        })
+        .collect::<Vec<_>>();
+    if parameters.len() != inputs.arguments.len() {
+        return None;
+    }
+    let positional = inputs
+        .arguments
+        .iter()
+        .filter(|argument| argument.name.is_none())
+        .collect::<Vec<_>>();
+    let mut position = 0;
+    for parameter in parameters {
+        let symbol = context.hir.symbols.get(parameter)?;
+        let argument = inputs
+            .arguments
+            .iter()
+            .find(|argument| argument.name.as_ref() == Some(&symbol.name))
+            .or_else(|| {
+                let found = positional.get(position).copied();
+                position += 1;
+                found
+            })?;
+        instance.values.insert(
+            Target::Native(parameter),
+            resolve(context, &argument.sources),
+        );
+        let etas_hir::SymbolDef::Param { owner, .. } = symbol.def else {
+            return None;
+        };
+        for projected in &argument.projections {
+            let id = crate::facts::NativeParameterProjection::path_identity(
+                owner,
+                parameter,
+                &projected.path,
+            )
+            .ok()?;
+            if context.effects.parameter_projections.contains_key(&id) {
+                instance
+                    .values
+                    .insert(Target::Projection(id), resolve(context, &projected.sources));
+            }
+        }
+    }
+    Some(instance)
 }

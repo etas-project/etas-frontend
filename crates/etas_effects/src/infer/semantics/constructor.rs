@@ -5,6 +5,31 @@ use etas_types::{SymbolTypeFact, Type, TypeId};
 use super::engine::EffectSemantics;
 
 impl EffectSemantics<'_> {
+    pub(super) fn checked_empty_store_projection(&self, expr: etas_hir::HirExprId) -> bool {
+        let Some(projection) = self
+            .types
+            .facts
+            .field_projections
+            .get(&expr)
+            .and_then(|fields| fields.last())
+        else {
+            return false;
+        };
+        // This native projection constructs a fresh source Store. Its optional
+        // codec fields start at None; it does not copy callbacks from a store
+        // value. Ordinary Store expressions and codec views keep their origins.
+        etas_types::value_representation::memory_region_schema(
+            &self.types.store,
+            projection.receiver,
+        )
+        .is_some()
+            && etas_types::value_representation::source_memory_store_parameters(
+                &self.types.store,
+                projection.output,
+            )
+            .is_some()
+    }
+
     pub(super) fn checked_empty_constructor_value(
         &self,
         expr: etas_hir::HirExprId,

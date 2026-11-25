@@ -80,7 +80,13 @@ pub(super) fn solve<E>(
             let after = resolve_known_substitutions(input.store, &solved, *ty);
             if before != after
                 && !is_unresolved_type_var(input.store, after)
-                && let Err(reason) = numeric_literal::validate(input.store, *kind, text, after)
+                && let Err(reason) = numeric_literal::validate_with_facts(
+                    input.store,
+                    input.spec_facts,
+                    *kind,
+                    text,
+                    after,
+                )
             {
                 solved.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,

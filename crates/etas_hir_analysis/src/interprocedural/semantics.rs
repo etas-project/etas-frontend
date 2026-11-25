@@ -11,6 +11,15 @@ pub trait InterproceduralSemantics {
 
     fn body_of(&self, unit: Self::Unit) -> HirAnalysisBody;
 
+    fn begin_component(&mut self, _units: &[Self::Unit], _cyclic: bool) {}
+
+    fn end_component(
+        &mut self,
+        _units: &[Self::Unit],
+        _summaries: &mut super::SummaryStore<Self::Unit, Self::Summary>,
+    ) {
+    }
+
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain;
 
     fn end_unit(

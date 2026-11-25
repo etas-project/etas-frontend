@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_hir::{HirExprId, HirItemId};
-use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
+use etas_types::{CallableGenericParamKind, TypeId};
 
 use crate::{
     ActionTraceDomain, EffectSummary, ParameterCallTarget,
@@ -25,7 +25,14 @@ fn invalid(reason: &str) -> EffectSpecializationError {
 pub(crate) enum MethodEvidence {
     Resolved(LatentSource),
     Alternatives(std::collections::BTreeSet<LatentSource>),
-    Deferred { summary: Box<EffectSummary> },
+    /// Execution behavior is fixed by a validated standard member contract.
+    /// The value observation remains unknown and implementation dispatch stays typed.
+    Contract {
+        summary: Box<EffectSummary>,
+    },
+    Deferred {
+        summary: Box<EffectSummary>,
+    },
 }
 
 impl EffectSemantics<'_> {
@@ -37,6 +44,7 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         generics: super::super::callable_generics::ScopedGenericArguments<'_>,
         formal_parameters: &mut std::collections::BTreeSet<ParameterCallTarget>,
+        resolve_captures: bool,
     ) -> Result<(), EffectSpecializationError> {
         let mut calls = BTreeMap::new();
         summary.action_trace.collect_parameter_calls(&mut calls);
@@ -46,6 +54,20 @@ impl EffectSemantics<'_> {
             }
             for exit in &exits.parameter_exits {
                 exit.prefix.collect_parameter_calls(&mut calls);
+            }
+            // Completion identifies the called value separately from the
+            // invocation projection retained by its execution trace.
+            for gap in &exits.gaps {
+                if let crate::OutcomeAnalysisGap::ParameterCall { target, source, .. } = gap {
+                    let span = source.span();
+                    calls
+                        .entry((*target, span.source.0, span.range.start.0, span.range.end.0))
+                        .or_insert(crate::infer::domain::ParameterCallRef {
+                            target: *target,
+                            parameter: "callback completion".into(),
+                            span,
+                        });
+                }
             }
         }
         if let crate::RequestInstantiationSummary::Available { parameters, .. } =
@@ -67,6 +89,62 @@ impl EffectSemantics<'_> {
             }
         }
         for reference in calls.into_values() {
+            if let Some((root, path)) = self.parameter_projection_target(reference.target) {
+                let supplied = self.has_projection_binding(reference.target, bindings);
+                let caller_parameter = matches!(root, ParameterCallTarget::Native(symbol)
+                    if matches!(self.hir.symbols.get(symbol).map(|symbol| &symbol.def),
+                        Some(etas_hir::SymbolDef::Param { owner, .. }) if Some(*owner) == state.owner));
+                if !supplied && (formal_parameters.contains(&root) || caller_parameter) {
+                    // The callback can remain a lexical parameter while its
+                    // invocation inputs belong to this instantiated frame.
+                    // Substitute those inputs before exporting its summary.
+                    if let ParameterCallTarget::Projection(id) = reference.target {
+                        let mut selected = path.clone();
+                        self.bind_projection_inputs(&mut selected, bindings, state)?;
+                        if selected != path {
+                            let projection = self.parameter_projection(id).ok_or_else(|| {
+                                invalid("symbolic invocation has no checked projection")
+                            })?;
+                            let projected = self.intern_parameter_projection(
+                                projection.owner,
+                                projection.parameter,
+                                selected,
+                            )?;
+                            bindings.insert(
+                                reference.target,
+                                super::super::specialize::TraceArgumentBinding::Origins(
+                                    [LatentSource::Projection(projected)].into(),
+                                ),
+                            );
+                            continue;
+                        }
+                    }
+                    formal_parameters.insert(reference.target);
+                    continue;
+                }
+                if supplied
+                    && (resolve_captures
+                        || path.iter().any(|step| {
+                            matches!(
+                                step,
+                                etas_code::descriptor::ValueProjectionStep::Invocation { .. }
+                            )
+                        }))
+                    && let Some(binding) = self.trace_argument(
+                        reference.target,
+                        &reference.parameter,
+                        bindings,
+                        state,
+                    )?
+                {
+                    let origins = self.trace_argument_origins(&binding, state)?;
+                    bindings.insert(
+                        reference.target,
+                        super::super::specialize::TraceArgumentBinding::Origins(origins),
+                    );
+                }
+                continue;
+            }
             if let ParameterCallTarget::MetadataSpecMethod {
                 invocation,
                 environment,
@@ -141,7 +219,7 @@ impl EffectSemantics<'_> {
             .owner
             .ok_or_else(|| invalid("spec invocation has no checked owner"))?;
         let generics = self.lexical_generic_values(owner)?;
-        let arguments = self.checked_method_arguments(call)?;
+        let arguments = self.checked_method_argument_slots(call)?;
         let mut required_paths = BTreeMap::<u32, BTreeSet<_>>::new();
         if let Some(fact) = self.types.facts.checked_method_calls.get(&call)
             && let etas_types::method::MethodTarget::External { identity } = &fact.target
@@ -157,16 +235,105 @@ impl EffectSemantics<'_> {
                         .graph
                         .projection_path(parameter)
                         .map_err(|error| invalid(&error.to_string()))?;
-                    required_paths
-                        .entry(parameter.position)
-                        .or_default()
-                        .insert(path.to_vec());
+                    let structural = path
+                        .iter()
+                        .take_while(|step| {
+                            etas_code::descriptor::ValueProjectionStep::call_inputs(
+                                std::slice::from_ref(step),
+                            )
+                            .is_empty()
+                                && !matches!(
+                                    step,
+                                    etas_code::descriptor::ValueProjectionStep::CallResult
+                                )
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !structural.is_empty() {
+                        required_paths
+                            .entry(parameter.position)
+                            .or_default()
+                            .insert(structural);
+                    }
                 }
             }
         }
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
             let position = position as u32;
+            let Some(expr) = expr else {
+                if let Some(binding) =
+                    self.default_argument_binding(call, position as usize, state)?
+                {
+                    captures.insert(
+                        ParameterCallTarget::Interface(position),
+                        self.trace_argument_origins(&binding, state)?,
+                    );
+                    let mut paths = required_paths.remove(&position).unwrap_or_default();
+                    if let super::super::specialize::TraceArgumentBinding::InputData {
+                        argument,
+                        ..
+                    } = &binding
+                    {
+                        paths.extend(
+                            argument
+                                .projections
+                                .iter()
+                                .map(|projection| projection.path.clone()),
+                        );
+                    }
+                    for path in paths {
+                        let mut projected = binding.clone();
+                        if let super::super::specialize::TraceArgumentBinding::InputData {
+                            path: selected,
+                            ..
+                        } = &mut projected
+                        {
+                            *selected = path.clone();
+                        }
+                        let sources = self.trace_argument_origins(&projected, state)?;
+                        let target = self
+                            .intern_external_parameter_projection(
+                                ParameterCallTarget::Interface(position),
+                                path,
+                            )
+                            .ok_or_else(|| {
+                                invalid(
+                                    "default argument projection exceeds its checked graph budget",
+                                )
+                            })?;
+                        captures.insert(target, sources);
+                    }
+                    continue;
+                }
+                let parameter = self.types.facts.checked_method_calls[&call]
+                    .signature
+                    .params[position as usize];
+                let paths = self
+                    .value_payload_paths(parameter)
+                    .ok_or_else(|| invalid("default argument has no checked payload shape"))?;
+                if !paths.is_empty() {
+                    return Err(invalid(
+                        "foreign default callback requires its checked callable behavior",
+                    ));
+                }
+                // The default is evaluated in its defining revision. A checked
+                // data-only parameter has no callable origins to import into
+                // the caller, just like an explicitly supplied scalar value.
+                captures.insert(ParameterCallTarget::Interface(position), BTreeSet::new());
+                for path in required_paths.remove(&position).unwrap_or_default() {
+                    let target = self
+                        .intern_external_parameter_projection(
+                            ParameterCallTarget::Interface(position),
+                            path,
+                        )
+                        .ok_or_else(|| {
+                            invalid("default argument projection exceeds its checked graph budget")
+                        })?;
+                    captures.insert(target, BTreeSet::new());
+                }
+                continue;
+            };
             let sources =
                 if self.expr_type_contains_flow(expr) || self.symbolic_contract_expr(state, expr) {
                     self.latent_sources_for_expr(state, expr).ok_or_else(|| {
@@ -208,12 +375,17 @@ impl EffectSemantics<'_> {
         }
         let site = self.callable_environment_site(call)?;
         let environment = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(owner)?),
             origin: site,
             application: site,
         };
         self.record_callable_environment(
             environment,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner,
                 generics,
                 parameters: captures,
@@ -246,10 +418,10 @@ impl EffectSemantics<'_> {
             self.native_environment_type_parameters(lexical_owner, &snapshot.generics)?;
         let names = types.iter().cloned().collect::<HashMap<_, _>>();
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
-        let mut substitution =
-            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &names)
-                .with_type_parameters(&type_parameters)
-                .with_effect_arguments(&type_rows);
+        let mut substitution = self
+            .type_substitution(&names)
+            .with_type_parameters(&type_parameters)
+            .with_effect_arguments(&type_rows);
         let mut arguments = self.call_generic_bindings(call);
         for (_, ty) in &mut arguments.types {
             *ty = substitution.substitute(*ty)?;
@@ -437,13 +609,10 @@ impl EffectSemantics<'_> {
                 .ok_or_else(|| invalid("method evidence receiver binder is invalid"))?;
             bound_bindings.insert(parameter.name.clone(), receiver);
         }
-        let mut substitution = TypeSubstitutionEngine::existing_indexed(
-            &self.types.store,
-            self.type_lookup(),
-            &bound_bindings,
-        )
-        .with_type_parameters(&type_parameters)
-        .with_effect_arguments(&type_rows);
+        let mut substitution = self
+            .type_substitution(&bound_bindings)
+            .with_type_parameters(&type_parameters)
+            .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &declaration.effects {
             let row = substitution.substitute_effect_row(row.clone())?;
@@ -451,6 +620,14 @@ impl EffectSemantics<'_> {
         }
         let span = self.hir.exprs[call].span(&self.hir.blocks);
         let target = ParameterCallTarget::SpecMethod { call, environment };
+        if etas_types::data_equality::is_hash_member(&self.spec_facts, &method_fact.identity) {
+            // Every implementation is checked against the standard Hash
+            // execution contract. It adds no action or request obligation.
+            super::contract_completion(&mut summary, substitution.substitute(declaration.output)?);
+            return Ok(MethodEvidence::Contract {
+                summary: Box::new(summary),
+            });
+        }
         summary.action_trace = ActionTraceDomain::ParameterCall {
             target,
             parameter: method_fact.name.clone(),
@@ -527,7 +704,7 @@ impl EffectSemantics<'_> {
         )
     }
 
-    pub(super) fn capture_source_method_implementation(
+    pub(in crate::infer::semantics) fn capture_source_method_implementation(
         &self,
         item: HirItemId,
         invocation: CallableEnvironmentId,
@@ -598,6 +775,9 @@ impl EffectSemantics<'_> {
             }
         }
         let environment = CallableEnvironmentId {
+            generic_context: CallableEnvironment::generic_identity(&generics),
+            instance: None,
+            scope: Some(self.callable_environment_scope(snapshot.owner)?),
             origin: etas_code::CodeFingerprint::of_parts(
                 "etas.effects.spec-method-implementation.v1",
                 [
@@ -610,6 +790,8 @@ impl EffectSemantics<'_> {
         self.record_callable_environment(
             environment,
             CallableEnvironment {
+                invocation_origin: None,
+                invocation_inputs: Default::default(),
                 owner: snapshot.owner,
                 parameters,
                 generics,

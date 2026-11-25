@@ -16,6 +16,64 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         self.incomplete_at_anchor(anchor, "effect analysis is missing checked facts", state)
     }
 
+    fn begin_loop(&mut self, body: etas_hir::HirBlockId, mut state: Self::Domain) -> Self::Domain {
+        state.summary.action_trace = self.loop_traces.begin(
+            (state.unit, body, state.application),
+            &state.summary.action_trace,
+        );
+        state
+    }
+
+    fn end_loop(&mut self, body: etas_hir::HirBlockId, mut state: Self::Domain) -> Self::Domain {
+        let key = (state.unit, body, state.application);
+        self.loop_traces.finish_summary(key, &mut state.summary);
+        self.loop_traces.finish_exits(key, &mut state.exits);
+        for summary in self
+            .inputs
+            .expr_effects
+            .values_mut()
+            .chain(self.inputs.stmt_effects.values_mut())
+            .chain(self.inputs.inferred_parameter_effects.values_mut())
+        {
+            self.loop_traces.finish_summary(key, summary);
+        }
+        for fact in self.inputs.latent_effects.values_mut() {
+            self.loop_traces.finish_summary(key, &mut fact.summary);
+        }
+        self.callable_summaries.get_mut().invalidate();
+        state
+    }
+
+    fn join_loop_state(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        state: &mut Self::Domain,
+        back_edge: &Self::Domain,
+    ) -> bool {
+        let previous = state.clone();
+        let header = if back_edge.unit.is_some() {
+            Some(self.loop_traces.join(
+                (previous.unit, body, previous.application),
+                &back_edge.summary.action_trace,
+            ))
+        } else {
+            None
+        };
+        etas_utils::JoinSemiLattice::join_assign(state, back_edge);
+        if let Some(header) = header {
+            state.summary.action_trace = header;
+        }
+        self.close_loop_origins(
+            &previous.local_latent_values,
+            &mut state.local_latent_values,
+        );
+        self.close_loop_origins(
+            &previous.local_latent_containers,
+            &mut state.local_latent_containers,
+        );
+        previous != *state
+    }
+
     fn loop_fixpoint_incomplete(
         &mut self,
         body: etas_hir::HirBlockId,
@@ -30,30 +88,17 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     }
 
     fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
-        let HirStmt::For { iter, limits, .. } = self.hir.stmts.get(stmt)? else {
+        let HirStmt::For { iter, .. } = self.hir.stmts.get(stmt)? else {
             return None;
         };
-        let [limit] = limits.as_slice() else {
-            return None;
+        let elems = match self.hir.exprs.get(*iter)? {
+            HirExpr::Array { elems, .. } | HirExpr::List { elems, .. } => elems,
+            _ => return None,
         };
-        let ty = self.types.facts.expr_types.get(iter)?;
-        if !matches!(
-            self.types.store.get(*ty),
-            Some(Type::Array(_) | Type::List(_) | Type::Slice(_) | Type::Set(_) | Type::Map { .. })
-        ) || !self.proven_non_callable_iteration_type(*ty)
-            || self.checked_intrinsic_completion(*limit)
-                != Some(etas_std::IntrinsicCompletionSemantics::Returns)
-        {
-            return None;
-        }
-        let requirement = self.limit_requirement_from_expr(*limit)?;
-        let (LimitKind::Iterations, Some(LimitValue::Count(count))) =
-            (requirement.kind, requirement.value)
-        else {
-            return None;
-        };
-        let count = usize::try_from(u32::try_from(count).ok()?.max(1)).ok()?;
-        (count <= etas_utils::IterationLimit::default().max_iterations()).then_some(count)
+        let ty = *self.types.facts.expr_types.get(iter)?;
+        (self.proven_non_callable_iteration_type(ty)
+            && elems.len() <= etas_utils::IterationLimit::default().max_iterations())
+        .then_some(elems.len().max(1))
     }
 
     fn after_bounded_for(&mut self, stmt: HirStmtId, mut state: Self::Domain) -> Self::Domain {
@@ -86,7 +131,8 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
-    fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+    fn before_expr(&mut self, expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
+        self.record_agent_construction(expr, &mut state);
         self.inputs.source_call_arguments.remove(&expr);
         self.inputs.dynamic_call_sources.remove(&expr);
         if let Some(unit) = state.unit {
@@ -107,7 +153,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 if let Err(reason) = self.record_latent_sources_for_pat(
                     &mut state,
                     pattern,
-                    sources,
+                    Some(sources),
                     Some(scrutinee),
                 ) {
                     let span = self.hir.exprs[expr].span(&self.hir.blocks);
@@ -128,6 +174,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     }
 
     fn after_expr(&mut self, expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
+        self.record_autonomous_start(expr, &mut state);
         self.update_expr_state(expr, &mut state);
         state
     }
@@ -137,6 +184,10 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         expr: HirExprId,
         mut control: etas_hir_analysis::intraprocedural::Control<Self::Domain>,
     ) -> etas_hir_analysis::intraprocedural::Control<Self::Domain> {
+        control = control.with_normal_processed(|mut state| {
+            self.record_autonomous_start(expr, &mut state);
+            etas_hir_analysis::intraprocedural::Control::normal(state)
+        });
         control.for_each_state_mut(|state| self.update_expr_state(expr, state));
         let completion = control
             .normal_state()
@@ -219,7 +270,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 if let Err(reason) = self.record_latent_sources_for_pat(
                     &mut state,
                     pattern,
-                    sources.into_iter().collect(),
+                    Some(sources.into_iter().collect()),
                     None,
                 ) {
                     return self.incomplete_at(span, reason, state);
@@ -255,30 +306,23 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             } if self.is_typed_flow_expr(target)
                 || self.expr_type_contains_flow(target)
                 || self.expr_type_has_parameters(target)
+                || self
+                    .types
+                    .facts
+                    .expr_types
+                    .get(&target)
+                    .is_some_and(|ty| self.stable_agent_state_layout(*ty).is_some())
                 || self.symbolic_contract_expr(&state, value) =>
             {
                 if let Err(message) = self.record_callable_assignment(&mut state, target, value) {
                     state = self.incomplete_at(span, message, state);
                 }
             }
-            HirStmt::For { limits, span, .. } => {
+            HirStmt::For { .. } => {
                 state
                     .exits
                     .gaps
                     .insert(crate::OutcomeAnalysisGap::Loop(stmt));
-                for limit in limits {
-                    let Some(requirement) = self.loop_limit_requirement_from_expr(limit) else {
-                        return self.incomplete_at(
-                            span,
-                            "for-loop limit requires a checked standard limit constructor",
-                            state,
-                        );
-                    };
-                    state
-                        .summary
-                        .requirements
-                        .insert(RequirementFact::Limit(requirement));
-                }
             }
             HirStmt::Let { pat, value, .. } | HirStmt::Var { pat, value, .. } => {
                 if self.flow_container_missing_latent_sources(&state, value) {
@@ -289,13 +333,12 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                         state,
                     );
                 }
-                if let Some(sources) = self.latent_sources_for_expr(&state, value) {
-                    if let Err(reason) =
-                        self.record_latent_sources_for_pat(&mut state, pat, sources, Some(value))
-                    {
-                        let span = self.hir.exprs[value].span(&self.hir.blocks);
-                        state = self.incomplete_at(span, reason, state);
-                    }
+                let sources = self.latent_sources_for_expr(&state, value);
+                if let Err(reason) =
+                    self.record_latent_sources_for_pat(&mut state, pat, sources, Some(value))
+                {
+                    let span = self.hir.exprs[value].span(&self.hir.blocks);
+                    state = self.incomplete_at(span, reason, state);
                 }
             }
             HirStmt::Resume { value, span } => {
@@ -321,43 +364,11 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     self.record_finish_value(value, &mut state);
                 }
             }
-            HirStmt::While { limits, span, .. } | HirStmt::Retry { limits, span, .. } => {
+            HirStmt::While { .. } | HirStmt::Retry { .. } => {
                 state
                     .exits
                     .gaps
                     .insert(crate::OutcomeAnalysisGap::Loop(stmt));
-                if limits.is_empty() {
-                    self.diagnostics.push(Diagnostic::effect_check(
-                        EffectDiagnosticCode::MissingEffectLoopLimit,
-                        span,
-                        "effectful loops and retry blocks require an explicit limit",
-                    ));
-                    state.summary.support =
-                        InterpreterSupport::Rejected(FrontendRejectionReason::MissingRequirement);
-                    return state;
-                }
-                let mut parsed = RequirementSet::new();
-                for limit in limits {
-                    let requirement =
-                        if matches!(self.hir.stmts.get(stmt), Some(HirStmt::While { .. })) {
-                            self.loop_limit_requirement_from_expr(limit)
-                        } else {
-                            self.limit_requirement_from_expr(limit)
-                        };
-                    let Some(requirement) = requirement else {
-                        self.diagnostics.push(Diagnostic::effect_check(
-                            EffectDiagnosticCode::MissingOrInvalidLimit,
-                            span,
-                            "loop limit requires a checked standard limit constructor",
-                        ));
-                        state.summary.support = InterpreterSupport::Rejected(
-                            FrontendRejectionReason::MissingRequirement,
-                        );
-                        return state;
-                    };
-                    parsed.insert(RequirementFact::Limit(requirement));
-                }
-                state.summary.requirements.union_assign(&parsed);
             }
             _ => {}
         }
@@ -421,13 +432,20 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         span: Span,
         mut state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
+        self.record_agent_dispatch(expr, &mut state);
         match self.spec_method_call_evidence(expr, &state) {
             Ok(super::spec_methods::MethodEvidence::Resolved(
                 source @ LatentSource::Metadata(_),
             )) => match self
                 .latent_source_summary(source, span)
                 .and_then(|summary| self.specialize_source_memory_method(expr, summary))
-            {
+                .and_then(|summary| {
+                    if self.is_bound_agent_request(expr) {
+                        self.agent_request_summary(source, span, summary)
+                    } else {
+                        Ok(summary)
+                    }
+                }) {
                 Ok(summary) => {
                     if let LatentSource::Metadata(source) = source {
                         if let Err(error) =
@@ -458,6 +476,12 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             }
             Ok(super::spec_methods::MethodEvidence::Alternatives(sources)) => {
                 self.apply_method_sources(expr, span, state, sources)
+            }
+            Ok(super::spec_methods::MethodEvidence::Contract { summary }) => {
+                self.inputs.contract_method_calls.insert(expr, ());
+                self.note_call_outcomes(expr, None, &summary, &mut state);
+                state.summary.seq_assign(&summary);
+                AnalysisStep::handled(state)
             }
             Ok(super::spec_methods::MethodEvidence::Deferred { summary }) => {
                 let ActionTraceDomain::ParameterCall { target, .. } = &summary.action_trace else {
@@ -736,6 +760,14 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
 impl EffectSemantics<'_> {
     fn update_expr_state(&mut self, expr: HirExprId, state: &mut EffectState) {
         self.record_structural_latent_result(expr, state);
+        self.record_confined_agent_state(expr, state);
+        if let Err(error) = self.record_checked_read_sources(expr, state) {
+            self.mark_incomplete_at(
+                self.hir.exprs[expr].span(&self.hir.blocks),
+                error.to_string(),
+                state,
+            );
+        }
         self.validate_callback_arguments(expr, state);
         self.note_operation_outcomes(expr, state);
         if let Some(HirExpr::Infer { action, .. }) = self.hir.exprs.get(expr) {
@@ -780,12 +812,13 @@ impl EffectSemantics<'_> {
         }
         if let Some(error) = self.types.facts.checked_index_errors.get(&expr).copied() {
             state.summary.record_escaping_effect(Effect::Error(error));
-        } else if matches!(self.hir.exprs.get(expr), Some(HirExpr::Index { .. }))
-            && !matches!(
-                self.types.facts.index_facts.get(&expr),
-                Some(etas_types::CheckedIndexKind::MapLookup { .. })
-            )
-        {
+        } else if matches!(
+            self.hir.exprs.get(expr),
+            Some(HirExpr::Index { .. } | HirExpr::Slice { .. })
+        ) && !matches!(
+            self.types.facts.index_facts.get(&expr),
+            Some(etas_types::CheckedIndexKind::MapLookup { .. })
+        ) {
             let span = self.hir.exprs[expr].span(&self.hir.blocks);
             self.mark_incomplete_at(
                 span,
@@ -896,8 +929,17 @@ impl EffectSemantics<'_> {
         sources: impl IntoIterator<Item = LatentSource>,
     ) -> AnalysisStep<EffectState> {
         let mut joined: Option<crate::EffectSummary> = None;
+        let managed = self.is_bound_agent_request(expr);
         for source in sources {
-            let summary = match self.latent_source_summary(source, span) {
+            let summary = match self
+                .latent_source_summary(source, span)
+                .and_then(|summary| {
+                    if managed {
+                        self.agent_request_summary(source, span, summary)
+                    } else {
+                        Ok(summary)
+                    }
+                }) {
                 Ok(summary) => summary,
                 Err(error) => {
                     return AnalysisStep::handled(self.incomplete_at(

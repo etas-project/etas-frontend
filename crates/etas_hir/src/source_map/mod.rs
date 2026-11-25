@@ -151,6 +151,8 @@ impl HirOrigin {
 pub enum DesugaringKind {
     MatchStatementExpr,
     CollectionLiteral,
+    ConstructorInjection,
+    TypeStage,
 }
 
 #[derive(

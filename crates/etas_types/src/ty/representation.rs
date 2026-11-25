@@ -38,6 +38,17 @@ impl<'a> TypeRepresentationMaterializer<'a> {
         interner: &mut TypeInterner,
         roots: impl IntoIterator<Item = TypeId>,
     ) -> Result<(), TypeSubstitutionError> {
+        self.materialize_observed(interner, roots, |_| {})
+    }
+
+    /// Observe each newly reached concrete layout once. Compiler-generated
+    /// value operations use the same dependency traversal as runtime layouts.
+    pub fn materialize_observed(
+        &mut self,
+        interner: &mut TypeInterner,
+        roots: impl IntoIterator<Item = TypeId>,
+        mut observe: impl FnMut(TypeId),
+    ) -> Result<(), TypeSubstitutionError> {
         let mut pending: Vec<_> = roots.into_iter().collect();
         // Roots are a set of checked facts, often stored in hash maps. Their
         // traversal must assign the same represented TypeIds in every build.
@@ -57,6 +68,7 @@ impl<'a> TypeRepresentationMaterializer<'a> {
                 .get(ty)
                 .cloned()
                 .ok_or(TypeSubstitutionError::MissingType(ty))?;
+            observe(ty);
             match data {
                 Type::Existential { bounds } => {
                     pending.extend(bounds.into_iter().flat_map(|bound| bound.args));

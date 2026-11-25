@@ -92,6 +92,7 @@ fn external_signature_input(
     })?;
     let mut anchors =
         crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
+    anchors.add_constructor_bindings(hir);
     let standard = context.standard_library_interface().map(|library| {
         environment
             .external_packages
@@ -104,6 +105,7 @@ fn external_signature_input(
         anchors.add_standard_library(package, hir, &context.std_registry);
     }
     let mut input = etas_types::ExternalSignatureInput {
+        standard_package: standard.map(external_package_key),
         package_anchors: environment
             .external_packages
             .iter()
@@ -291,6 +293,16 @@ fn external_signature_input(
     }
     reflection::apply(context, &mut input, diagnostics);
     reflection::canonicalize_re_exports(context, &mut input, diagnostics);
+    input
+        .symbol_bindings
+        .extend(hir.constructor_external_bindings.iter().map(|binding| {
+            etas_types::ExternalSymbolBindingInput {
+                symbol: binding.symbol,
+                package: etas_types::ExternalPackageKey(binding.package),
+                path: binding.path.clone(),
+                span: binding.span,
+            }
+        }));
     input.action_bindings =
         external_effect_action_bindings(hir, &input.symbol_bindings, diagnostics);
 
@@ -451,6 +463,7 @@ fn convert_external_metadata(
     let (parameter_interfaces, method_parameter_interfaces) =
         parameter_interfaces::collect(environment, metadata)?;
     Ok(etas_types::ExternalPublicMetadataInput {
+        constructor_contracts: metadata.constructor_contracts.clone(),
         parameter_interfaces,
         method_parameter_interfaces,
         scoped_callbacks: metadata.scoped_callbacks.clone(),

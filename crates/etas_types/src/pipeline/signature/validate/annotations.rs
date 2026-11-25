@@ -3,7 +3,7 @@ use etas_hir::{
     HirAnnotation, HirAnnotationArg, HirArg, HirExpr, HirExprId, HirFieldInit, HirItem, HirItemId,
     HirLiteral, ResolveResult, SymbolDef, SymbolKind, TopLevelLetClassification,
 };
-use etas_std::{RequirementSemantics, StdDecl};
+use etas_std::StdDecl;
 
 use crate::{SymbolTypeFact, TypeFacts, pipeline::symbols::TypeSymbolIndex};
 
@@ -25,6 +25,7 @@ enum KnownAnnotation {
     Deprecated,
     Trace,
     Optimization,
+    Inject,
 }
 
 pub fn validate_annotations(
@@ -67,7 +68,7 @@ fn validate_annotation(
     validate_static_annotation_args(ctx, annotation, kind);
     match kind {
         Some(KnownAnnotation::Model) => validate_model_annotation(ctx, annotation),
-        Some(KnownAnnotation::Tools) => validate_tools_annotation(ctx, annotation),
+        Some(KnownAnnotation::Tools) => validate_tools_annotation(ctx, item, annotation),
         Some(KnownAnnotation::Derive) => validate_derive_annotation(ctx, annotation),
         Some(KnownAnnotation::Test) => validate_test_annotation(ctx, annotation),
         Some(KnownAnnotation::Deprecated) => validate_deprecated_annotation(ctx, annotation),
@@ -86,6 +87,7 @@ fn known_annotation(annotation: &HirAnnotation) -> Option<KnownAnnotation> {
         "deprecated" => Some(KnownAnnotation::Deprecated),
         "trace" => Some(KnownAnnotation::Trace),
         "optimization" => Some(KnownAnnotation::Optimization),
+        "inject" => Some(KnownAnnotation::Inject),
         _ => None,
     }
 }
@@ -110,7 +112,9 @@ fn validate_annotation_target(
         return;
     };
     let allowed = match kind {
-        KnownAnnotation::Model | KnownAnnotation::Tools => matches!(hir_item, HirItem::Agent(_)),
+        KnownAnnotation::Model | KnownAnnotation::Tools => {
+            matches!(hir_item, HirItem::Agent(_)) || ctx.hir.active_method_agent(item).is_some()
+        }
         KnownAnnotation::Limits | KnownAnnotation::Trace | KnownAnnotation::Optimization => {
             matches!(
                 hir_item,
@@ -120,6 +124,7 @@ fn validate_annotation_target(
         KnownAnnotation::Derive => matches!(hir_item, HirItem::Type(_) | HirItem::Enum(_)),
         KnownAnnotation::Test => matches!(hir_item, HirItem::Flow(_)),
         KnownAnnotation::Deprecated => !matches!(hir_item, HirItem::Error { .. }),
+        KnownAnnotation::Inject => false,
     };
     if !allowed {
         ctx.diagnostics.push(Diagnostic::type_check(
@@ -275,19 +280,7 @@ fn is_known_limit_constructor(ctx: &AnnotationContext<'_>, callee: HirExprId) ->
     let ResolveResult::Resolved(symbol) = path.resolution else {
         return false;
     };
-    let Some(symbol) = ctx.hir.symbols.get(symbol) else {
-        return false;
-    };
-    let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
-        return false;
-    };
-    let Some(std_symbol) = ctx.std_registry.lookup_qualified(path) else {
-        return false;
-    };
-    let StdDecl::Requirement(requirement) = &std_symbol.decl else {
-        return false;
-    };
-    matches!(requirement.semantics, RequirementSemantics::Limit(_))
+    crate::facts::enums::standard_limit_constructor(ctx.hir, ctx.std_registry, symbol).is_some()
 }
 
 fn is_known_trace_constructor(ctx: &AnnotationContext<'_>, callee: HirExprId) -> bool {
@@ -440,7 +433,15 @@ fn is_static_path_expr(ctx: &AnnotationContext<'_>, expr: HirExprId) -> bool {
     is_static_annotation_path(ctx, path.resolution.clone())
 }
 
-fn validate_tools_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
+fn validate_tools_annotation(
+    ctx: &mut AnnotationContext<'_>,
+    item: HirItemId,
+    annotation: &HirAnnotation,
+) {
+    let agent = match ctx.hir.items.get(item) {
+        Some(HirItem::Agent(_)) => Some(item),
+        _ => ctx.hir.active_method_agent(item),
+    };
     for arg in &annotation.args {
         let value = match arg {
             HirAnnotationArg::Positional { value, .. } => *value,
@@ -484,6 +485,21 @@ fn validate_tools_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAn
                     TypeDiagnosticCode::InvalidAnnotation,
                     span,
                     "`@tools` entries must reference tool declarations or imported tool symbols",
+                ));
+                continue;
+            }
+            if let Some(HirExpr::Path(path)) = ctx.hir.exprs.get(tool_expr)
+                && let ResolveResult::Resolved(symbol) = path.resolution
+                && let Some(symbol) = ctx.symbols.canonical_symbol(ctx.hir, symbol)
+                && let Some(SymbolDef::Item { item: tool }) =
+                    ctx.hir.symbols.get(symbol).map(|symbol| &symbol.def)
+                && let Some(owner) = ctx.hir.member_tool_owner(*tool)
+                && ctx.hir.active_agent_item(owner) != agent
+            {
+                ctx.diagnostics.push(Diagnostic::type_check(
+                    TypeDiagnosticCode::InvalidAnnotation,
+                    path.span,
+                    "member tool exposure requires a method of the owning Agent",
                 ));
             }
         }

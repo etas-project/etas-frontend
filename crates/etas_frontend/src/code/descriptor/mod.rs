@@ -27,6 +27,11 @@ pub(crate) use standard::primitive_info as standard_primitive_info;
 
 #[derive(Debug)]
 pub enum ProjectionError {
+    CallableContext {
+        callable: etas_code::CallableId,
+        stage: String,
+        source: Box<ProjectionError>,
+    },
     MissingPackage(HirModuleId),
     MissingModule(HirModuleId),
     MissingSymbol(SymbolId),
@@ -57,6 +62,7 @@ pub enum ProjectionError {
 impl ProjectionError {
     pub(crate) fn resource_limit(&self) -> Option<(&'static str, usize)> {
         match self {
+            Self::CallableContext { source, .. } => source.resource_limit(),
             Self::Limit { resource, limit }
             | Self::Descriptor(etas_code::descriptor::DescriptorError::Limit { resource, limit }) => {
                 Some((*resource, *limit))
@@ -68,7 +74,14 @@ impl ProjectionError {
 
 impl std::fmt::Display for ProjectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "checked definition projection failed: {self:?}")
+        match self {
+            Self::CallableContext {
+                callable,
+                stage,
+                source,
+            } => write!(f, "while projecting {callable:?} ({stage}): {source}"),
+            _ => write!(f, "checked definition projection failed: {self:?}"),
+        }
     }
 }
 impl std::error::Error for ProjectionError {}

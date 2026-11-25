@@ -101,6 +101,8 @@ pub struct ExternalPackageKey(pub u32);
 
 #[derive(Clone, Debug, Default)]
 pub struct ExternalSignatureInput {
+    /// Package slot of the validated std interface for this check.
+    pub standard_package: Option<ExternalPackageKey>,
     pub package_anchors: Vec<(ExternalPackageKey, etas_core::Span)>,
     pub metadata: Vec<ExternalPublicMetadataInput>,
     pub symbol_bindings: Vec<ExternalSymbolBindingInput>,
@@ -131,6 +133,7 @@ pub struct ExternalActionBindingInput {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalPublicMetadataInput {
+    pub constructor_contracts: Vec<etas_package_metadata::ConstructorContract>,
     /// Declaration calling interfaces reconstructed from validated descriptors.
     pub parameter_interfaces:
         std::collections::BTreeMap<Vec<String>, Vec<crate::ParameterInterface>>,
@@ -274,6 +277,8 @@ pub struct ExternalSpecImplInput {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalMethodInput {
     pub identity: etas_code::MethodId,
+    #[serde(default)]
+    pub internal: bool,
     pub self_type: ExternalTypeInput,
     pub receiver: crate::method::MethodReceiver,
     pub owner_params: Vec<ExternalCallableGenericParamInput>,

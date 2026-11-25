@@ -43,6 +43,12 @@ pub(super) fn apply(
     span: etas_core::Span,
 ) {
     for method in &metadata.methods {
+        if method.identity.implementation().subject().kind() == etas_code::DefinitionKind::Agent {
+            ctx.interner
+                .intern(Type::AgentContext(crate::AgentContextRef::Portable(
+                    Box::new(method.identity.clone()),
+                )));
+        }
         let label = format!("{:?}", method.identity);
         let Some(owner_params) = crate::lower::external::lower_external_scoped_generic_params(
             ctx,
@@ -105,6 +111,7 @@ pub(super) fn apply(
             .push(crate::facts::methods::ExternalMethodFact {
                 span,
                 identity: method.identity.clone(),
+                internal: method.internal,
                 self_type,
                 receiver: method.receiver,
                 owner_params,

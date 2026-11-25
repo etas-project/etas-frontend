@@ -233,6 +233,14 @@ pub fn collect_expr<E>(
                 ty
             } else {
                 let base_ty = collect_expr(ctx, base, None)?;
+                let receiver = match ctx.ctx.hir.exprs.get(base) {
+                    Some(HirExpr::Path(path)) => match path.resolution {
+                        ResolveResult::Resolved(symbol) => Some(symbol),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let base_ty = super::field::agent_field_base(ctx, base_ty, receiver, &field, span);
                 let hint = super::field::declared_field_hint(ctx, base_ty, &field, span);
                 if hint.is_none() && super::method_call::has_bindable_method(ctx, &field) {
                     let output = super::method_call::collect_bound_method(
@@ -484,7 +492,7 @@ pub fn collect_expr<E>(
         } => collect_pipeline(ctx, input, stages, span, expected)?,
         HirExpr::Lambda {
             params, body, span, ..
-        } => collect_lambda(ctx, params, body, span, expected)?,
+        } => collect_lambda(ctx, expr, params, body, span, expected)?,
         HirExpr::ListCons { head, tail, span } => {
             collect_list_cons(ctx, head, tail, span, expected)?
         }
@@ -807,9 +815,6 @@ fn collect_stage_composition<E>(
     let mut current = input;
     for stage in stages {
         ctx.checkpoint()?;
-        for limit in stage.limits {
-            collect_expr(ctx, limit, None)?;
-        }
         let stage_ty = collect_expr(ctx, stage.expr, None)?;
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
@@ -853,9 +858,6 @@ fn collect_pipeline<E>(
     let mut current = collect_expr(ctx, input, None)?;
     for stage in stages {
         ctx.checkpoint()?;
-        for limit in stage.limits {
-            collect_expr(ctx, limit, None)?;
-        }
         let stage_ty = collect_expr(ctx, stage.expr, None)?;
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
@@ -934,6 +936,15 @@ fn collect_path<E>(
             if let Some(mut current) = symbol_value_type(ctx, symbol) {
                 let mut projections = Vec::with_capacity(partial.remaining.len());
                 for (member_index, member) in partial.remaining.iter().enumerate() {
+                    if member_index == 0 {
+                        current = super::field::agent_field_base(
+                            ctx,
+                            current,
+                            Some(symbol),
+                            member,
+                            path.span,
+                        );
+                    }
                     if let Some(field_ty) = std_declared_field_type(ctx, current, member, path.span)
                     {
                         projections.push(crate::FieldProjectionFact {

@@ -17,6 +17,8 @@ use super::LimitRequirement;
 pub enum RequirementFact {
     Limit(LimitRequirement),
     TraceSpec(crate::TraceSpecClauseFact),
+    /// An admission right required by a native default. This is not an action event.
+    HostAuthority(crate::Effect),
 }
 
 #[derive(

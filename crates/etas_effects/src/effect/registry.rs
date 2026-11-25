@@ -177,6 +177,20 @@ impl EffectRegistry {
         registry.register_hir_effects(hir, dependency_metadata, &types.facts, std_registry)?;
         registry.register_hir_effect_extensions(hir);
         registry.register_hir_actions(hir, &types.facts)?;
+        // Managed boundaries have identities/selectors, but no source payload
+        // ABI. A user perform cannot manufacture an instance or a request turn.
+        if registry.tags.contains_key(&AGENTIC_TAG) {
+            for name in ["create", "call"] {
+                let action = registry.register_carried_action(
+                    AGENTIC_TAG,
+                    name,
+                    &[EffectActionArgKind::Type],
+                );
+                registry
+                    .action_names
+                    .insert(format!("std.effects.Agentic.{name}"), action);
+            }
+        }
         registry.register_memory_places(types.store.iter());
         Ok(registry)
     }
@@ -295,6 +309,17 @@ impl EffectRegistry {
                     .get(action)
                     .map(|identity| identity.selectors.as_slice())
             })
+    }
+
+    /// These engine-owned boundaries acquire Agent state through the mailbox;
+    /// their transitive Host actions retain their own resource rules.
+    pub fn is_managed_agent_action(&self, action: &ActionRef) -> bool {
+        action.tag == AGENTIC_TAG
+            && self.is_carried_action(action)
+            && matches!(
+                self.action_name(action.tag, action.action),
+                Some("create" | "call")
+            )
     }
 
     pub fn is_carried_action(&self, action: &ActionRef) -> bool {

@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
 };
 
@@ -223,6 +223,7 @@ pub struct TypeSubstitutionEngine<'a> {
     effect_rows: Option<EffectRowSubstitution<'a>>,
     relocated_effect_parameters: Option<&'a HashMap<String, String>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
+    type_requests: Option<&'a RefCell<Vec<Type>>>,
     active: HashSet<TypeId>,
     memo: HashMap<TypeId, TypeId>,
     memo_depths: HashMap<TypeId, usize>,
@@ -250,9 +251,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             && self.type_parameters.is_none_or(HashMap::is_empty)
             && self.spec_identities.is_none_or(HashMap::is_empty)
             && self.canonical_parameters.is_none_or(HashMap::is_empty)
-            && self
-                .variables
-                .is_none_or(|values| values.iter().next().is_none())
+            && self.variables.is_none_or(Substitution::is_empty)
             && self.effect_rows.as_ref().is_none_or(|rows| match rows {
                 EffectRowSubstitution::Arguments(values)
                 | EffectRowSubstitution::Equations(values) => values.is_empty(),
@@ -277,6 +276,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             effect_rows: None,
             relocated_effect_parameters: None,
             closed_named_types: None,
+            type_requests: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -300,6 +300,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             effect_rows: None,
             relocated_effect_parameters: None,
             closed_named_types: None,
+            type_requests: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -329,6 +330,13 @@ impl<'a> TypeSubstitutionEngine<'a> {
             variables: Some(variables),
             ..Self::existing(store, named)
         }
+    }
+
+    /// Collect missing specializations while querying an immutable type graph.
+    /// The compilation owner materializes the batch before publishing proofs.
+    pub fn with_type_requests(mut self, requests: &'a RefCell<Vec<Type>>) -> Self {
+        self.type_requests = Some(requests);
+        self
     }
 
     pub fn with_expansion_depth(mut self, limit: usize) -> Self {
@@ -406,6 +414,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             effect_rows: None,
             relocated_effect_parameters: None,
             closed_named_types: None,
+            type_requests: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -429,6 +438,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             effect_rows: None,
             relocated_effect_parameters: None,
             closed_named_types: None,
+            type_requests: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -1037,7 +1047,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         if !self.is_relocation() && self.require_type(original)? == specialized {
             return Ok(original);
         }
-        match &mut self.target {
+        let result = match &mut self.target {
             SubstitutionTarget::Materialize(interner) => Ok(interner.intern(specialized)),
             SubstitutionTarget::Existing(store) => {
                 let found = if let Some(lookup) = self.existing_lookup {
@@ -1054,7 +1064,13 @@ impl<'a> TypeSubstitutionEngine<'a> {
                 .get(input.target, &specialized)
                 .ok_or(TypeSubstitutionError::UnmaterializedType(specialized)),
             SubstitutionTarget::RelocateMaterialize(input) => Ok(input.target.intern(specialized)),
+        };
+        if let Err(TypeSubstitutionError::UnmaterializedType(ty)) = &result
+            && let Some(requests) = self.type_requests
+        {
+            requests.borrow_mut().push(ty.clone());
         }
+        result
     }
 }
 

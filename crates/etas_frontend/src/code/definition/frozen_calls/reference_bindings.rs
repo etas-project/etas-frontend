@@ -48,8 +48,22 @@ pub(crate) fn relocate_reference_bindings(
         store: candidate.type_store.clone(),
         diagnostics: Vec::new(),
     };
-    let relocation =
-        relocate::Relocation::new(original, target_input, &target_output, &from, &to, overlay)?;
+    let relocation = relocate::Relocation::new(
+        original,
+        target_input,
+        &target_output,
+        &from,
+        &to,
+        overlay,
+        original
+            .effects
+            .parameter_projections
+            .values()
+            .chain(candidate.effects.parameter_projections.values())
+            .flat_map(|projection| projection.call_inputs.keys())
+            .max()
+            .map_or(0, |id| id + 1),
+    )?;
     let scope = projection::owner(owner)?;
     references
         .iter()

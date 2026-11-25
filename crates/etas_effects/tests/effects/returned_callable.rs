@@ -21,7 +21,7 @@ flow main() -> unit { factory()(); }
     let mut pending = vec![&summary.action_trace];
     let mut events = 0;
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Empty => {}
             ActionTraceDomain::Seq(children) => pending.extend(children),
             ActionTraceDomain::Event(_) => events += 1,
@@ -114,6 +114,7 @@ flow main() -> i32 {} {{
         let mut calls = 0;
         while let Some(trace) = pending.pop() {
             match trace {
+                ActionTraceDomain::Shared(body) => pending.push(&body.body),
                 ActionTraceDomain::Event(event) if event.action == stdout => calls += 1,
                 ActionTraceDomain::Seq(children) => pending.extend(children),
                 ActionTraceDomain::Empty => {}
@@ -238,6 +239,7 @@ flow main() -> i32 {} {{ return invoke(factory()); }}
         let mut calls = 0;
         while let Some(trace) = pending.pop() {
             match trace {
+                ActionTraceDomain::Shared(body) => pending.push(&body.body),
                 ActionTraceDomain::Event(event) if event.action == stdout => calls += 1,
                 ActionTraceDomain::Seq(children) => pending.extend(children),
                 ActionTraceDomain::Empty => {}
@@ -281,7 +283,7 @@ flow main() -> i32 {
     let mut pending = vec![&main.action_trace];
     let mut calls = 0;
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Event(event) if event.action == stdout => calls += 1,
             ActionTraceDomain::Seq(children) => pending.extend(children),
             ActionTraceDomain::Empty => {}
@@ -324,7 +326,7 @@ flow main() -> unit { let selected = relay(); selected(); selected(); }
     assert!(main.requested_actions.effects.contains(&stdout));
     assert!(main.default_actions.effects.contains(&stdout));
     assert!(
-        matches!(&main.action_trace, ActionTraceDomain::Seq(events)
+        matches!(main.action_trace.structure(), ActionTraceDomain::Seq(events)
         if events.len() == 2 && events.iter().all(|event| matches!(event,
             ActionTraceDomain::Event(event) if event.action == stdout))),
         "{main:?}"
@@ -402,7 +404,7 @@ flow main() -> unit {
     let mut pending = vec![&main.action_trace];
     let mut calls = 0;
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Event(event) if event.action == stdout => calls += 1,
             ActionTraceDomain::Seq(children) | ActionTraceDomain::Choice(children) => {
                 pending.extend(children)
@@ -454,7 +456,7 @@ flow main() -> unit ![Error<i32>] {
     let mut pending = vec![&main.action_trace];
     let mut calls = 0;
     while let Some(trace) = pending.pop() {
-        match trace {
+        match trace.structure() {
             ActionTraceDomain::Event(event) if event.action == stdout => calls += 1,
             ActionTraceDomain::Seq(children) | ActionTraceDomain::Choice(children) => {
                 pending.extend(children)
@@ -504,7 +506,7 @@ flow main() -> unit {
     assert!(main.requested_actions.effects.contains(&stdout));
     assert!(main.default_actions.effects.contains(&stdout));
     assert!(
-        matches!(&main.action_trace, ActionTraceDomain::Seq(events)
+        matches!(main.action_trace.structure(), ActionTraceDomain::Seq(events)
         if events.len() == 2 && events.iter().all(|event| matches!(event,
             ActionTraceDomain::Event(event) if event.action == stdout))),
         "{main:?}"
@@ -591,7 +593,10 @@ flow main() -> unit {
         let parameter = flow.params[0];
         let summary = &output.facts.item_effects[&item];
         assert!(summary.requested_actions.is_empty(), "{summary:?}");
-        assert!(matches!(&summary.action_trace, ActionTraceDomain::Empty));
+        assert!(matches!(
+            summary.action_trace.structure(),
+            ActionTraceDomain::Empty
+        ));
         assert!(summary.exits.as_ref().unwrap().exits.iter().all(|exit| matches!(&exit.outcome,
             etas_effects::CallableOutcome::Returned { observation: etas_effects::ReturnObservation::CallableSources(sources), .. }
             if sources.contains(&etas_effects::CallableReturnSource::Parameter(parameter)))));
@@ -605,7 +610,7 @@ flow main() -> unit {
     assert!(summary.requested_actions.effects.contains(&stdout));
     assert!(summary.default_actions.effects.contains(&stdout));
     assert!(
-        matches!(&summary.action_trace, ActionTraceDomain::Event(event) if event.action == stdout),
+        matches!(summary.action_trace.structure(), ActionTraceDomain::Event(event) if event.action == stdout),
         "{summary:?}"
     );
 }

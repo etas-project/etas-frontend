@@ -1559,3 +1559,47 @@ Frontend tests should include:
   requirements;
 - facade tests proving `CheckedProgram` is produced only when diagnostics allow
   interpretation.
+
+
+## Constructor Injection Implementation Status
+
+Stored fields retain their annotations in syntax and HIR. The `@inject` argument
+uses the ordinary action-reference and selector grammar and lowers to a
+zero-argument perform template at the field's declaration scope. Source nominal
+record declarations and Agent state declarations admit these annotations;
+structural records, aliases and nested payload records use the ordinary type
+lowering path and reject them. Duplicate injection annotations and an absent
+provider are declaration errors. Item annotations cannot use `@inject`.
+
+After local declarations are lowered, constructor elaboration follows canonical
+source bindings and transparent constructor aliases. Explicit fields retain
+their source order. Each omitted injected field appends a copied ordinary perform
+expression in declaration order. HIR records retain the owning declaration and
+the injected expression IDs for type binding. The existing record evaluator and
+continuations execute the resulting field sequence.
+
+Each copied selector owns its HIR type references. During collection of that
+field, the owning type-parameter symbols bind to the actual constructor's type
+arguments, including inferred arguments. These bindings use the same source
+parameter substitution engine as instantiated bodies and are restored after
+collection. Declaration templates also run through the ordinary action/body
+constraint solver, so explicit overrides do not remove provider arity, generic,
+spec or result-type validation. Selected static types are retained in provisional
+facts, normalized by the same solver substitutions and published as checked type
+references for Effect analysis and runtime matching. Declaration templates have
+FieldAnnotation tree bodies, separate from executable callable bodies.
+
+Incremental signature fingerprints retain the provider and selector identities,
+including injection field order. Declaration dependencies include provider
+references. HIR diagnostic dumps and source syntax relocation retain the field
+annotations. Synthetic requests retain their constructor and declaration source
+origins. The serialized HIR image schema is 91 and frontend cache schema is 275
+for this unfinished source batch.
+
+Foreign package construction defaults and interpreter initialization ownership
+remain pending. A single source example covers local ordering, two requests to
+one provider, named/shorthand overrides, inferred generic instances, aliases and
+stored Agent state. That example and 208 related native checks pass. A fresh
+source-built SDK with the new format also passes 22 installed CLI checks at O0
+and O3, including this example. Foreign defaults and initialization cleanup still
+require implementation before complete constructor-injection acceptance.

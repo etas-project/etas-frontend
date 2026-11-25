@@ -162,7 +162,9 @@ fn build_selected(
                     .clone(),
             )
         };
-        let projected = projector.project_signature(owner, signature, &names, declared)?;
+        let projected = projector
+            .project_signature(owner, signature, &names, declared)
+            .map_err(|source| projector.projection_error(&id, "signature", source))?;
         let analysis = projector.project_analysis(&id, item, projected)?;
         if selection.is_some()
             && let Some(identity) = id.as_declaration()
@@ -268,7 +270,9 @@ fn build_selected(
             .values()
             .filter(|method| method.agent == item && Some(method.symbol) != default_method)
             .filter(|method| !execution || callable_bindings.contains_key(&method.symbol))
-            .filter(|method| selection.is_none() || method.private_to.is_none())
+            // Public spec witnesses are selected through their spec surface,
+            // even when the implementation flow has private lexical visibility.
+            .filter(|method| selection.is_none() || callable_bindings.contains_key(&method.symbol))
             .map(|method| {
                 callable_bindings
                     .get(&method.symbol)
@@ -463,7 +467,7 @@ fn build_selected(
     };
     if selection.is_none() {
         catalog.bind_external_callables(limits, execution)?;
-        catalog.bind_external_agents(limits)?;
+        catalog.bind_external_agents(limits, execution)?;
         catalog.add_selected_views()?;
     }
     Ok((
@@ -517,6 +521,21 @@ pub(crate) fn selected_callable(
             return Ok(false);
         }
         if method.inherent {
+            if selection.contains(&item)
+                && checked.hir.source_standard_types
+                && ((id.name() == etas_std::SOURCE_VALUE_EQUALITY_METHOD
+                    && etas_std::source_value_equality_owner(
+                        id.implementation().subject().module(),
+                        id.implementation().subject().declaration(),
+                    ))
+                    || etas_std::source_storage_method(
+                        id.implementation().subject().module(),
+                        id.implementation().subject().declaration(),
+                        id.name(),
+                    ))
+            {
+                return Ok(true);
+            }
             return Ok(checked
                 .symbols
                 .get(symbol)

@@ -668,25 +668,14 @@ where
             | HirStmt::Finish { value: expr, .. } => {
                 self.collect_expr_captures(expr, locals, captured)
             }
-            HirStmt::For {
-                iter, limits, body, ..
-            }
+            HirStmt::For { iter, body, .. }
             | HirStmt::While {
-                cond: iter,
-                limits,
-                body,
-                ..
+                cond: iter, body, ..
             } => {
                 self.collect_expr_captures(iter, locals, captured);
-                for limit in limits {
-                    self.collect_expr_captures(limit, locals, captured);
-                }
                 self.collect_block_captures(body, locals, captured);
             }
-            HirStmt::Retry { limits, body, .. } => {
-                for limit in limits {
-                    self.collect_expr_captures(limit, locals, captured);
-                }
+            HirStmt::Retry { body, .. } => {
                 self.collect_block_captures(body, locals, captured);
             }
             HirStmt::Return { value: None, .. }
@@ -766,18 +755,12 @@ where
             HirExpr::StageCompose { stages, .. } => {
                 for stage in stages {
                     self.collect_expr_captures(stage.expr, locals, captured);
-                    for limit in stage.limits {
-                        self.collect_expr_captures(limit, locals, captured);
-                    }
                 }
             }
             HirExpr::Pipeline { input, stages, .. } => {
                 self.collect_expr_captures(input, locals, captured);
                 for stage in stages {
                     self.collect_expr_captures(stage.expr, locals, captured);
-                    for limit in stage.limits {
-                        self.collect_expr_captures(limit, locals, captured);
-                    }
                 }
             }
             HirExpr::Field { base, .. } | HirExpr::Try { expr: base, .. } => {

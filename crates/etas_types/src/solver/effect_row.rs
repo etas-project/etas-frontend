@@ -179,8 +179,8 @@ fn infer_type(
             infer_row_binding(
                 inputs,
                 state,
-                expected.effects.as_ref(),
-                actual.effects.as_ref(),
+                expected.declared_effects(),
+                actual.declared_effects(),
             );
         }
         (Some(Type::Handler(expected)), Some(Type::Handler(actual))) => {

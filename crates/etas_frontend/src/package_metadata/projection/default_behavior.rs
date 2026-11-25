@@ -66,6 +66,11 @@ impl ProjectMetadataProjection<'_> {
                 type_names,
                 effect_names,
             )?,
+            required_authority: self.effect_row_metadata(
+                &summary.required_authority(),
+                type_names,
+                effect_names,
+            )?,
             handler_requests: self.request_template_metadata(
                 &footprint.handler_requests,
                 type_names,

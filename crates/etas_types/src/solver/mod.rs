@@ -518,9 +518,16 @@ impl TypeSolver {
             &mut pending_access_constraints,
             checkpoint,
         )?;
-        solve_numeric_literals(input.store, &mut report, numeric_literals, checkpoint)?;
+        solve_numeric_literals(
+            input.store,
+            input.spec_facts,
+            &mut report,
+            numeric_literals,
+            checkpoint,
+        )?;
         solve_unary_constraints(
             input.store,
+            input.spec_facts,
             &mut report,
             pending_unary_constraints,
             checkpoint,
@@ -605,10 +612,65 @@ impl TypeSolver {
                 span: obligation.span,
             })
             .collect::<Vec<_>>();
+        // Conformance is a read-only query, but its input must include nested
+        // inference substitutions (for example Item<?T>, after ?T defaults).
+        // Materialize query-only types in a scratch store; no scratch TypeId
+        // escapes into the solved program or its invocation facts.
+        let mut proof_store = None;
+        let obligations = if obligations.iter().any(|obligation| {
+            contains_inference_variables(input.store, obligation.ty)
+                || obligation
+                    .args
+                    .iter()
+                    .any(|ty| contains_inference_variables(input.store, *ty))
+        }) {
+            let mut interner = crate::TypeInterner::from_store(input.store.clone());
+            let names = HashMap::new();
+            let mut resolved = Vec::new();
+            let mut failures = Vec::new();
+            {
+                let mut substitution = crate::TypeSubstitutionEngine::materializing(
+                    &mut interner,
+                    &names,
+                    Some(&report.substitutions),
+                );
+                for obligation in obligations {
+                    let materialized = (|| {
+                        Ok::<_, crate::TypeSubstitutionError>(SpecObligation {
+                            ty: substitution.substitute(obligation.ty)?,
+                            args: obligation
+                                .args
+                                .iter()
+                                .map(|ty| substitution.substitute(*ty))
+                                .collect::<Result<_, _>>()?,
+                            spec: obligation.spec,
+                            span: obligation.span,
+                        })
+                    })();
+                    match materialized {
+                        Ok(obligation) => resolved.push(obligation),
+                        Err(error) => failures.push(SolverFailure {
+                            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                            span: obligation.span,
+                            message: format!(
+                                "spec obligation input could not be materialized: {error}"
+                            ),
+                        }),
+                    }
+                }
+            }
+            for failure in failures {
+                report.push(failure);
+            }
+            proof_store = Some(interner.into_store());
+            resolved
+        } else {
+            obligations
+        };
         for obligation in &obligations {
             checkpoint()?;
             report.append(spec_solver::solve_spec_obligations(
-                input.store,
+                proof_store.as_ref().unwrap_or(input.store),
                 input.spec_facts,
                 std::slice::from_ref(obligation),
                 &report.named_substitutions,
@@ -980,8 +1042,9 @@ fn solve_callable_constraint(
                     span: input.origin.span,
                 })
                 .collect::<Vec<_>>();
-            if matches!(store.get(ty), Some(Type::Var(_))) {
-                // Literal/default and surrounding constraints may still bind this variable.
+            if contains_inference_variables(store, ty) {
+                // Literal/default and surrounding constraints may still bind
+                // variables inside the argument's nominal/structural shape.
                 // The final obligation pass must prove the bound after those constraints solve.
                 report.pending_spec_obligations.extend(param_obligations);
             } else {
@@ -1078,6 +1141,7 @@ fn solve_callable_constraint(
 
 fn solve_unary_constraints<E>(
     store: &TypeStore,
+    facts: &SpecFacts,
     report: &mut SolverReport,
     constraints: Vec<&TypeConstraint>,
     checkpoint: &impl Fn() -> Result<(), E>,
@@ -1106,7 +1170,9 @@ fn solve_unary_constraints<E>(
                 )
             }
             etas_hir::HirUnaryOp::Neg => {
-                is_numeric(store, operand) && assignability::is_assignable(store, operand, output)
+                (is_numeric(store, operand)
+                    || crate::numeric_family::supports(store, facts, operand))
+                    && assignability::is_assignable(store, operand, output)
             }
         };
         if !valid {
@@ -1127,6 +1193,7 @@ fn solve_unary_constraints<E>(
 
 fn solve_numeric_literals<E>(
     store: &TypeStore,
+    facts: &SpecFacts,
     report: &mut SolverReport,
     literals: Vec<&TypeConstraint>,
     checkpoint: &impl Fn() -> Result<(), E>,
@@ -1166,7 +1233,9 @@ fn solve_numeric_literals<E>(
                 resolved = default;
             }
         }
-        if let Err(reason) = numeric_literal::validate(store, *kind, text, resolved) {
+        if let Err(reason) =
+            numeric_literal::validate_with_facts(store, facts, *kind, text, resolved)
+        {
             let message = if expr.is_some() {
                 format!(
                     "numeric literal `{text}` cannot have checked type `{}`: {reason}",
@@ -1321,6 +1390,7 @@ fn solve_access_constraint(
             let output = resolve_known_substitutions(store, report, *output);
             let input = index::IndexAccessSolveInput {
                 spec_facts,
+                known,
                 expr: *expr,
                 base,
                 index,
@@ -1347,6 +1417,7 @@ fn solve_access_constraint(
             start,
             end,
             output,
+            index_error,
             origin,
         } => {
             let base = resolve_known_substitutions(store, report, *base);
@@ -1363,11 +1434,13 @@ fn solve_access_constraint(
                 store,
                 index::SliceAccessSolveInput {
                     spec_facts,
+                    known,
                     expr: *expr,
                     base,
                     start,
                     end,
                     output,
+                    index_error: *index_error,
                     origin: *origin,
                     substitutions: &report.substitutions,
                 },
@@ -1379,6 +1452,22 @@ fn solve_access_constraint(
 
 fn is_unresolved_type_var(store: &TypeStore, ty: TypeId) -> bool {
     matches!(store.get(ty), Some(Type::Var(_)))
+}
+
+fn contains_inference_variables(store: &TypeStore, ty: TypeId) -> bool {
+    let mut pending = vec![ty];
+    let mut seen = HashSet::new();
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty) {
+            continue;
+        }
+        match store.get(ty) {
+            Some(Type::Var(_)) => return true,
+            Some(value) => pending.extend(crate::type_dependencies(value)),
+            None => {}
+        }
+    }
+    false
 }
 
 fn unresolved_access_failure(

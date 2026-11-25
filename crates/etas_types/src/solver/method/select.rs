@@ -190,7 +190,9 @@ pub(super) fn solve<E>(
             signature.output = *call.output;
         }
         let slots = if call.binding.is_some() {
-            let MethodReceiver::Value { slot } = entry.receiver else {
+            let (MethodReceiver::Value { slot } | MethodReceiver::Updating { slot }) =
+                entry.receiver
+            else {
                 unreachable!()
             };
             (0..signature.params.len() as u32)
@@ -203,6 +205,8 @@ pub(super) fn solve<E>(
                 .collect()
         };
         let fact = crate::facts::CheckedMethodCallFact {
+            kind: Default::default(),
+            request_context: None,
             defaults: selected
                 .defaults
                 .into_iter()

@@ -174,13 +174,26 @@ impl Parser<'_> {
         }
     }
 
-    fn annotation(&mut self) -> Annotation {
+    pub(crate) fn annotation(&mut self) -> Annotation {
         let start = self.expect_punct(Punct::At, "expected `@` before annotation");
         let path = self.path();
         let mut span = start.cover(path.span);
         let args = if self.cursor.at_punct(Punct::LParen) {
             let open = self.expect_punct(Punct::LParen, "expected annotation argument list");
-            let args = self.comma_list(Punct::RParen, |this| this.annotation_arg());
+            let args = if matches!(path.segments.as_slice(), [name] if name.text == "inject") {
+                let (effect, action) = self.effect_action_ref("expected injected action reference");
+                let generic_args = self.generic_args();
+                let span = effect.span.cover(self.previous_span());
+                vec![AnnotationArg::Positional(Expr::Perform(PerformExpr {
+                    effect,
+                    action,
+                    generic_args,
+                    args: Vec::new(),
+                    span,
+                }))]
+            } else {
+                self.comma_list(Punct::RParen, |this| this.annotation_arg())
+            };
             let close = self.expect_punct(Punct::RParen, "expected `)` after annotation arguments");
             span = span.cover(open).cover(close);
             args
@@ -671,8 +684,8 @@ impl Parser<'_> {
                 },
             );
         }
-        let type_params = self.type_params();
-        let self_type = self.type_expr();
+        let mut type_params = self.type_params();
+        let self_type = self.impl_owner_type(&mut type_params);
         let target = if self.cursor.at_punct(Punct::Comma) || self.cursor.at_keyword(Keyword::For) {
             self.legacy_impl_for_target(self_type)
         } else if self.cursor.eat_punct(Punct::Tilde).is_some() {
@@ -708,6 +721,46 @@ impl Parser<'_> {
             }
         };
         self.impl_body(start, type_params, target)
+    }
+
+    fn impl_owner_type(&mut self, parameters: &mut Vec<TypeParam>) -> TypeExpr {
+        if !self.cursor.at_ident_like() {
+            return self.type_expr();
+        }
+        let path = self.path();
+        let args = if self.cursor.eat_punct(Punct::Lt).is_some() {
+            let args = self.comma_list(Punct::Gt, |parser| {
+                if parser.cursor.at_ident_like()
+                    && parser.cursor.nth(1).kind == TokenKind::Punct(Punct::Tilde)
+                {
+                    let parameter = parser.type_param();
+                    let name = parameter.name.clone();
+                    if let Some(existing) = parameters.iter_mut().find(|p| p.name.text == name.text)
+                    {
+                        existing.bounds.extend(parameter.bounds);
+                        existing.span = existing.span.cover(parameter.span);
+                    } else {
+                        parameters.push(parameter);
+                    }
+                    TypeExpr::Path {
+                        path: Path {
+                            segments: vec![name.clone()],
+                            span: name.span,
+                        },
+                        args: Vec::new(),
+                        span: name.span,
+                    }
+                } else {
+                    parser.type_expr()
+                }
+            });
+            self.expect_punct(Punct::Gt, "expected `>` after impl arguments");
+            args
+        } else {
+            Vec::new()
+        };
+        let owner = self.path_type(path, args);
+        self.type_expr_after_primary(owner)
     }
 
     fn impl_body(
@@ -748,6 +801,19 @@ impl Parser<'_> {
                     ));
                 }
                 items.push(ImplItem::Flow(Box::new(flow)));
+            } else if self.cursor.at_keyword(Keyword::Tool) {
+                let mut tool = self.tool_decl_with_receiver(visibility, true);
+                tool.annotations = annotations;
+                if let Some(param) = tool.params.first()
+                    && matches!(param.ty, ParamType::SelfReceiver { updating: true, .. })
+                {
+                    self.diagnostics.push(Diagnostic::syntax(
+                        SyntaxDiagnosticCode::InvalidItem,
+                        param.span,
+                        "member tools require a read-only self receiver",
+                    ));
+                }
+                items.push(ImplItem::Tool(Box::new(tool)));
             } else if self.cursor.at_keyword(Keyword::Action)
                 && !matches!(target, ImplTarget::Agent { .. })
             {
@@ -765,7 +831,7 @@ impl Parser<'_> {
                 self.diagnostics.push(Diagnostic::syntax(
                     SyntaxDiagnosticCode::UnexpectedToken,
                     span,
-                    "expected `flow` or `action` in impl block",
+                    "expected `flow`, `tool`, or `action` in impl block",
                 ));
                 self.recover_stmt();
                 items.push(ImplItem::Error(span));
@@ -1142,10 +1208,18 @@ impl Parser<'_> {
     }
 
     pub(crate) fn tool_decl(&mut self, visibility: Visibility) -> ToolDecl {
+        self.tool_decl_with_receiver(visibility, false)
+    }
+
+    fn tool_decl_with_receiver(
+        &mut self,
+        visibility: Visibility,
+        allow_receiver: bool,
+    ) -> ToolDecl {
         let start = self.expect_keyword(Keyword::Tool, "expected `tool`");
         let path = self.path();
         let type_params = self.type_params();
-        let params = self.param_list();
+        let params = self.param_list_with_receiver(allow_receiver);
         self.expect_punct(Punct::Arrow, "expected tool return type");
         let return_type = self.type_expr();
         let effects = self.effect_suffix();
@@ -1205,6 +1279,7 @@ impl Parser<'_> {
         };
         let end = body.span();
         ToolDecl {
+            annotations: Vec::new(),
             visibility,
             path,
             type_params,

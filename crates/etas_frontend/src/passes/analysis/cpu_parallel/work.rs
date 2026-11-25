@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use etas_hir::{
-    ExprView, HirArg, HirExpr, HirItem, HirItemId, HirLiteral, HirStmt, HirTreeView, HirVisitor,
-    ResolveResult, StmtView, walk_item,
+    ExprView, HirExpr, HirItem, HirItemId, HirStmt, HirTreeView, HirVisitor, ResolveResult,
+    StmtView, walk_item,
 };
 
 #[derive(Default)]
@@ -100,14 +100,8 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for Counter<'_> {
     fn enter_stmt(&mut self, stmt: StmtView<'view, 'hir>) {
         self.stack.push(self.multiplier);
         match stmt.data() {
-            HirStmt::While { limits, .. }
-            | HirStmt::For { limits, .. }
-            | HirStmt::Retry { limits, .. } => {
-                if let Some(count) = iteration_limit(self.hir, limits) {
-                    self.multiplier = self.multiplier.saturating_mul(count);
-                } else {
-                    self.work.unknown = true;
-                }
+            HirStmt::While { .. } | HirStmt::For { .. } | HirStmt::Retry { .. } => {
+                self.work.unknown = true;
             }
             _ => {}
         }
@@ -126,14 +120,6 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for Counter<'_> {
                     self.work.unknown = true;
                     return;
                 };
-                // Loop limits are compiler checked constructors, not source calls.
-                if path
-                    .segments
-                    .last()
-                    .is_some_and(|part| part.name == "Iterations")
-                {
-                    return;
-                }
                 let item = match path.resolution {
                     ResolveResult::Resolved(symbol) => self
                         .hir
@@ -159,25 +145,4 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for Counter<'_> {
             _ => {}
         }
     }
-}
-
-fn iteration_limit(hir: &etas_hir::HirProgram, limits: &[etas_hir::HirExprId]) -> Option<u64> {
-    let [limit] = limits else {
-        return None;
-    };
-    let HirExpr::Call { callee, args, .. } = &hir.exprs[*limit] else {
-        return None;
-    };
-    let HirExpr::Path(path) = &hir.exprs[*callee] else {
-        return None;
-    };
-    let [HirArg::Positional(count)] = args.as_slice() else {
-        return None;
-    };
-    let HirExpr::Literal(HirLiteral::Int { text, .. }) = &hir.exprs[*count] else {
-        return None;
-    };
-    (path.segments.last()?.name == "Iterations")
-        .then(|| text.parse().ok())
-        .flatten()
 }

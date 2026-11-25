@@ -83,6 +83,9 @@ pub fn run_from_input<'a>(
     } else {
         imports::external::apply_external_signature_input(ctx, &input.external);
     }
+    if let Some(package) = input.external.standard_package {
+        imports::prepared::bind_standard_identities(ctx, package);
+    }
     run_with_annotations(ctx, input.annotation_validation);
     imports::source::apply_source_signature_input(ctx, &input.source);
     crate::task_scope::infer(ctx);
@@ -109,12 +112,33 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     collect::nominal_types::collect_members(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
     if ctx.hir.source_standard_types {
+        ctx.signature_facts.known_std_types.filesystem_io_error =
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "io", "IOError"]);
         ctx.signature_facts.known_std_types.option_enum =
             crate::lower::type_ref::selected_source_type(ctx, &["std", "option", "Option"]);
         ctx.signature_facts.known_std_types.result_enum =
             crate::lower::type_ref::selected_source_type(ctx, &["std", "result", "Result"]);
         ctx.signature_facts.known_std_types.source_iterator =
             crate::lower::type_ref::selected_source_type(ctx, &["std", "collections", "Iter"]);
+        ctx.signature_facts.known_std_types.source_slice =
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "collections", "Slice"]);
+        for (name, wrapper) in [
+            ("Trusted", crate::TrustWrapper::Trusted),
+            ("Untrusted", crate::TrustWrapper::Untrusted),
+            ("Public", crate::TrustWrapper::Public),
+            ("Sanitized", crate::TrustWrapper::Sanitized),
+            ("Secret", crate::TrustWrapper::Secret),
+        ] {
+            if let Some(ty) = crate::lower::type_ref::selected_source_type(
+                ctx,
+                &["std", "security", "trust", name],
+            ) {
+                ctx.signature_facts
+                    .known_std_types
+                    .trust_wrappers
+                    .insert(ty, wrapper);
+            }
+        }
         ctx.signature_facts.known_std_types.index_error =
             crate::lower::type_ref::selected_source_type(
                 ctx,
@@ -123,9 +147,32 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
         let selected = |ctx: &mut TypePipelineContext<'_>, name: &str| {
             crate::lower::type_ref::selected_source_type(ctx, &["std", "task", name])
         };
+        for name in [
+            "Store",
+            "MemoryRegion",
+            "MemorySelection",
+            "MemoryPlace",
+            "MemoryTransaction",
+        ] {
+            if let Some(ty) =
+                crate::lower::type_ref::selected_source_type(ctx, &["std", "memory", name])
+            {
+                ctx.signature_facts
+                    .known_std_types
+                    .storage_resources
+                    .insert(ty);
+            }
+        }
         let task = selected(ctx, "Task");
         let scheduler = selected(ctx, "Scheduler");
         let continuation = selected(ctx, "Continuation");
+        let instant = crate::lower::type_ref::selected_source_type(
+            ctx,
+            &["std", "runtime", "time", "Instant"],
+        );
+        let clock_domain = capability_field(ctx, instant, "clock");
+        let read_owner =
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "stream", "ReadOwner"]);
         ctx.signature_facts.known_std_types.execution =
             crate::facts::symbols::KnownExecutionTypes {
                 task,
@@ -135,12 +182,19 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
                 scheduler_state: capability_field(ctx, scheduler, "state"),
                 continuation_state: capability_field(ctx, continuation, "state"),
             };
+        let session_lease = crate::lower::type_ref::selected_source_type(
+            ctx,
+            &["std", "agent", "session", "SessionLease"],
+        );
         let known = &mut ctx.signature_facts.known_std_types;
         known.opaque_values.extend(
             [
                 known.execution.task_handle,
                 known.execution.scheduler_state,
                 known.execution.continuation_state,
+                clock_domain,
+                read_owner,
+                session_lease,
             ]
             .into_iter()
             .flatten(),
@@ -161,6 +215,20 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     collect::methods::collect(ctx, &mut state);
     materialize::materialize_signature_facts(ctx, state);
     validate::type_applications::run(ctx);
+    let injection_owners = ctx
+        .hir
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            crate::pipeline::body::collect::injections::fields(ctx.hir, item)
+                .iter()
+                .any(|field| !field.annotations.is_empty())
+                .then_some(item)
+        })
+        .collect::<Vec<_>>();
+    for owner in injection_owners {
+        crate::pipeline::body::run(ctx, owner);
+    }
     if mode == crate::AnnotationValidationMode::Immediate {
         ctx.diagnostics
             .extend(validate::annotations::validate_annotations(
@@ -221,5 +289,11 @@ fn publish_signature_prefix(
             .spec_signatures
             .iter()
             .map(|(symbol, fact)| (*symbol, fact.clone())),
+    );
+    ctx.signature_facts.enum_layouts.extend(
+        state
+            .enum_layouts
+            .iter()
+            .map(|(ty, layout)| (*ty, layout.clone())),
     );
 }
