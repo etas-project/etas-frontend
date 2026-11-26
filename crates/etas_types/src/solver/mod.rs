@@ -612,6 +612,25 @@ impl TypeSolver {
                 span: obligation.span,
             })
             .collect::<Vec<_>>();
+        report.append(spec_solver::infer_obligation_arguments(
+            input.store,
+            input.spec_facts,
+            &obligations,
+            &report.substitutions,
+            true,
+        ));
+        let obligations = obligations
+            .into_iter()
+            .map(|obligation| crate::SpecObligation {
+                ty: resolve_known_substitutions(input.store, &report, obligation.ty),
+                args: obligation
+                    .args
+                    .iter()
+                    .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
+                    .collect(),
+                ..obligation
+            })
+            .collect::<Vec<_>>();
         // Conformance is a read-only query, but its input must include nested
         // inference substitutions (for example Item<?T>, after ?T defaults).
         // Materialize query-only types in a scratch store; no scratch TypeId
@@ -882,6 +901,39 @@ fn solve_callable_constraint(
         },
     );
     if report.failures.is_empty() {
+        let obligations = input
+            .generic_params
+            .iter()
+            .filter(|parameter| parameter.kind == crate::CallableGenericParamKind::Type)
+            .flat_map(|parameter| {
+                let subject = report
+                    .named_substitutions
+                    .get(&parameter.name)
+                    .copied()
+                    .unwrap_or(parameter.subject);
+                parameter
+                    .bounds
+                    .iter()
+                    .map(|bound| SpecObligation {
+                        ty: resolve_known_substitutions(store, &report, subject),
+                        spec: bound.spec.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| resolve_known_substitutions(store, &report, *arg))
+                            .collect(),
+                        span: input.origin.span,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        report.append(spec_solver::infer_obligation_arguments(
+            store,
+            spec_facts,
+            &obligations,
+            &report.substitutions,
+            false,
+        ));
         let Some(Type::Function(flow)) = store.get(input.callee) else {
             return report;
         };
@@ -1042,7 +1094,12 @@ fn solve_callable_constraint(
                     span: input.origin.span,
                 })
                 .collect::<Vec<_>>();
-            if contains_inference_variables(store, ty) {
+            if contains_inference_variables(store, ty)
+                || param_obligations
+                    .iter()
+                    .flat_map(|obligation| &obligation.args)
+                    .any(|arg| contains_inference_variables(store, *arg))
+            {
                 // Literal/default and surrounding constraints may still bind
                 // variables inside the argument's nominal/structural shape.
                 // The final obligation pass must prove the bound after those constraints solve.

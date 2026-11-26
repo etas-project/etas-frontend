@@ -16,7 +16,7 @@ pub(crate) fn declaration(facts: &SpecFacts, spec: &CheckedSpecRef) -> CheckedSp
     spec.clone()
 }
 
-/// The caller's declared evidence, not implementations loaded elsewhere in the project.
+/// Declared bounds for a generic receiver, or checked implementations of a concrete receiver.
 pub(crate) fn arguments(
     store: &TypeStore,
     facts: &SpecFacts,
@@ -35,7 +35,8 @@ pub(crate) fn arguments(
                 args: bound.args.clone(),
             })
             .collect(),
-        _ => return Ok(Vec::new()),
+        Some(Type::Var(_)) => return Ok(Vec::new()),
+        _ => super::external::implementation_arguments(store, facts, receiver),
     };
     let target = super::external::normalize(facts, target.clone());
     Ok(closure(store, facts, bounds)?

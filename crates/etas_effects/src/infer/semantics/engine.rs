@@ -18,6 +18,12 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(super) checked_external_graphs: std::cell::RefCell<
+        std::collections::BTreeMap<
+            etas_code::CodeFingerprint,
+            Option<etas_code::descriptor::DescriptorGraph>,
+        >,
+    >,
     pub(crate) dependencies: crate::infer::analysis::dependencies::RoundDependencies,
     pub(super) external_defaults:
         &'a [crate::AnchoredExternalMetadata<crate::ExternalParameterDefaultMetadata>],
@@ -247,6 +253,7 @@ impl<'a> EffectSemantics<'a> {
             memory_provenance,
         } = input;
         let mut semantics = Self {
+            checked_external_graphs: Default::default(),
             dependencies: Default::default(),
             external_defaults,
             spec_unit_targets,

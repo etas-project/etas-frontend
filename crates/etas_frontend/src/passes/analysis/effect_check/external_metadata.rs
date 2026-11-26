@@ -427,7 +427,7 @@ impl<'a> ExternalContractIndex<'a> {
                     .push(symbol.qualified_path.clone());
             }
         }
-        for (index, origin) in environment.external_definition_origins.iter().enumerate() {
+        for origin in &environment.external_definition_origins {
             for binding in &origin.origins.declarations {
                 definition_paths
                     .entry(binding.definition.clone())
@@ -447,10 +447,11 @@ impl<'a> ExternalContractIndex<'a> {
                 && let Some(headers) = &set.headers
             {
                 for header in &headers.callables {
-                    candidates
-                        .entry(header.id.clone())
-                        .or_default()
-                        .push((index, set, header));
+                    candidates.entry(header.id.clone()).or_default().push((
+                        std::ptr::from_ref(set) as usize,
+                        set,
+                        header,
+                    ));
                 }
             }
         }
@@ -489,10 +490,10 @@ impl<'a> ExternalContractIndex<'a> {
         let Some((index, set, header)) = candidates.first().copied() else {
             return Ok(None);
         };
-        if candidates
-            .iter()
-            .any(|(_, other_set, other_header)| *other_set != set || *other_header != header)
-        {
+        if candidates.iter().any(|(_, other_set, other_header)| {
+            (!std::ptr::eq(*other_set, set) && *other_set != set)
+                || (!std::ptr::eq(*other_header, header) && *other_header != header)
+        }) {
             return Err(
                 "conflicting external callable contracts for one declaration identity".into(),
             );

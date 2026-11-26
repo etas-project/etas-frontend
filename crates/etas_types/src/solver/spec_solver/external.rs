@@ -609,94 +609,8 @@ fn evidence_satisfies_inner(
             )
         });
     }
-    if facts.checked_impls.iter().any(|implementation| {
-        implementation_satisfies(
-            store,
-            facts,
-            Implementation {
-                parameters: &implementation.generic_params,
-                subject: implementation.self_type,
-                spec: implementation.spec.clone(),
-                args: &implementation.args,
-            },
-            ty,
-            target,
-            args,
-            active,
-        )
-    }) {
-        return true;
-    }
-    if facts.std_impls.iter().any(|implementation| {
-        implementation_satisfies(
-            store,
-            facts,
-            Implementation {
-                parameters: &implementation.generic_params,
-                subject: implementation.self_type,
-                spec: CheckedSpecRef::Std(implementation.spec.clone()),
-                args: &implementation.args,
-            },
-            ty,
-            target,
-            args,
-            active,
-        )
-    }) {
-        return true;
-    }
-    let external_impl = facts.external_impls.iter().any(|implementation| {
-        implementation_satisfies(
-            store,
-            facts,
-            Implementation {
-                parameters: &implementation.generic_params,
-                subject: implementation.self_type,
-                spec: CheckedSpecRef::External(implementation.spec.clone()),
-                args: &implementation.args,
-            },
-            ty,
-            target,
-            args,
-            active,
-        )
-    });
-    if external_impl {
-        return true;
-    }
-    if facts.canonical.impls.iter().any(|implementation| {
-        implementation_satisfies(
-            store,
-            facts,
-            Implementation {
-                parameters: &implementation.generic_params,
-                subject: implementation.self_type,
-                spec: CheckedSpecRef::Canonical(implementation.spec.clone()),
-                args: &implementation.args,
-            },
-            ty,
-            target,
-            args,
-            active,
-        )
-    }) {
-        return true;
-    }
-    if facts.impls.iter().any(|implementation| {
-        implementation_satisfies(
-            store,
-            facts,
-            Implementation {
-                parameters: &implementation.generic_params,
-                subject: implementation.self_type,
-                spec: CheckedSpecRef::Source(implementation.spec_symbol),
-                args: &implementation.args,
-            },
-            ty,
-            target,
-            args,
-            active,
-        )
+    if implementations(facts).any(|implementation| {
+        implementation_satisfies(store, facts, implementation, ty, target, args, active)
     }) {
         return true;
     }
@@ -732,6 +646,78 @@ struct Implementation<'a> {
     args: &'a [TypeId],
 }
 
+fn implementations(facts: &SpecFacts) -> impl Iterator<Item = Implementation<'_>> {
+    facts
+        .checked_impls
+        .iter()
+        .map(|value| Implementation {
+            parameters: &value.generic_params,
+            subject: value.self_type,
+            spec: value.spec.clone(),
+            args: &value.args,
+        })
+        .chain(facts.std_impls.iter().map(|value| Implementation {
+            parameters: &value.generic_params,
+            subject: value.self_type,
+            spec: CheckedSpecRef::Std(value.spec.clone()),
+            args: &value.args,
+        }))
+        .chain(facts.external_impls.iter().map(|value| Implementation {
+            parameters: &value.generic_params,
+            subject: value.self_type,
+            spec: CheckedSpecRef::External(value.spec.clone()),
+            args: &value.args,
+        }))
+        .chain(facts.canonical.impls.iter().map(|value| Implementation {
+            parameters: &value.generic_params,
+            subject: value.self_type,
+            spec: CheckedSpecRef::Canonical(value.spec.clone()),
+            args: &value.args,
+        }))
+        .chain(facts.impls.iter().map(|value| Implementation {
+            parameters: &value.generic_params,
+            subject: value.self_type,
+            spec: CheckedSpecRef::Source(value.spec_symbol),
+            args: &value.args,
+        }))
+}
+
+pub(super) fn implementation_arguments(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+) -> Vec<crate::CheckedSpecBound> {
+    let mut active = ActiveObligations::default();
+    implementations(facts)
+        .filter_map(|implementation| {
+            let args = instantiated_arguments(store, facts, &implementation, ty, &mut active)?;
+            Some(crate::CheckedSpecBound {
+                spec: implementation.spec,
+                args,
+            })
+        })
+        .collect()
+}
+
+fn instantiated_arguments(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    implementation: &Implementation<'_>,
+    ty: TypeId,
+    active: &mut ActiveObligations,
+) -> Option<Vec<TypeId>> {
+    let bindings = super::implementation::match_subject(
+        store,
+        implementation.parameters,
+        implementation.subject,
+        ty,
+    )?;
+    if !implementation_bounds(store, facts, implementation.parameters, &bindings, active) {
+        return None;
+    }
+    super::implementation::substitute(store, &bindings, implementation.args)
+}
+
 fn implementation_satisfies(
     store: &TypeStore,
     facts: &SpecFacts,
@@ -741,19 +727,7 @@ fn implementation_satisfies(
     expected: &[TypeId],
     active: &mut ActiveObligations,
 ) -> bool {
-    let Some(bindings) = super::implementation::match_subject(
-        store,
-        implementation.parameters,
-        implementation.subject,
-        ty,
-    ) else {
-        return false;
-    };
-    if !implementation_bounds(store, facts, implementation.parameters, &bindings, active) {
-        return false;
-    }
-    let Some(args) = super::implementation::substitute(store, &bindings, implementation.args)
-    else {
+    let Some(args) = instantiated_arguments(store, facts, &implementation, ty, active) else {
         return false;
     };
     entails_inner(

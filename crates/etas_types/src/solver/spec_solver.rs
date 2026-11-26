@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 pub(crate) mod bound_evidence;
+mod inference;
+pub(super) use inference::infer_obligation_arguments;
 mod external;
 pub(crate) mod implementation;
 pub use implementation::match_subject as match_implementation_subject;

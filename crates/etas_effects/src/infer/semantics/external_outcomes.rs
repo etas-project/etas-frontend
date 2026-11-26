@@ -48,8 +48,15 @@ impl EffectSemantics<'_> {
         type_bindings: &[(String, etas_types::TypeId)],
         generic_params: &[(String, etas_types::CallableGenericParamKind)],
     ) -> Result<Option<CallableExitSummary>, super::specialize::EffectSpecializationError> {
-        let Ok(graph) = DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default())
-        else {
+        let graph = self
+            .checked_external_graphs
+            .borrow_mut()
+            .entry(contract.descriptor_fingerprint)
+            .or_insert_with(|| {
+                DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default()).ok()
+            })
+            .clone();
+        let Some(graph) = graph else {
             return Ok(None);
         };
         let Some(etas_code::descriptor::TypeInfo::Function(portable)) =

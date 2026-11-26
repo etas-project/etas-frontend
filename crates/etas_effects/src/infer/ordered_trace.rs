@@ -2,7 +2,11 @@
 //! body and completion prefixes share that reference instead of copying the
 //! preceding iterations. Linear equations become Repeat; other equations keep
 //! their scoped recursive structure for the finite spec monitor.
-use std::{cell::OnceCell, collections::HashSet};
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use super::recursive_trace::TraceFact;
 use etas_code::CodeFingerprint;
@@ -22,6 +26,7 @@ pub(crate) struct LoopTrace {
     back: Option<Trace>,
     solution: OnceCell<Trace>,
     facts: HashSet<TraceFact>,
+    substitutions: RefCell<HashMap<usize, (Arc<super::domain::SharedActionTrace>, Trace)>>,
 }
 
 impl LoopTraces {
@@ -33,6 +38,7 @@ impl LoopTraces {
             back: None,
             solution: OnceCell::new(),
             facts: HashSet::new(),
+            substitutions: Default::default(),
         });
         Trace::Recursive { id, body: None }
     }
@@ -98,7 +104,31 @@ impl LoopTrace {
                 },
             }
         });
-        *trace = substitute(trace, self.id, solution);
+        *trace = self.substitute(trace, solution);
+    }
+
+    fn substitute(&self, trace: &Trace, solution: &Trace) -> Trace {
+        match trace {
+            Trace::Recursive { id, body: None } if *id == self.id => solution.clone(),
+            Trace::Recursive { id, body: Some(_) } if *id == self.id => trace.clone(),
+            Trace::Shared(shared) => {
+                if !shared.free_references.contains(&self.id) {
+                    return trace.clone();
+                }
+                let key = Arc::as_ptr(shared) as usize;
+                if let Some((_, result)) = self.substitutions.borrow().get(&key) {
+                    return result.clone();
+                }
+                let result = self.substitute(&shared.body, solution).shared();
+                self.substitutions
+                    .borrow_mut()
+                    .insert(key, (shared.clone(), result.clone()));
+                result
+            }
+            _ => trace
+                .map_children(|child| self.substitute(child, solution))
+                .shared(),
+        }
     }
 
     pub(crate) fn finish_summary(&self, summary: &mut EffectSummary) {
@@ -125,31 +155,7 @@ impl LoopTrace {
 }
 
 fn references(trace: &Trace, variable: CodeFingerprint) -> bool {
-    let mut work = vec![trace];
-    while let Some(trace) = work.pop() {
-        match trace {
-            Trace::Recursive { id, body: None } if *id == variable => return true,
-            Trace::Recursive { id, body: Some(_) } if *id == variable => {}
-            Trace::Recursive {
-                body: Some(body), ..
-            }
-            | Trace::Repeat(body)
-            | Trace::DefaultHandler { body, .. }
-            | Trace::TaskStart { body, .. } => work.push(body),
-            Trace::Seq(parts) | Trace::Choice(parts) | Trace::Parallel(parts) => work.extend(parts),
-            _ => {}
-        }
-    }
-    false
-}
-
-fn substitute(trace: &Trace, variable: CodeFingerprint, solution: &Trace) -> Trace {
-    match trace {
-        Trace::Recursive { id, body: None } if *id == variable => solution.clone(),
-        Trace::Recursive { id, body: Some(_) } if *id == variable => trace.clone(),
-        Trace::Shared(_) => trace.clone(),
-        _ => trace.map_children(|child| substitute(child, variable, solution)),
-    }
+    trace.has_free_reference(|id| *id == variable)
 }
 
 /// An exact optimization for right-linear equations. Failure to factor is

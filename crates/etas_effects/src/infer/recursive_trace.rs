@@ -47,23 +47,40 @@ pub(crate) fn identity(value: &impl serde::Serialize) -> CodeFingerprint {
 /// unresolved edge at the call position; binding it to the template would omit
 /// possible behavior (for example a recursive call that swaps two callbacks).
 pub(crate) fn defer_context(summary: &mut EffectSummary, call: etas_hir::HirExprId) {
-    fn map(trace: &Trace, call: etas_hir::HirExprId) -> Trace {
+    fn map(trace: &Trace, call: etas_hir::HirExprId, shared: &mut HashMap<usize, Trace>) -> Trace {
         match trace {
             Trace::Recursive { id, body: None } => Trace::Recursive {
                 id: identity(&(id, "application", call)),
                 body: None,
             },
-            Trace::Recursive { body: Some(_), .. } | Trace::Shared(_) => trace.clone(),
-            _ => trace.map_children(|child| map(child, call)),
+            Trace::Recursive { body: Some(_), .. } => trace.clone(),
+            Trace::Shared(node) => {
+                if node.free_references.is_empty() {
+                    return trace.clone();
+                }
+                let key = std::sync::Arc::as_ptr(node) as usize;
+                if let Some(result) = shared.get(&key) {
+                    return result.clone();
+                }
+                let result = map(&node.body, call, shared).shared();
+                shared.insert(key, result.clone());
+                result
+            }
+            _ => trace
+                .map_children(|child| map(child, call, shared))
+                .shared(),
         }
     }
-    summary.action_trace = map(&summary.action_trace, call);
+    let mut shared = HashMap::new();
+    summary.action_trace = map(&summary.action_trace, call, &mut shared);
     if let Some(exits) = &mut summary.exits {
         for exit in &mut exits.exits {
-            exit.trace = map(&exit.trace, call);
+            shared.clear();
+            exit.trace = map(&exit.trace, call, &mut shared);
         }
         for exit in &mut exits.parameter_exits {
-            exit.prefix = map(&exit.prefix, call);
+            shared.clear();
+            exit.prefix = map(&exit.prefix, call, &mut shared);
         }
     }
 }
@@ -204,19 +221,42 @@ impl TraceEquations {
         if self.bodies.is_empty() {
             return trace.clone();
         }
-        self.close_in(trace, &mut BTreeSet::new())
+        self.close_in(trace, &mut BTreeSet::new(), &mut HashMap::new())
     }
 
-    fn close_in(&self, trace: &Trace, bound: &mut BTreeSet<CodeFingerprint>) -> Trace {
+    fn close_in(
+        &self,
+        trace: &Trace,
+        bound: &mut BTreeSet<CodeFingerprint>,
+        shared: &mut HashMap<(usize, Vec<CodeFingerprint>), Trace>,
+    ) -> Trace {
         match trace {
-            Trace::Shared(_) => trace.clone(),
+            Trace::Shared(node) => {
+                if !node
+                    .free_references
+                    .iter()
+                    .any(|id| !bound.contains(id) && self.bodies.contains_key(id))
+                {
+                    return trace.clone();
+                }
+                let key = (
+                    std::sync::Arc::as_ptr(node) as usize,
+                    bound.iter().copied().collect(),
+                );
+                if let Some(result) = shared.get(&key) {
+                    return result.clone();
+                }
+                let result = self.close_in(&node.body, bound, shared).shared();
+                shared.insert(key, result.clone());
+                result
+            }
             Trace::Recursive { id, body: None } if !bound.contains(id) => {
                 let Some(body) = self.bodies.get(id) else {
                     // A dangling equation remains explicit and unprovable.
                     return trace.clone();
                 };
                 bound.insert(*id);
-                let body = self.close_in(body, bound);
+                let body = self.close_in(body, bound, shared);
                 bound.remove(id);
                 Trace::Recursive {
                     id: *id,
@@ -228,7 +268,7 @@ impl TraceEquations {
                 body: Some(body),
             } => {
                 let fresh = bound.insert(*id);
-                let body = self.close_in(body, bound);
+                let body = self.close_in(body, bound, shared);
                 if fresh {
                     bound.remove(id);
                 }
@@ -237,7 +277,9 @@ impl TraceEquations {
                     body: Some(Box::new(body)),
                 }
             }
-            _ => trace.map_children(|child| self.close_in(child, bound)),
+            _ => trace
+                .map_children(|child| self.close_in(child, bound, shared))
+                .shared(),
         }
     }
 }

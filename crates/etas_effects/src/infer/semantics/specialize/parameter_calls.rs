@@ -532,102 +532,27 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         inferred_parameters: &BTreeSet<ParameterCallTarget>,
     ) -> Result<(), EffectSpecializationError> {
-        match trace {
-            ActionTraceDomain::Shared(body) => self.merge_parameter_call_summaries_inner(
-                target,
-                &body.body,
-                bindings,
-                state,
-                inferred_parameters,
-            )?,
-            ActionTraceDomain::ParameterCall {
-                target: parameter_target,
-                parameter,
-                span,
-            } => {
-                let Some(binding) =
-                    self.trace_argument(*parameter_target, parameter, bindings, state)?
-                else {
-                    return Ok(());
-                };
-                let mut source_summary =
-                    self.trace_argument_summary(&binding, state, parameter, *span)?;
-                source_summary.handler_requests = crate::RequestInstantiationSummary::default();
-                self.apply_callback_handlers(
-                    target,
-                    *parameter_target,
-                    *span,
-                    &mut source_summary,
-                )?;
-                if inferred_parameters.contains(parameter_target)
-                    || matches!(parameter_target, ParameterCallTarget::AgentTools(_))
-                {
-                    source_summary.action_trace = ActionTraceDomain::Empty;
-                    target.seq_assign(&source_summary);
-                } else {
-                    target.merge_request_footprint_without_escaping_or_trace(&source_summary);
-                }
+        // This pass unions callback footprints; ordering stays in the
+        // independently substituted action trace. Read each cached call site
+        // once rather than expanding shared branch and loop graphs.
+        for call in trace.parameter_calls() {
+            let Some(binding) =
+                self.trace_argument(call.target, &call.parameter, bindings, state)?
+            else {
+                continue;
+            };
+            let mut source_summary =
+                self.trace_argument_summary(&binding, state, &call.parameter, call.span)?;
+            source_summary.handler_requests = crate::RequestInstantiationSummary::default();
+            self.apply_callback_handlers(target, call.target, call.span, &mut source_summary)?;
+            if inferred_parameters.contains(&call.target)
+                || matches!(call.target, ParameterCallTarget::AgentTools(_))
+            {
+                source_summary.action_trace = ActionTraceDomain::Empty;
+                target.seq_assign(&source_summary);
+            } else {
+                target.merge_request_footprint_without_escaping_or_trace(&source_summary);
             }
-            ActionTraceDomain::Seq(items)
-            | ActionTraceDomain::Choice(items)
-            | ActionTraceDomain::Parallel(items) => {
-                for item in items {
-                    self.merge_parameter_call_summaries_inner(
-                        target,
-                        item,
-                        bindings,
-                        state,
-                        inferred_parameters,
-                    )?;
-                }
-            }
-            ActionTraceDomain::Recursive {
-                body: Some(item), ..
-            }
-            | ActionTraceDomain::Repeat(item)
-            | ActionTraceDomain::TaskStart { body: item, .. }
-            | ActionTraceDomain::DefaultHandler { body: item, .. } => {
-                self.merge_parameter_call_summaries_inner(
-                    target,
-                    item,
-                    bindings,
-                    state,
-                    inferred_parameters,
-                )?;
-            }
-            ActionTraceDomain::Widened {
-                parameter_calls, ..
-            } => {
-                for call in parameter_calls {
-                    let Some(binding) =
-                        self.trace_argument(call.target, &call.parameter, bindings, state)?
-                    else {
-                        continue;
-                    };
-                    let mut source_summary =
-                        self.trace_argument_summary(&binding, state, &call.parameter, call.span)?;
-                    source_summary.handler_requests = crate::RequestInstantiationSummary::default();
-                    self.apply_callback_handlers(
-                        target,
-                        call.target,
-                        call.span,
-                        &mut source_summary,
-                    )?;
-                    if inferred_parameters.contains(&call.target)
-                        || matches!(call.target, ParameterCallTarget::AgentTools(_))
-                    {
-                        source_summary.action_trace = ActionTraceDomain::Empty;
-                        target.seq_assign(&source_summary);
-                    } else {
-                        target.merge_request_footprint_without_escaping_or_trace(&source_summary);
-                    }
-                }
-            }
-            ActionTraceDomain::Recursive { body: None, .. }
-            | ActionTraceDomain::Empty
-            | ActionTraceDomain::Event(_)
-            | ActionTraceDomain::TaskAwait { .. }
-            | ActionTraceDomain::UnknownOrder(_) => {}
         }
         Ok(())
     }

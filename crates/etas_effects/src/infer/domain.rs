@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use etas_core::Span;
 use etas_utils::{JoinSemiLattice, PartialOrder};
@@ -325,7 +325,7 @@ pub enum ActionTraceDomain {
     Seq(Vec<ActionTraceDomain>),
     Choice(Vec<ActionTraceDomain>),
     Repeat(Box<ActionTraceDomain>),
-    /// An immutable, closed subgraph shared by callable summary instances.
+    /// An immutable subgraph shared by callable summary instances.
     /// Portable projections traverse it transparently.
     Shared(std::sync::Arc<SharedActionTrace>),
     /// Least fixed point of an ordered trace equation. A missing body refers
@@ -350,15 +350,130 @@ pub struct ParameterCallRef {
     pub span: Span,
 }
 
-#[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
-)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SharedActionTrace {
     pub body: ActionTraceDomain,
     pub fingerprint: etas_code::CodeFingerprint,
+    pub free_references: Vec<etas_code::CodeFingerprint>,
     pub actions: EffectSet,
     pub parameter_calls: Vec<ParameterCallRef>,
     pub unordered: bool,
+}
+
+impl SharedActionTrace {
+    fn same_cached_data(&self, other: &Self) -> bool {
+        self.fingerprint == other.fingerprint
+            && self.free_references == other.free_references
+            && self.actions == other.actions
+            && self.parameter_calls == other.parameter_calls
+            && self.unordered == other.unordered
+    }
+}
+
+impl PartialEq for SharedActionTrace {
+    fn eq(&self, other: &Self) -> bool {
+        if !self.same_cached_data(other) {
+            return false;
+        }
+        // Equal snapshots from successive solver rounds need not share Arc
+        // addresses. Compare each pair of graph nodes once, including bodies.
+        use ActionTraceDomain as T;
+        let mut pending = vec![(&self.body, &other.body)];
+        let mut compared = HashSet::new();
+        while let Some((left, right)) = pending.pop() {
+            match (left, right) {
+                (T::Shared(left), T::Shared(right)) => {
+                    if std::sync::Arc::ptr_eq(left, right) {
+                        continue;
+                    }
+                    if !left.same_cached_data(right) {
+                        return false;
+                    }
+                    let pair = (
+                        std::sync::Arc::as_ptr(left) as usize,
+                        std::sync::Arc::as_ptr(right) as usize,
+                    );
+                    if compared.insert(pair) {
+                        pending.push((&left.body, &right.body));
+                    }
+                }
+                (T::Empty, T::Empty) => {}
+                (T::Event(left), T::Event(right)) if left == right => {}
+                (
+                    T::DefaultHandler {
+                        guards: left,
+                        body: a,
+                    },
+                    T::DefaultHandler {
+                        guards: right,
+                        body: b,
+                    },
+                ) if left == right => pending.push((a, b)),
+                (
+                    T::ParameterCall {
+                        target: a,
+                        parameter: b,
+                        span: c,
+                    },
+                    T::ParameterCall {
+                        target: x,
+                        parameter: y,
+                        span: z,
+                    },
+                ) if (a, b, c) == (x, y, z) => {}
+                (T::Seq(left), T::Seq(right))
+                | (T::Choice(left), T::Choice(right))
+                | (T::Parallel(left), T::Parallel(right))
+                    if left.len() == right.len() =>
+                {
+                    pending.extend(left.iter().zip(right))
+                }
+                (
+                    T::TaskStart {
+                        task_site: left,
+                        body: a,
+                    },
+                    T::TaskStart {
+                        task_site: right,
+                        body: b,
+                    },
+                ) if left == right => pending.push((a, b)),
+                (T::TaskAwait { task_site: left }, T::TaskAwait { task_site: right })
+                    if left == right => {}
+                (T::Repeat(left), T::Repeat(right)) => pending.push((left, right)),
+                (T::Recursive { id: left, body: a }, T::Recursive { id: right, body: b })
+                    if left == right =>
+                {
+                    match (a, b) {
+                        (None, None) => {}
+                        (Some(a), Some(b)) => pending.push((a, b)),
+                        _ => return false,
+                    }
+                }
+                (T::UnknownOrder(left), T::UnknownOrder(right)) if left == right => {}
+                (
+                    T::Widened {
+                        actions: a,
+                        parameter_calls: b,
+                    },
+                    T::Widened {
+                        actions: x,
+                        parameter_calls: y,
+                    },
+                ) if (a, b) == (x, y) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Eq for SharedActionTrace {}
+
+impl std::hash::Hash for SharedActionTrace {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.fingerprint, state);
+    }
 }
 
 impl Drop for SharedActionTrace {
@@ -388,7 +503,8 @@ impl Drop for SharedActionTrace {
     }
 }
 
-/// Only leaves and one-level nodes with fingerprint children enter this cache.
+/// Cache fixed-width node identities, without retaining every growing sequence
+/// and branch prefix for the entire analysis.
 type TraceFingerprints = std::collections::HashMap<ActionTraceDomain, etas_code::CodeFingerprint>;
 
 // Lattice joins and trace specialization both compute the same pure Merkle keys.
@@ -448,10 +564,7 @@ pub enum ParameterCallTarget {
 }
 
 impl ActionTraceDomain {
-    pub(crate) fn has_free_reference(
-        &self,
-        mut matches: impl FnMut(&etas_code::CodeFingerprint) -> bool,
-    ) -> bool {
+    pub(crate) fn free_references(&self) -> Vec<etas_code::CodeFingerprint> {
         match self {
             Self::Seq(_)
             | Self::Choice(_)
@@ -460,8 +573,9 @@ impl ActionTraceDomain {
             | Self::DefaultHandler { .. }
             | Self::TaskStart { .. }
             | Self::Recursive { body: Some(_), .. } => {}
-            Self::Recursive { id, body: None } => return matches(id),
-            _ => return false,
+            Self::Recursive { id, body: None } => return vec![*id],
+            Self::Shared(shared) => return shared.free_references.clone(),
+            _ => return Vec::new(),
         }
         enum Work<'a> {
             Visit(&'a ActionTraceDomain),
@@ -469,6 +583,7 @@ impl ActionTraceDomain {
         }
         let mut work = vec![Work::Visit(self)];
         let mut bound = BTreeSet::new();
+        let mut free = BTreeSet::new();
         while let Some(next) = work.pop() {
             match next {
                 Work::Leave(id, fresh) => {
@@ -477,8 +592,8 @@ impl ActionTraceDomain {
                     }
                 }
                 Work::Visit(Self::Recursive { id, body: None }) => {
-                    if !bound.contains(id) && matches(id) {
-                        return true;
+                    if !bound.contains(id) {
+                        free.insert(*id);
                     }
                 }
                 Work::Visit(Self::Recursive {
@@ -488,6 +603,14 @@ impl ActionTraceDomain {
                     let fresh = bound.insert(*id);
                     work.push(Work::Leave(*id, fresh));
                     work.push(Work::Visit(body));
+                }
+                Work::Visit(Self::Shared(shared)) => {
+                    free.extend(
+                        shared
+                            .free_references
+                            .iter()
+                            .filter(|id| !bound.contains(id)),
+                    );
                 }
                 Work::Visit(Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts)) => {
                     work.extend(parts.iter().rev().map(Work::Visit))
@@ -500,7 +623,14 @@ impl ActionTraceDomain {
                 _ => {}
             }
         }
-        false
+        free.into_iter().collect()
+    }
+
+    pub(crate) fn has_free_reference(
+        &self,
+        matches: impl FnMut(&etas_code::CodeFingerprint) -> bool,
+    ) -> bool {
+        self.free_references().iter().any(matches)
     }
 
     pub(crate) fn structural_identity(&self) -> etas_code::CodeFingerprint {
@@ -518,13 +648,14 @@ impl ActionTraceDomain {
 
         let mut buffer = Vec::new();
         let mut fingerprint = |node: &ActionTraceDomain| {
-            if let Some(id) = cache.as_deref().and_then(|cache| cache.get(node)) {
+            let leaf = !matches!(node, Self::Seq(_) | Self::Choice(_) | Self::Parallel(_));
+            if leaf && let Some(id) = cache.as_deref().and_then(|cache| cache.get(node)) {
                 return *id;
             }
             buffer.clear();
             serde_json::to_writer(&mut buffer, node).expect("checked trace node serializes");
             let id = CodeFingerprint::of_bytes("etas.effects.trace-structure.v1", &buffer);
-            if let Some(cache) = cache.as_deref_mut() {
+            if leaf && let Some(cache) = cache.as_deref_mut() {
                 cache.insert(node.clone(), id);
             }
             id
@@ -589,14 +720,13 @@ impl ActionTraceDomain {
                 | Self::TaskAwait { .. }
                 | Self::UnknownOrder(_)
                 | Self::Widened { .. }
+                | Self::Recursive { body: None, .. }
         ) {
-            return self;
-        }
-        if self.has_free_reference(|_| true) {
             return self;
         }
         Self::Shared(std::sync::Arc::new(SharedActionTrace {
             fingerprint: self.structural_identity(),
+            free_references: self.free_references(),
             actions: self.action_set(),
             parameter_calls: self.parameter_calls(),
             unordered: self.has_unordered_approximation(),
@@ -680,14 +810,9 @@ impl ActionTraceDomain {
         if *self == other {
             return false;
         }
-        if !matches!(self, Self::Choice(_)) {
-            *self = std::mem::take(self).choice(other);
-            return true;
-        }
-        let joined = self.clone().choice(other);
-        let changed = joined != *self;
-        *self = joined;
-        changed
+        let previous = self.structural_identity();
+        *self = std::mem::take(self).choice(other);
+        self.structural_identity() != previous
     }
 
     pub fn repeat(self) -> Self {
@@ -934,68 +1059,86 @@ impl ActionTraceDomain {
                 Self::Seq(left)
             }
             (Self::Seq(mut left), right) => {
-                left.push(right);
+                left.push(right.shared());
                 Self::Seq(left)
             }
             (left, Self::Seq(mut right)) => {
-                let mut items = vec![left];
+                let mut items = vec![left.shared()];
                 items.append(&mut right);
                 Self::Seq(items)
             }
-            (left, right) => Self::Seq(vec![left, right]),
+            (left, right) => Self::Seq(vec![left.shared(), right.shared()]),
         }
     }
 
-    pub(crate) fn from_alternatives(mut parts: Vec<Self>) -> Self {
-        let Some(first) = parts.first() else {
-            return Self::Empty;
-        };
-        if parts.iter().skip(1).all(|part| part == first) {
-            return parts.pop().unwrap();
+    pub(crate) fn from_alternatives(parts: Vec<Self>) -> Self {
+        if let Some(first) = parts.first()
+            && parts.iter().skip(1).all(|part| part == first)
+        {
+            return parts.into_iter().next().unwrap();
         }
-        // A substitution can introduce nested choices. Preserve the binary join's
-        // flattening and equality rules in that case.
-        if parts.iter().any(|part| matches!(part, Self::Choice(_))) {
-            let mut parts = parts.into_iter();
-            let mut result = parts.next().unwrap();
-            for part in parts {
-                result.choice_assign(part);
+        let mut pending = parts;
+        let mut alternatives = Vec::new();
+        while let Some(part) = pending.pop() {
+            match part {
+                Self::Choice(parts) => pending.extend(parts),
+                Self::Shared(shared) if matches!(shared.body, Self::Choice(_)) => {
+                    let Self::Choice(parts) = &shared.body else {
+                        unreachable!()
+                    };
+                    pending.extend(parts.iter().cloned());
+                }
+                part => alternatives.push(part.shared()),
             }
-            return result;
         }
-        parts.sort_by_cached_key(Self::structural_identity);
-        parts.dedup();
-        Self::Choice(parts)
+        alternatives.sort_by_cached_key(Self::structural_identity);
+        alternatives.dedup();
+        if alternatives.len() > 1 {
+            fn sequence(trace: &ActionTraceDomain) -> &[ActionTraceDomain] {
+                match trace.structure() {
+                    ActionTraceDomain::Seq(parts) => parts.as_slice(),
+                    ActionTraceDomain::Empty => &[],
+                    other => std::slice::from_ref(other),
+                }
+            }
+            let first = sequence(&alternatives[0]);
+            let prefix = alternatives
+                .iter()
+                .skip(1)
+                .fold(first.len(), |length, part| {
+                    first[..length]
+                        .iter()
+                        .zip(sequence(part))
+                        .take_while(|(left, right)| {
+                            left.structural_identity() == right.structural_identity()
+                        })
+                        .count()
+                });
+            if prefix > 0 {
+                // XY | XZ = X(Y | Z). In particular, retain one loop-header
+                // reference instead of copying it through every branch path.
+                let mut result = Self::Seq(first[..prefix].to_vec());
+                let suffixes = alternatives
+                    .iter()
+                    .map(|part| match &sequence(part)[prefix..] {
+                        [] => Self::Empty,
+                        [one] => one.clone(),
+                        parts => Self::Seq(parts.to_vec()),
+                    })
+                    .collect();
+                result.seq_assign(Self::from_alternatives(suffixes));
+                return result;
+            }
+        }
+        match alternatives.len() {
+            0 => Self::Empty,
+            1 => alternatives.pop().unwrap(),
+            _ => Self::Choice(alternatives),
+        }
     }
 
     fn choice(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Choice(mut left), Self::Choice(right)) => {
-                left.extend(right);
-                left.sort_by_cached_key(Self::structural_identity);
-                left.dedup();
-                Self::Choice(left)
-            }
-            (Self::Choice(mut left), right) => {
-                left.push(right);
-                left.sort_by_cached_key(Self::structural_identity);
-                left.dedup();
-                Self::Choice(left)
-            }
-            (left, Self::Choice(mut right)) => {
-                let mut items = vec![left];
-                items.append(&mut right);
-                items.sort_by_cached_key(Self::structural_identity);
-                items.dedup();
-                Self::Choice(items)
-            }
-            (left, right) => {
-                let mut items = vec![left, right];
-                items.sort_by_cached_key(Self::structural_identity);
-                items.dedup();
-                Self::Choice(items)
-            }
-        }
+        Self::from_alternatives(vec![self, other])
     }
 }
 
@@ -1633,6 +1776,29 @@ mod tests {
     use etas_core::{SourceId, Span, TextSize};
 
     use super::ActionTraceDomain;
+
+    #[test]
+    fn independently_built_shared_traces_compare_as_graphs() {
+        fn graph() -> ActionTraceDomain {
+            let mut trace = ActionTraceDomain::TaskAwait {
+                task_site: etas_hir::HirExprId(1),
+            };
+            for _ in 0..24 {
+                trace = ActionTraceDomain::Parallel(vec![trace.clone(), trace]).shared();
+            }
+            trace
+        }
+        use std::hash::{Hash, Hasher};
+        let left = graph();
+        let right = graph();
+        assert!(left == right);
+        let fingerprint = |trace: &ActionTraceDomain| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            trace.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(fingerprint(&left), fingerprint(&right));
+    }
 
     #[test]
     fn residual_references_roundtrip_and_reject_legacy_or_duplicate_data() {

@@ -177,7 +177,12 @@ pub(super) fn probe(
                         .collect(),
                     span: call.origin.span,
                 };
-                if matches!(input.store.get(subject), Some(Type::Var(_))) {
+                if super::super::contains_inference_variables(input.store, subject)
+                    || obligation
+                        .args
+                        .iter()
+                        .any(|arg| super::super::contains_inference_variables(input.store, *arg))
+                {
                     result.report.pending_spec_obligations.push(obligation);
                 } else {
                     obligations.push(obligation);

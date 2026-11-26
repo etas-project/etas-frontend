@@ -596,10 +596,10 @@ mod tests {
             panic!("known sequence must surround the unordered segment");
         };
         assert_eq!(parts.len(), 3);
-        let ActionTraceDomain::Choice(branches) = &parts[1] else {
+        let ActionTraceDomain::Choice(branches) = parts[1].structure() else {
             panic!("unordered alternatives must remain separate");
         };
-        assert!(branches.contains(&handled));
+        assert!(branches.iter().any(|branch| branch.structure() == &handled));
         assert_eq!(
             require_before(&trace, &pattern(guard), &pattern(target), &registry, &types),
             TemporalMonitorResult::NeedsOutcomeEvidence

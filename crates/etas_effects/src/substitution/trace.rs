@@ -18,11 +18,18 @@ pub(crate) fn map_trace<M: SummaryMapper>(
     }
     let mut work = vec![Work::Visit(root)];
     let mut values = Vec::new();
+    let mut mapped_shared = std::collections::HashMap::<usize, ActionTraceDomain>::new();
     while let Some(next) = work.pop() {
         mapper.checkpoint()?;
         match next {
             Work::Visit(trace) => match trace {
                 ActionTraceDomain::Shared(body) => {
+                    if let Some(mapped) =
+                        mapped_shared.get(&(std::sync::Arc::as_ptr(body) as usize))
+                    {
+                        values.push(mapped.clone());
+                        continue;
+                    }
                     work.push(Work::Shared(trace));
                     work.push(Work::Visit(&body.body));
                 }
@@ -131,11 +138,13 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                 let ActionTraceDomain::Shared(shared) = original else {
                     unreachable!()
                 };
-                values.push(if body == shared.body {
+                let mapped = if body == shared.body {
                     original.clone()
                 } else {
                     body.shared()
-                });
+                };
+                mapped_shared.insert(std::sync::Arc::as_ptr(shared) as usize, mapped.clone());
+                values.push(mapped);
             }
             Work::Recursive(id) => {
                 let body = values.pop().ok_or_else(|| mapper.invalid_structure())?;
