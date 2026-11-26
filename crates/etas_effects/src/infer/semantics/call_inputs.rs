@@ -1,12 +1,12 @@
 //! Input dependencies of a symbolic callback application. Returned payloads
 //! must be substituted with these values before they leave the callee scope.
-use crate::infer::analysis::dependencies::InputFact;
 use super::{
     engine::EffectSemantics,
     specialize::EffectSpecializationError as Error,
     state::{EffectState, LatentSource},
 };
 use crate::facts::{NativeArgumentProjection, NativeCallArgument, NativeCallInputs};
+use crate::infer::analysis::dependencies::InputFact;
 use crate::{
     ParameterCallTarget as Target,
     facts::{CallableEnvironment, CallableEnvironmentId},

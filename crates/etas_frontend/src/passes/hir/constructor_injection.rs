@@ -14,6 +14,22 @@ pub(super) fn elaborate(context: &ProjectContext, hir: &mut HirProgram) -> Resul
         return Ok(());
     };
     let environment = environment.environment();
+    for contract in environment
+        .external_public_metadata
+        .iter()
+        .flat_map(|metadata| &metadata.constructor_contracts)
+    {
+        let private = contract
+            .fields
+            .iter()
+            .filter(|field| !field.public)
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>();
+        if !private.is_empty() {
+            hir.private_record_fields
+                .insert(contract.path.clone(), private);
+        }
+    }
     if !environment
         .external_public_metadata
         .iter()
@@ -26,7 +42,11 @@ pub(super) fn elaborate(context: &ProjectContext, hir: &mut HirProgram) -> Resul
         .exprs
         .iter()
         .filter_map(|(expr, value)| match value {
-            HirExpr::Record(record) if record.injections.is_none() && record.path.is_some() => {
+            HirExpr::Record(record)
+                if record.injections.is_none()
+                    && record.path.is_some()
+                    && record.base.is_none() =>
+            {
                 Some((expr, record.clone()))
             }
             _ => None,
@@ -143,6 +163,31 @@ pub(super) fn elaborate(context: &ProjectContext, hir: &mut HirProgram) -> Resul
                     })
                 })
                 .collect::<Result<_, String>>()?;
+            let payload = if injection
+                .action
+                .path
+                .iter()
+                .map(String::as_str)
+                .eq(["std", "effects", "Inject", "get"])
+            {
+                let value = builder
+                    .hir
+                    .exprs
+                    .alloc(HirExpr::Literal(HirLiteral::String {
+                        value: field.name.clone(),
+                        span: builder.span,
+                    }));
+                builder.hir.source_map.expr_sources.insert(
+                    value,
+                    HirOrigin::Synthetic {
+                        span: builder.span,
+                        reason: SyntheticOriginReason::LoweringGenerated,
+                    },
+                );
+                vec![HirArg::Positional(value)]
+            } else {
+                Vec::new()
+            };
             let value = builder.hir.exprs.alloc(HirExpr::Perform {
                 action: ResolvedActionRef {
                     effect: HirEffectRef {
@@ -155,7 +200,7 @@ pub(super) fn elaborate(context: &ProjectContext, hir: &mut HirProgram) -> Resul
                     span: builder.span,
                 },
                 generic_args,
-                args: Vec::new(),
+                args: payload,
                 span: builder.span,
             });
             let origin = builder

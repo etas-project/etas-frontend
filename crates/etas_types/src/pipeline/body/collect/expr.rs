@@ -45,6 +45,41 @@ pub fn collect_expr<E>(
     let expected = if object.is_some() { None } else { expected };
     collect_method_receivers(ctx, expr)?;
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
+        HirExpr::Limited { bounds, body, .. } => {
+            let path = ["std", "runtime", "limits", "Limit"]
+                .map(str::to_owned)
+                .to_vec();
+            let limit = ctx
+                .ctx
+                .symbols
+                .canonical_path(ctx.ctx.hir, &path)
+                .and_then(|symbol| ctx.ctx.type_fact_as_type_id(symbol))
+                .or_else(|| ctx.ctx.external_type_paths.get(&path).copied())
+                .or_else(|| {
+                    ctx.ctx
+                        .known_std_types()
+                        .runtime_type(etas_std::RuntimeTypeRole::Limit)
+                })
+                .or_else(|| {
+                    let registry = ctx.ctx.std_registry.clone();
+                    let declaration = registry.lookup_qualified(&path)?;
+                    crate::lower::std::lower_std_type_symbol(ctx.ctx, &registry, declaration)
+                });
+            let expected_bounds = limit.map(|limit| ctx.ctx.interner.intern(Type::Array(limit)));
+            for bound in bounds {
+                let actual = collect_expr(ctx, bound, expected_bounds)?;
+                if let Some(expected) = expected_bounds {
+                    let span = ctx.ctx.hir.exprs[bound].span(&ctx.ctx.hir.blocks);
+                    ctx.emit(TypeConstraint::Assignable {
+                        from: actual,
+                        to: expected,
+                        origin: ConstraintOrigin { span },
+                        reason: AssignabilityReason::Annotation,
+                    });
+                }
+            }
+            collect_block(ctx, body, expected)?
+        }
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Reflect(reflection) => {
             super::reflection::collect_reflection(ctx, expr, &reflection, expected)

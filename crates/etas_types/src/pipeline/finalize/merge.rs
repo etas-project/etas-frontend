@@ -98,6 +98,9 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     if facts.known_std_types.index_error.is_none() {
         facts.known_std_types.index_error = body.known_std_types.index_error;
     }
+    if facts.known_std_types.budget_exceeded.is_none() {
+        facts.known_std_types.budget_exceeded = body.known_std_types.budget_exceeded;
+    }
     if facts.known_std_types.text_error.is_none() {
         facts.known_std_types.text_error = body.known_std_types.text_error;
     }

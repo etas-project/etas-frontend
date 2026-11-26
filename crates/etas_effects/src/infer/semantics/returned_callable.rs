@@ -357,7 +357,9 @@ impl EffectSemantics<'_> {
                     .extend_projection(key, sources);
             }
         }
-        if self.discovered_call_results.borrow().projection_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
+        if self.discovered_call_results.borrow().projection_nodes
+            > etas_package_metadata::MAX_METADATA_GRAPH_NODES
+        {
             return Err(EffectSpecializationError::InvalidCallableReturnSources);
         }
         if let Some(parameters) = parameters {
@@ -447,8 +449,7 @@ impl EffectSemantics<'_> {
                 self.close_origin_set(&previous, current);
             }
         });
-        if reads.value_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES
-        {
+        if reads.value_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
             return Err(EffectSpecializationError::InvalidCallableEnvironment {
                 reason: "checked read-source graph exceeds the analysis node budget".into(),
             });
@@ -468,9 +469,7 @@ impl EffectSemantics<'_> {
         if complete {
             let mut results = self.discovered_call_results.borrow_mut();
             results.update_value(call, |values| values.extend(sources.iter().copied()));
-            if results.value_nodes
-                > etas_package_metadata::MAX_METADATA_GRAPH_NODES
-            {
+            if results.value_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
                 return Err(EffectSpecializationError::InvalidCallableEnvironment {
                     reason: "callable return-source graph exceeds the analysis node budget".into(),
                 });

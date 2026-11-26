@@ -198,6 +198,7 @@ pub struct ExternalRequestInstantiationMetadata {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ExternalActionRequestMetadata {
+    pub injection_name: Option<String>,
     pub action: ExternalEffectMetadata,
     pub type_bindings: Option<Vec<(String, etas_types::TypeId)>>,
     pub signature: Option<etas_types::ActionRequestSignature>,

@@ -16,6 +16,7 @@ use etas_types::TypeId;
     etas_core::RetainedSize,
 )]
 pub struct ActionRequestInstance {
+    pub injection_name: Option<String>,
     pub action: Effect,
     pub type_bindings: Option<Vec<(String, TypeId)>>,
     pub signature: Option<etas_types::ActionRequestSignature>,
@@ -83,6 +84,21 @@ impl Default for RequestInstantiationSummary {
 }
 
 impl RequestInstantiationSummary {
+    pub(crate) fn subtract_named_handled(
+        &mut self,
+        coverage: &EffectCoverage<'_>,
+        handlers: &[(Effect, String)],
+    ) {
+        if let Self::Available { actions, .. } = self {
+            actions.retain(|request| {
+                !request.injection_name.as_ref().is_some_and(|name| {
+                    handlers.iter().any(|(effect, provided)| {
+                        provided == name && coverage.covers(effect, &request.action)
+                    })
+                })
+            });
+        }
+    }
     pub fn less_equal(&self, other: &Self) -> bool {
         match (self, other) {
             (_, Self::Unavailable) => true,
@@ -106,6 +122,7 @@ impl RequestInstantiationSummary {
     ) -> Self {
         Self::Available {
             actions: BTreeSet::from([ActionRequestInstance {
+                injection_name: None,
                 action,
                 type_bindings: Some(type_bindings),
                 signature: Some(signature),
@@ -117,6 +134,7 @@ impl RequestInstantiationSummary {
     pub fn record_untyped(&mut self, action: Effect) {
         if let Self::Available { actions, .. } = self {
             actions.insert(ActionRequestInstance {
+                injection_name: None,
                 action,
                 type_bindings: None,
                 signature: None,

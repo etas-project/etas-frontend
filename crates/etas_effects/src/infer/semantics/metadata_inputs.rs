@@ -1,10 +1,10 @@
 //! Resolve portable application dependencies after their lexical inputs are bound.
-use crate::infer::analysis::dependencies::InputFact;
 use super::{
     engine::EffectSemantics,
     specialize::{EffectSpecializationError as Error, TraceArgumentBinding},
     state::{EffectState, LatentSource},
 };
+use crate::infer::analysis::dependencies::InputFact;
 use crate::{
     ParameterCallTarget as Target,
     facts::{

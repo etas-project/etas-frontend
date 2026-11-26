@@ -319,6 +319,17 @@ fn seed_flow_body_work<'a>(body: &'a ast::FlowBody, work: &mut Vec<AstWork<'a>>)
 
 fn visit_stmt<'a>(stmt: &'a ast::Stmt, work: &mut Vec<AstWork<'a>>) {
     match stmt {
+        ast::Stmt::Limited(stmt) => {
+            for annotation in &stmt.annotations {
+                work.extend(annotation.args.iter().map(|arg| {
+                    AstWork::Expr(match arg {
+                        ast::AnnotationArg::Positional(value)
+                        | ast::AnnotationArg::Named { value, .. } => value,
+                    })
+                }));
+            }
+            work.push(AstWork::Stmt(&stmt.statement));
+        }
         ast::Stmt::Let(stmt) => work.push(AstWork::Expr(&stmt.value)),
         ast::Stmt::Var(stmt) => work.push(AstWork::Expr(&stmt.value)),
         ast::Stmt::Assign(stmt) => {
@@ -379,6 +390,17 @@ fn visit_expr<'a>(
     visit: &mut impl FnMut(&ast::Path),
 ) {
     match expr {
+        ast::Expr::Limited(expr) => {
+            for annotation in &expr.annotations {
+                work.extend(annotation.args.iter().map(|arg| {
+                    AstWork::Expr(match arg {
+                        ast::AnnotationArg::Positional(value)
+                        | ast::AnnotationArg::Named { value, .. } => value,
+                    })
+                }));
+            }
+            work.push(AstWork::Block(&expr.block));
+        }
         ast::Expr::Path(path) => visit(path),
         ast::Expr::Reflect(reflection) => match &reflection.target {
             ast::ReflectTarget::Path(path) => visit(path),

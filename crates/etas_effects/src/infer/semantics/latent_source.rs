@@ -1,5 +1,5 @@
-use crate::infer::analysis::dependencies::InputFact;
 use super::{engine::EffectSemantics, shared::*};
+use crate::infer::analysis::dependencies::InputFact;
 
 mod structural;
 
@@ -118,7 +118,7 @@ impl EffectSemantics<'_> {
                 return Some(sources.iter().copied().collect());
             }
             self.dependencies.read(InputFact::Global(symbol));
-        let known_global = self.global_values.symbol_sources(symbol).is_some()
+            let known_global = self.global_values.symbol_sources(symbol).is_some()
                 || self
                     .discovered_global_values
                     .symbol_sources(symbol)
@@ -325,8 +325,9 @@ impl EffectSemantics<'_> {
                     | crate::FrozenCallableSummary::Replaced { pinned: summary } => {
                         Some((**summary).clone())
                     }
-                    crate::FrozenCallableSummary::AnalyzePinnedSource => self.unit_summary(&EffectUnit::Item(item))
-                        .cloned(),
+                    crate::FrozenCallableSummary::AnalyzePinnedSource => {
+                        self.unit_summary(&EffectUnit::Item(item)).cloned()
+                    }
                     crate::FrozenCallableSummary::Unavailable => None,
                 }
             }
@@ -339,7 +340,7 @@ impl EffectSemantics<'_> {
                 let flow = self.checked_callable_contract_parameter(symbol)?;
                 let Some(row) = flow.declared_effects() else {
                     self.dependencies.read(InputFact::Parameter(symbol));
-        return self.parameter_effects.get(&symbol).cloned();
+                    return self.parameter_effects.get(&symbol).cloned();
                 };
                 let mut summary =
                     self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span);

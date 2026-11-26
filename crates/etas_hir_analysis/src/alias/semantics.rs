@@ -721,6 +721,9 @@ where
                 }
             }
             HirExpr::Record(record) => {
+                if let Some(base) = record.base {
+                    self.collect_expr_captures(base, locals, captured);
+                }
                 for field in record.fields {
                     if let HirFieldInit::Named { value, .. } = field {
                         self.collect_expr_captures(value, locals, captured);
@@ -825,6 +828,12 @@ where
                 }
             }
             HirExpr::Block(block) => self.collect_block_captures(block, locals, captured),
+            HirExpr::Limited { bounds, body, .. } => {
+                for bound in bounds {
+                    self.collect_expr_captures(bound, locals, captured);
+                }
+                self.collect_block_captures(body, locals, captured);
+            }
             HirExpr::ListCons { head, tail, .. } => {
                 self.collect_expr_captures(head, locals, captured);
                 self.collect_expr_captures(tail, locals, captured);
@@ -913,6 +922,42 @@ where
             HirExpr::Record(record) => {
                 let value = self.allocation_for_unit(state.unit, expr, AllocationKind::Record);
                 if let Some(root) = value.must.clone() {
+                    if let Some(base) = record.base {
+                        if let Some(fields) = self.oracle.record_fields(base) {
+                            let replaced = record
+                                .fields
+                                .iter()
+                                .map(|field| match field {
+                                    HirFieldInit::Named { name, .. }
+                                    | HirFieldInit::Shorthand { name, .. } => name,
+                                })
+                                .collect::<BTreeSet<_>>();
+                            for field in fields.iter().filter(|field| !replaced.contains(field)) {
+                                let projection = field_projection(state.config, field.clone());
+                                let (alias, incomplete) = project_read(
+                                    &state,
+                                    state.expr_alias(base),
+                                    projection.clone(),
+                                );
+                                if incomplete {
+                                    state.mark_incomplete();
+                                }
+                                if let Some(place) =
+                                    root.project(projection, state.config.max_projection_depth)
+                                {
+                                    let strong = state.config.field_sensitivity
+                                        != FieldSensitivity::Collapsed;
+                                    self.assign_place_with_constraints(
+                                        &mut state, place, alias, strong,
+                                    );
+                                } else {
+                                    state.mark_incomplete();
+                                }
+                            }
+                        } else {
+                            state.mark_incomplete();
+                        }
+                    }
                     for field in record.fields {
                         match field {
                             HirFieldInit::Named { name, value, .. } => {
@@ -1035,6 +1080,7 @@ where
                 self.allocation_for_unit(state.unit, expr, AllocationKind::Handler)
             }
             HirExpr::Block(_)
+            | HirExpr::Limited { .. }
             | HirExpr::If { .. }
             | HirExpr::Match { .. }
             | HirExpr::Try { .. }

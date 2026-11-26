@@ -644,7 +644,8 @@ enum ReachabilityPurpose {
 
 impl ReachableExprCollector<'_> {
     fn collect(&mut self) -> Result<(), String> {
-        let mut paths = std::collections::HashMap::with_capacity(self.resolved_paths.expr_paths.len());
+        let mut paths =
+            std::collections::HashMap::with_capacity(self.resolved_paths.expr_paths.len());
         for path in &self.resolved_paths.expr_paths {
             paths.entry(path.expr).or_insert(&path.result);
         }

@@ -20,6 +20,7 @@ pub(crate) fn map_requests<M: SummaryMapper>(
             return Err(mapper.invalid_structure());
         }
         mapped_actions.insert(ActionRequestInstance {
+            injection_name: action.injection_name.clone(),
             action: mapped,
             type_bindings: action
                 .type_bindings

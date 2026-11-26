@@ -4,6 +4,7 @@ use crate::{SolverFailure, ValidationRequest};
 
 use super::state::BodyPipelineState;
 mod coverage;
+mod record_update;
 mod tool_reference;
 mod writable_place;
 
@@ -38,6 +39,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &
 
     for validation in &state.validations {
         match validation {
+            ValidationRequest::RecordUpdate { ty, span } => {
+                record_update::validate(ctx, state, *ty, *span)
+            }
             ValidationRequest::AgentContext { ty, active, span } => {
                 let resolved = crate::substitute_type_params(
                     &mut ctx.interner,

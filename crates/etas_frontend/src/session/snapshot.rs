@@ -1011,6 +1011,7 @@ impl BodySignatureReferenceCollector<'_> {
             return;
         };
         match expr {
+            HirExpr::Limited { .. } => {}
             HirExpr::Reflect(reflection) => {
                 for path in reflection.target.paths() {
                     self.push_path_source_item(path);

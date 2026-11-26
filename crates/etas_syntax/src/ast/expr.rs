@@ -4,6 +4,7 @@ use super::{Block, EffectRef, GenericArg, Name, TypeExpr};
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Expr {
+    Limited(LimitedExpr),
     Literal(Literal),
     Path(Path),
     Reflect(Box<super::ReflectExpr>),
@@ -62,6 +63,7 @@ pub enum Expr {
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
+            Self::Limited(scope) => scope.span,
             Self::Literal(lit) => lit.span(),
             Self::Path(path) => path.span,
             Self::Reflect(reflection) => reflection.span,
@@ -97,6 +99,13 @@ impl Expr {
             Self::Block(block) => block.block.span,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
+pub struct LimitedExpr {
+    pub annotations: Vec<super::Annotation>,
+    pub block: super::Block,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
@@ -230,6 +239,7 @@ pub struct HandlerBlock {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct HandlerArm {
+    pub provider: Option<DependencyProviderHead>,
     pub effect: EffectRef,
     pub action: Name,
     pub generic_args: Vec<GenericArg>,
@@ -237,6 +247,12 @@ pub struct HandlerArm {
     pub continuation: Option<Name>,
     pub body: HandlerArmBody,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
+pub enum DependencyProviderHead {
+    Named { name: Name, ty: Option<TypeExpr> },
+    Type(TypeExpr),
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

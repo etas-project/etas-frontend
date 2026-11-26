@@ -45,6 +45,7 @@ impl LowerCtx {
                     );
                     return self.alloc_expr(
                         HirExpr::Record(HirRecordExpr {
+                            base: None,
                             injections: None,
                             path: Some(path),
                             generic_args: Vec::new(),
@@ -104,6 +105,19 @@ impl LowerCtx {
             }
         }
         match expr {
+            Expr::Limited(limited) => {
+                let bounds = self.lower_local_limits(&limited.annotations, scope, item_id);
+                let body = self.lower_block(&limited.block, scope, item_id);
+                return self.alloc_expr(
+                    HirExpr::Limited {
+                        bounds,
+                        body,
+                        target: HirLimitTarget::Block,
+                        span,
+                    },
+                    span,
+                );
+            }
             Expr::Handle(handle) => return self.lower_handle_expr(handle, scope, item_id),
             Expr::Match(match_expr) => return self.lower_match_expr(match_expr, scope, item_id),
             Expr::Lambda(lambda) => return self.lower_lambda_expr(lambda, scope, item_id),
@@ -115,6 +129,7 @@ impl LowerCtx {
         }
 
         let hir_expr = match expr {
+            Expr::Limited(_) => unreachable!("limited expression lowered above"),
             Expr::Literal(lit) => HirExpr::Literal(match lit {
                 Literal::Bool { value, span } => HirLiteral::Bool {
                     value: *value,
@@ -146,24 +161,55 @@ impl LowerCtx {
             Expr::Reflect(reflection) => {
                 HirExpr::Reflect(Box::new(self.lower_reflection(reflection, scope, item_id)))
             }
-            Expr::Record(record) => HirExpr::Record(HirRecordExpr {
-                injections: None,
-                path: record
+            Expr::Record(record) => {
+                let path = record
                     .path
                     .as_ref()
-                    .map(|path| self.resolve_path(path, scope, true)),
-                generic_args: record
-                    .generic_args
-                    .iter()
-                    .map(|arg| self.lower_generic_arg(arg, scope, item_id))
-                    .collect(),
-                fields: record
-                    .fields
-                    .iter()
-                    .map(|field| self.lower_field_init(field, scope, item_id))
-                    .collect(),
-                span: record.span,
-            }),
+                    .map(|path| self.resolve_path(path, scope, true));
+                let base = path
+                    .as_ref()
+                    .filter(|path| match path.resolution {
+                        ResolveResult::Resolved(symbol) => {
+                            let symbol = self
+                                .hir
+                                .source_import_targets
+                                .get(&symbol)
+                                .copied()
+                                .unwrap_or(symbol);
+                            self.symbols.get(symbol).is_some_and(|symbol| {
+                                matches!(
+                                    symbol.kind,
+                                    SymbolKind::Local
+                                        | SymbolKind::Param
+                                        | SymbolKind::TopLevelLet
+                                        | SymbolKind::Field
+                                )
+                            })
+                        }
+                        ResolveResult::PartiallyResolved(ref partial) => {
+                            partial.reason == PartialResolutionReason::MemberRequiresTypeChecking
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .map(|path| self.alloc_expr(HirExpr::Path(path), record.span));
+                HirExpr::Record(HirRecordExpr {
+                    base,
+                    injections: None,
+                    path,
+                    generic_args: record
+                        .generic_args
+                        .iter()
+                        .map(|arg| self.lower_generic_arg(arg, scope, item_id))
+                        .collect(),
+                    fields: record
+                        .fields
+                        .iter()
+                        .map(|field| self.lower_field_init(field, scope, item_id))
+                        .collect(),
+                    span: record.span,
+                })
+            }
             Expr::EmptyRecordOrMap { span } => HirExpr::EmptyRecordOrMap { span: *span },
             Expr::Tuple { elems, span } => HirExpr::Tuple {
                 elems: elems
@@ -568,7 +614,7 @@ impl LowerCtx {
         scope: ScopeId,
         item_id: HirItemId,
     ) -> Vec<HirHandlerArmId> {
-        block
+        let mut handlers = block
             .arms
             .iter()
             .map(|arm| {
@@ -581,17 +627,60 @@ impl LowerCtx {
                     ty: None,
                     initializer: None,
                 });
-                let patterns = arm
+                let mut provider_name = None;
+                let mut provider_type = None;
+                if let Some(provider) = &arm.provider {
+                    match provider {
+                        ast::DependencyProviderHead::Named { name, ty } => {
+                            provider_name = Some(name.text.clone());
+                            provider_type = ty.as_ref();
+                        }
+                        ast::DependencyProviderHead::Type(ty) => {
+                            let is_type = match ty {
+                                ast::TypeExpr::Path { path, args, .. } if args.is_empty() && path.segments.len() == 1 => {
+                                    let resolved = self.resolve_path_in_context(path, scope, false, PreludeContext::Type);
+                                    match resolved.resolution {
+                                        ResolveResult::Resolved(symbol) => {
+                                            let symbol = self.hir.source_import_targets.get(&symbol).copied().unwrap_or(symbol);
+                                            self.symbols.get(symbol).is_some_and(|symbol| {
+                                                matches!(symbol.kind, SymbolKind::Type | SymbolKind::TypeAlias | SymbolKind::Enum | SymbolKind::TypeParam)
+                                                || matches!(&symbol.def, SymbolDef::ImportAlias { path, .. }
+                                                    if self.std_registry.lookup_qualified(path).is_some_and(|symbol|
+                                                        symbol.kind.namespace() == etas_std::StdNamespace::Type))
+                                            })
+                                        }
+                                        _ => false,
+                                    }
+                                }
+                                _ => true,
+                            };
+                            if is_type { provider_type = Some(ty); }
+                            else if let ast::TypeExpr::Path { path, .. } = ty {
+                                provider_name = Some(path.segments[0].text.clone());
+                            }
+                        }
+                    }
+                }
+                let patterns = if arm.provider.is_some() {
+                    let pattern = provider_name.map_or(ast::Pattern::Wildcard(arm.span), |value|
+                        ast::Pattern::Literal(ast::Literal::String { value, span: arm.span }));
+                    vec![self.lower_pattern(&pattern, handler_scope, item_id)]
+                } else { arm
                     .patterns
                     .iter()
                     .map(|pat| self.lower_pattern(pat, handler_scope, item_id))
-                    .collect::<Vec<_>>();
+                    .collect::<Vec<_>>() };
                 let continuation = arm.continuation.as_ref().map(|name| {
                     self.lower_pattern(&ast::Pattern::Ident(name.clone()), handler_scope, item_id)
                 });
                 self.pattern_binding = previous_binding;
-                let effect = self.lower_effect_ref(&arm.effect, scope, item_id);
+                let mut effect_syntax = arm.effect.clone();
+                if arm.provider.is_some() {
+                    effect_syntax.args = provider_type.into_iter().cloned().map(ast::EffectArg::Type).collect();
+                }
+                let effect = self.lower_effect_ref(&effect_syntax, scope, item_id);
                 let handler = HirHandlerArm {
+                    provider: arm.provider.is_some(),
                     action: self.resolve_action(effect, &arm.action),
                     generic_args: arm
                         .generic_args
@@ -608,7 +697,16 @@ impl LowerCtx {
                 self.source_map.map_handler_arm(id, arm.span);
                 id
             })
-            .collect()
+            .collect::<Vec<_>>();
+        handlers.sort_by_key(|arm| {
+            let arm = &self.hir.handler_arms[*arm];
+            arm.provider
+                && arm
+                    .patterns
+                    .iter()
+                    .all(|pattern| matches!(self.hir.pats[*pattern], HirPat::Wildcard { .. }))
+        });
+        handlers
     }
 
     pub(super) fn lower_handler_arg(

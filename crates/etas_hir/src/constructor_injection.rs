@@ -10,7 +10,7 @@ impl HirProgram {
             .exprs
             .iter()
             .filter_map(|(expr, value)| match value {
-                HirExpr::Record(record) if record.injections.is_none() => {
+                HirExpr::Record(record) if record.injections.is_none() && record.base.is_none() => {
                     Some((expr, record.clone()))
                 }
                 _ => None,
@@ -71,6 +71,19 @@ impl HirProgram {
                             HirGenericArg::EffectRow(self.clone_injection_row(row))
                         }
                         wildcard => wildcard,
+                    })
+                    .collect();
+                let args = args
+                    .into_iter()
+                    .map(|argument| match argument {
+                        HirArg::Positional(expr) => {
+                            let value = self.exprs.alloc(self.exprs[expr].clone());
+                            if let Some(origin) = self.source_map.expr_sources.get(&expr).cloned() {
+                                self.source_map.expr_sources.insert(value, origin);
+                            }
+                            HirArg::Positional(value)
+                        }
+                        argument => argument,
                     })
                     .collect();
                 let value = self.exprs.alloc(HirExpr::Perform {

@@ -78,14 +78,15 @@ impl EffectSemantics<'_> {
         }
         // These are previous-round origins for this lexical call site, not a
         // substitute for checking the invoked callable's complete behavior.
-        let known_call_result = || (self.context.view().index().expr_item.get(&expr).copied()
-            == state.owner
-            && !matches!(
-                self.hir.exprs.get(expr),
-                Some(HirExpr::Path(_) | HirExpr::Field { .. } | HirExpr::Index { .. })
-            ))
-        .then(|| self.checked_value_sources(expr))
-        .flatten();
+        let known_call_result = || {
+            (self.context.view().index().expr_item.get(&expr).copied() == state.owner
+                && !matches!(
+                    self.hir.exprs.get(expr),
+                    Some(HirExpr::Path(_) | HirExpr::Field { .. } | HirExpr::Index { .. })
+                ))
+            .then(|| self.checked_value_sources(expr))
+            .flatten()
+        };
         if let Some(sources) = state.local_latent_values.value_sources(expr) {
             if sources.iter().all(|source| matches!(source, LatentSource::Unavailable { expr: missing } if *missing == expr))
                 && let Some(known) = known_call_result() {

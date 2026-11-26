@@ -9,6 +9,7 @@ pub struct Block {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Stmt {
+    Limited(LimitedStmt),
     Let(LetStmt),
     Var(VarStmt),
     Assign(AssignStmt),
@@ -29,6 +30,7 @@ pub enum Stmt {
 impl Stmt {
     pub fn span(&self) -> Span {
         match self {
+            Stmt::Limited(stmt) => stmt.span,
             Stmt::Let(stmt) => stmt.span,
             Stmt::Var(stmt) => stmt.span,
             Stmt::Assign(stmt) => stmt.span,
@@ -44,6 +46,13 @@ impl Stmt {
             Stmt::Expr(stmt) => stmt.span,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
+pub struct LimitedStmt {
+    pub annotations: Vec<super::Annotation>,
+    pub statement: Box<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

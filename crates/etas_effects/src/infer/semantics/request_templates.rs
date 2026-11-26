@@ -63,7 +63,7 @@ impl EffectSemantics<'_> {
             .with_type_parameters(&types)
             .with_source_parameters(&sources)
             .with_effect_arguments(&rows);
-        Ok(RequestInstantiationSummary::action(
+        let mut summary = RequestInstantiationSummary::action(
             action,
             bindings,
             etas_types::ActionRequestSignature {
@@ -73,6 +73,34 @@ impl EffectSemantics<'_> {
                     .collect::<Result<_, _>>()?,
                 output: engine.substitute(output)?,
             },
-        ))
+        );
+        let injection = self.registry.action_by_name("std.effects.Inject.get");
+        if let RequestInstantiationSummary::Available { actions, .. } = &mut summary {
+            *actions = std::mem::take(actions)
+                .into_iter()
+                .map(|mut instance| {
+                    let requested = match &instance.action {
+                        Effect::Action(action) => Some(action),
+                        Effect::AppliedAction(instance) => Some(&instance.action),
+                        _ => None,
+                    };
+                    if requested == injection.as_ref() {
+                        if let etas_hir::HirExpr::Perform { args, .. } = &self.hir.exprs[expr] {
+                            if let [etas_hir::HirArg::Positional(value)] = args.as_slice() {
+                                if let etas_hir::HirExpr::Literal(etas_hir::HirLiteral::String {
+                                    value,
+                                    ..
+                                }) = &self.hir.exprs[*value]
+                                {
+                                    instance.injection_name = Some(value.clone());
+                                }
+                            }
+                        }
+                    }
+                    instance
+                })
+                .collect();
+        }
+        Ok(summary)
     }
 }

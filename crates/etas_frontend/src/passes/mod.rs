@@ -21,12 +21,13 @@ pub use analysis::concurrency::{
 };
 pub use analysis::{
     AnalyzeConcurrencyPass, AnalyzeCpuParallelEligibilityPass, AnalyzeLoopProgressPass,
-    BindMethodOriginsPass, BuildSignatureFactsPass, CheckStandardLibraryImplementationsPass,
-    CpuCallableOrigin, CpuCaptureContract, CpuFreezeContract, CpuParallelEligibilityFact,
-    CpuParallelEligibilityFacts, CpuParallelRejection, FinalizeTypeFactsPass,
-    InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
+    BindMethodOriginsPass, BuildSignatureFactsPass, CheckLibraryBodiesPass,
+    CheckStandardLibraryImplementationsPass, CpuCallableOrigin, CpuCaptureContract,
+    CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
+    CpuParallelRejection, FinalizeTypeFactsPass, InferCallableOutputsPass,
+    MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
     PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
-    RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass, CheckLibraryBodiesPass,
+    RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
     ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };

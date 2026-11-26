@@ -10,7 +10,9 @@ pub(crate) use crate::facts::CallableValueOrigin as LatentSource;
 impl LatentSource {
     pub(crate) fn captured_call_target(&self) -> Option<EffectUnit> {
         match self {
-            Self::FrozenContract { unit, .. } | Self::Unit(unit) | Self::Reference { unit, .. } => Some(*unit),
+            Self::FrozenContract { unit, .. } | Self::Unit(unit) | Self::Reference { unit, .. } => {
+                Some(*unit)
+            }
             _ => None,
         }
     }
@@ -41,9 +43,21 @@ pub(crate) struct DiscoveredCallResults {
 impl DiscoveredCallResults {
     pub(super) fn retain_values(&mut self, clean: impl Fn(&HirExprId) -> bool) {
         self.origins.values.retain(|key, _| clean(key));
-        self.origins.value_projections.retain(|(key, _), _| clean(key));
-        self.value_nodes = self.origins.values.values().map(|sources| 1 + sources.len()).sum();
-        self.projection_nodes = self.origins.value_projections.iter().map(|((_, path), sources)| 1 + path.len() + sources.len()).sum();
+        self.origins
+            .value_projections
+            .retain(|(key, _), _| clean(key));
+        self.value_nodes = self
+            .origins
+            .values
+            .values()
+            .map(|sources| 1 + sources.len())
+            .sum();
+        self.projection_nodes = self
+            .origins
+            .value_projections
+            .iter()
+            .map(|((_, path), sources)| 1 + path.len() + sources.len())
+            .sum();
     }
     pub(super) fn update_value(
         &mut self,

@@ -102,7 +102,8 @@ impl EffectSemantics<'_> {
         &[crate::ExternalExistentialValueMetadata],
         Span,
     )> {
-        self.dependencies.read(crate::infer::analysis::dependencies::InputFact::MethodEvidence);
+        self.dependencies
+            .read(crate::infer::analysis::dependencies::InputFact::MethodEvidence);
         if let Some(default) = self
             .external_defaults
             .iter()

@@ -297,6 +297,7 @@ pub(super) fn retained_bindings<'a>(
                     }
                 }
                 HirExpr::Record(record) => {
+                    pending.extend(record.base.map(Value::Expr));
                     for field in &record.fields {
                         match field {
                             HirFieldInit::Named { value, .. } => pending.push(Value::Expr(*value)),
@@ -308,7 +309,7 @@ pub(super) fn retained_bindings<'a>(
                         }
                     }
                 }
-                HirExpr::Block(block) => {
+                HirExpr::Block(block) | HirExpr::Limited { body: block, .. } => {
                     pending.extend(hir.blocks[*block].final_expr.map(Value::Expr))
                 }
                 HirExpr::If {

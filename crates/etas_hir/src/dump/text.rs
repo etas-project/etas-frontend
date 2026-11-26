@@ -775,6 +775,18 @@ impl<'a> Dump<'a> {
 
     fn expr(&mut self, expr: &HirExpr) {
         match expr {
+            HirExpr::Limited {
+                bounds,
+                body,
+                target,
+                span,
+            } => {
+                self.line(&format!("Limited {:?}", target), Some(*span));
+                for bound in bounds {
+                    self.expr_id("Bound", *bound);
+                }
+                self.block_id("Body", *body);
+            }
             HirExpr::Literal(lit) => self.line(&format!("Literal {:?}", lit), None),
             HirExpr::Path(path) => self.line(&format!("Path {}", path_ref(path)), Some(path.span)),
             HirExpr::Reflect(reflection) => {
@@ -1434,7 +1446,8 @@ fn expr_span(expr: &HirExpr, program: &HirProgram) -> Span {
         HirExpr::Path(path) => path.span,
         HirExpr::Reflect(reflection) => reflection.span,
         HirExpr::Record(record) => record.span,
-        HirExpr::Tuple { span, .. }
+        HirExpr::Limited { span, .. }
+        | HirExpr::Tuple { span, .. }
         | HirExpr::Array { span, .. }
         | HirExpr::List { span, .. }
         | HirExpr::ListCons { span, .. }

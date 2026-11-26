@@ -361,6 +361,33 @@ pub struct SharedActionTrace {
     pub unordered: bool,
 }
 
+impl Drop for SharedActionTrace {
+    fn drop(&mut self) {
+        // Closed callable summaries can share a chain of thousands of traces.
+        // Release the last owners iteratively instead of recursing through Arc.
+        let mut pending = vec![std::mem::take(&mut self.body)];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                ActionTraceDomain::Shared(shared) => {
+                    if let Some(mut shared) = std::sync::Arc::into_inner(shared) {
+                        pending.push(std::mem::take(&mut shared.body));
+                    }
+                }
+                ActionTraceDomain::Seq(parts)
+                | ActionTraceDomain::Choice(parts)
+                | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
+                ActionTraceDomain::Repeat(body)
+                | ActionTraceDomain::Recursive {
+                    body: Some(body), ..
+                }
+                | ActionTraceDomain::DefaultHandler { body, .. }
+                | ActionTraceDomain::TaskStart { body, .. } => pending.push(*body),
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Only leaves and one-level nodes with fingerprint children enter this cache.
 type TraceFingerprints = std::collections::HashMap<ActionTraceDomain, etas_code::CodeFingerprint>;
 

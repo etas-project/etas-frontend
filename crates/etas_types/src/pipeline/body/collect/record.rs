@@ -14,6 +14,9 @@ pub fn collect_record<E>(
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
+    if let Some(base) = record.base {
+        return collect_update(ctx, record, base);
+    }
     if let Some(ty) = super::enum_variant::collect_record(ctx, record, expected)? {
         return Ok(ty);
     }
@@ -180,6 +183,59 @@ pub fn collect_record<E>(
     } else {
         actual
     };
+    Ok(ty)
+}
+
+fn collect_update<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    record: &HirRecordExpr,
+    base: etas_hir::HirExprId,
+) -> Result<TypeId, E> {
+    let ty = collect_expr(ctx, base, None)?;
+    let fields = record_fields(ctx, ty, record.span);
+    ctx.validate(crate::ValidationRequest::RecordUpdate {
+        ty,
+        span: record.span,
+    });
+    let mut seen = HashSet::new();
+    for field in &record.fields {
+        ctx.checkpoint()?;
+        let name = field_name(field);
+        if !seen.insert(name) {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::DuplicateField,
+                span: field_span(field),
+                message: "record update initializes the same field more than once".into(),
+            });
+        }
+        let expected = fields
+            .as_ref()
+            .and_then(|fields| {
+                fields
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == name)
+                    .map(|field| field.ty)
+            })
+            .unwrap_or_else(|| ctx.fresh_type_var());
+        ctx.emit(TypeConstraint::FieldAccess {
+            base: ty,
+            field: name.to_owned(),
+            output: expected,
+            origin: ConstraintOrigin {
+                span: field_span(field),
+            },
+        });
+        let actual = collect_field_value(ctx, field, Some(expected))?;
+        ctx.emit(TypeConstraint::Assignable {
+            from: actual,
+            to: expected,
+            origin: ConstraintOrigin {
+                span: field_span(field),
+            },
+            reason: AssignabilityReason::Assignment,
+        });
+    }
     Ok(ty)
 }
 

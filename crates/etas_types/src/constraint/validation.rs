@@ -4,6 +4,10 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    RecordUpdate {
+        ty: TypeId,
+        span: Span,
+    },
     AgentContext {
         ty: TypeId,
         active: Option<TypeId>,

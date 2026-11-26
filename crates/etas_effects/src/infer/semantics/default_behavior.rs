@@ -50,6 +50,7 @@ impl EffectSemantics<'_> {
                     .iter()
                     .map(|request| {
                         Some(crate::ActionRequestInstance {
+                            injection_name: request.injection_name.clone(),
                             action: self.external_effect_from_metadata(&request.action)?,
                             type_bindings: request.type_bindings.clone(),
                             signature: request.signature.clone(),

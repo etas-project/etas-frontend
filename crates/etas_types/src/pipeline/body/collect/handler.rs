@@ -77,7 +77,7 @@ pub(super) fn collect_handler_for_requests<E>(
             .ctx
             .hir
             .handler_ignores_request_abi(&arm, || ctx.checkpoint())?;
-        let action_signature = match arm.action.action_symbol {
+        let mut action_signature = match arm.action.action_symbol {
             etas_hir::ResolveResult::Resolved(symbol) => action_signature(
                 ctx,
                 symbol,
@@ -89,6 +89,20 @@ pub(super) fn collect_handler_for_requests<E>(
             ),
             _ => None,
         };
+        if arm.provider && arm.action.effect.args.is_empty() {
+            let value = ctx.ctx.hir.blocks[arm.body]
+                .stmts
+                .last()
+                .and_then(|statement| match ctx.ctx.hir.stmts[*statement] {
+                    HirStmt::Resume { value, .. } => value,
+                    _ => None,
+                });
+            if let (Some(signature), Some(value)) = (&mut action_signature, value) {
+                let ty = super::expr::collect_expr(ctx, value, None)?;
+                signature.output = ty;
+                signature.selector_defaults = vec![Some(crate::EffectArgRef::Type(ty))];
+            }
+        }
         if let Some(signature) = &action_signature {
             validate_action_selector_arity_and_kinds(
                 ctx,
@@ -420,7 +434,8 @@ fn validate_handler_arm_completion<E>(
                 | HirStmt::Error { span } => Some(span),
             },
             Tail::Expr(expr) => match ctx.ctx.hir.exprs[expr].clone() {
-                etas_hir::HirExpr::Block(block) => {
+                etas_hir::HirExpr::Block(block)
+                | etas_hir::HirExpr::Limited { body: block, .. } => {
                     pending.push(Tail::Block(block));
                     None
                 }

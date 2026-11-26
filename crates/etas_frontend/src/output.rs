@@ -1255,6 +1255,7 @@ pub struct ProjectExternalRequestInstantiationInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalActionRequestInput {
+    pub injection_name: Option<String>,
     pub action: ProjectExternalEffectRefInput,
     pub type_bindings: Option<Vec<(String, ProjectExternalTypeInput)>>,
     pub signature: Option<ProjectExternalActionRequestSignatureInput>,

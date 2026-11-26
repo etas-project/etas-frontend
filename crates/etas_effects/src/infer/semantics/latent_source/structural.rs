@@ -25,7 +25,9 @@ impl EffectSemantics<'_> {
                     None => {}
                 }
             }
-            Some(HirExpr::Block(block)) => blocks.push(*block),
+            Some(HirExpr::Block(block) | HirExpr::Limited { body: block, .. }) => {
+                blocks.push(*block)
+            }
             _ => return,
         }
         for block in blocks {

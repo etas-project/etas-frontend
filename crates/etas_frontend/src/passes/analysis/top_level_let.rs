@@ -211,6 +211,11 @@ fn classify_top_level_let(
                     _ => Some(TopLevelLetClassification::Invalid),
                 },
             })
+            .chain(
+                record
+                    .base
+                    .map(|base| classify_top_level_let(hir, types, facts, base)),
+            )
             .collect::<Option<Vec<_>>>()
             .map(|_| TopLevelLetClassification::Const),
         HirExpr::Path(path) => match path.resolution {

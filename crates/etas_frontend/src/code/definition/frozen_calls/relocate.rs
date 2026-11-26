@@ -1207,6 +1207,7 @@ impl<'a> Relocation<'a> {
                         .iter()
                         .map(|instance| {
                             Ok(ActionRequestInstance {
+                                injection_name: instance.injection_name.clone(),
                                 action: self.effect(&instance.action, scope)?,
                                 signature: instance
                                     .signature

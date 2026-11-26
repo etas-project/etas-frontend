@@ -8,6 +8,9 @@ use super::{
 };
 
 pub trait AliasOracle {
+    fn record_fields(&self, _expr: HirExprId) -> Option<Vec<String>> {
+        None
+    }
     fn expression_target(&self, _expr: HirExprId) -> Option<AliasTarget> {
         None
     }

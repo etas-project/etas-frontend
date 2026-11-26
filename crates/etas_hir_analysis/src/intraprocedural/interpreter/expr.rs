@@ -55,6 +55,13 @@ where
                 })?
             }
             HirExpr::Block(block) => self.block_control(block, state)?,
+            HirExpr::Limited { bounds, body, .. } => {
+                let entry = state.clone();
+                let state = self.semantics.begin_limit_bounds(expr, state);
+                let control = self.exprs_control(bounds, Control::normal(state))?;
+                let control = self.semantics.finish_limit_bounds(expr, entry, control);
+                control.try_with_normal_processed(|state| self.block_control(body, state))?
+            }
             HirExpr::Call { callee, args, .. } => {
                 let control = self.expr_control(callee, state)?;
                 let control = self.args_control(&args, control)?;
@@ -71,7 +78,12 @@ where
                 })?
             }
             HirExpr::Record(record) => {
-                self.record_fields_control(record.fields, Control::normal(state))?
+                let control = if let Some(base) = record.base {
+                    self.expr_control(base, state)?
+                } else {
+                    Control::normal(state)
+                };
+                self.record_fields_control(record.fields, control)?
             }
             HirExpr::Tuple { elems, .. }
             | HirExpr::Array { elems, .. }

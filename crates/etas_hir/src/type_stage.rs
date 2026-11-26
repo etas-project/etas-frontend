@@ -93,6 +93,7 @@ impl HirProgram {
             argument_path.resolution = ResolveResult::Resolved(parameter);
             let argument = self.exprs.alloc(HirExpr::Path(argument_path));
             let instance = self.exprs.alloc(HirExpr::Record(HirRecordExpr {
+                base: None,
                 path: Some(path),
                 generic_args: Vec::new(),
                 fields: Vec::new(),

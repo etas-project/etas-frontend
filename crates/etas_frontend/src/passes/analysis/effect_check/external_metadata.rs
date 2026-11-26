@@ -569,6 +569,7 @@ fn external_effect_summary_metadata(
         handler_requests: summary.handler_requests.as_ref().map(|template| {
             Ok::<_, String>(etas_effects::ExternalRequestInstantiationMetadata {
                 actions: template.actions.iter().map(|instance| Ok(etas_effects::ExternalActionRequestMetadata {
+                    injection_name: instance.injection_name.clone(),
                     action: lower_external_effect_metadata(&instance.action, types)?,
                     signature: instance.signature.as_ref().map(|signature| {
                         let lower = |ty| etas_types::lower::external::external_type_id_from_output(types, &super::super::type_check_bridge::convert_external_type(ty)).map_err(|error| error.message);

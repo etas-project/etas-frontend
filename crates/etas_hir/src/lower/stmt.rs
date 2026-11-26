@@ -4,6 +4,25 @@ use etas_core::Span;
 use etas_syntax::{ast, ast::*};
 
 impl LowerCtx {
+    pub(super) fn lower_local_limits(
+        &mut self,
+        annotations: &[ast::Annotation],
+        scope: ScopeId,
+        item_id: HirItemId,
+    ) -> Vec<HirExprId> {
+        annotations
+            .iter()
+            .flat_map(|annotation| &annotation.args)
+            .map(|argument| {
+                let value = match argument {
+                    ast::AnnotationArg::Positional(value)
+                    | ast::AnnotationArg::Named { value, .. } => value,
+                };
+                self.lower_expr(value, scope, item_id)
+            })
+            .collect()
+    }
+
     pub(super) fn lower_block(
         &mut self,
         block: &ast::Block,
@@ -58,6 +77,36 @@ impl LowerCtx {
         item_id: HirItemId,
     ) -> HirStmtId {
         let span = stmt_span(stmt);
+        if let Stmt::Limited(limited) = stmt {
+            let bounds = self.lower_local_limits(&limited.annotations, scope, item_id);
+            let statement = self.lower_stmt(&limited.statement, scope, item_id);
+            let target = match self.hir.stmts[statement] {
+                HirStmt::For { .. } => HirLimitTarget::For(statement),
+                HirStmt::While { .. } => HirLimitTarget::While(statement),
+                HirStmt::Retry { .. } => HirLimitTarget::Retry(statement),
+                _ => unreachable!("parser restricts annotated statement targets"),
+            };
+            let body = self.hir.blocks.alloc(HirBlock {
+                id: HirBlockId(0),
+                stmts: vec![statement],
+                final_expr: None,
+                scope,
+                span,
+            });
+            self.hir.blocks[body].id = body;
+            let expr = self.alloc_expr(
+                HirExpr::Limited {
+                    bounds,
+                    body,
+                    target,
+                    span,
+                },
+                span,
+            );
+            let statement = self.hir.stmts.alloc(HirStmt::Expr { expr, span });
+            self.map_stmt(statement, span);
+            return statement;
+        }
         if let Stmt::Let(stmt) = stmt {
             let id = self.hir.stmts.alloc(HirStmt::Error { span: stmt.span });
             let value = self.lower_expr(&stmt.value, scope, item_id);
@@ -150,6 +199,7 @@ impl LowerCtx {
             return id;
         }
         let hir_stmt = match stmt {
+            Stmt::Limited(_) => unreachable!("limited statement lowered above"),
             Stmt::Let(_) | Stmt::Var(_) | Stmt::For(_) => {
                 unreachable!("binding statements return early")
             }
@@ -243,6 +293,7 @@ impl LowerCtx {
 
 fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {
+        Stmt::Limited(stmt) => stmt.span,
         Stmt::Let(stmt) => stmt.span,
         Stmt::Var(stmt) => stmt.span,
         Stmt::Assign(stmt) => stmt.span,

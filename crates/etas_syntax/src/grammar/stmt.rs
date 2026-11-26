@@ -81,6 +81,29 @@ impl Parser<'_> {
         while !self.cursor.at_eof() && !terminator.is_some_and(|punct| self.cursor.at_punct(punct))
         {
             let before = self.cursor.position();
+            if self.cursor.at_punct(Punct::At) {
+                let statement = self.local_annotated_stmt();
+                if let Stmt::Expr(ExprStmt {
+                    expr: Expr::Limited(scope),
+                    ..
+                }) = statement
+                {
+                    let expr = Expr::Limited(scope);
+                    let semi = self.cursor.eat_punct(Punct::Semi);
+                    let at_end = self.cursor.at_eof()
+                        || terminator.is_some_and(|punct| self.cursor.at_punct(punct));
+                    if semi.is_none() && at_end {
+                        final_expr = Some(Box::new(expr));
+                        break;
+                    }
+                    let span = expr.span();
+                    stmts.push(Stmt::Expr(ExprStmt { expr, span }));
+                } else {
+                    stmts.push(statement);
+                }
+                self.ensure_progress(before, "expected annotated loop, retry, or block");
+                continue;
+            }
             if self.cursor.at_keyword(Keyword::If) || self.cursor.at_keyword(Keyword::Match) {
                 let statement = if self.cursor.at_keyword(Keyword::If) {
                     Stmt::If(self.if_stmt())
@@ -131,6 +154,9 @@ impl Parser<'_> {
     }
 
     pub(crate) fn stmt(&mut self) -> Stmt {
+        if self.cursor.at_punct(Punct::At) {
+            return self.local_annotated_stmt();
+        }
         if self.cursor.at_keyword(Keyword::Let) {
             return Stmt::Let(self.let_stmt());
         }
@@ -190,6 +216,70 @@ impl Parser<'_> {
                 expr,
             })
         }
+    }
+
+    pub(crate) fn local_annotations(&mut self) -> Vec<Annotation> {
+        let mut annotations = Vec::new();
+        while self.cursor.at_punct(Punct::At) {
+            let annotation = self.annotation();
+            if !matches!(annotation.path.segments.as_slice(), [name] if name.text == "limits") {
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    annotation.span,
+                    "only `@limits` is supported on local loops, retry scopes, and blocks",
+                ));
+            }
+            if !matches!(annotation.args.as_slice(), [AnnotationArg::Positional(_)]) {
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidExpression,
+                    annotation.span,
+                    "local `@limits` requires one Array<Limit> argument",
+                ));
+            }
+            annotations.push(annotation);
+        }
+        annotations
+    }
+
+    pub(crate) fn local_annotated_block(&mut self, annotations: Vec<Annotation>) -> Expr {
+        let start = annotations.first().expect("local annotation").span;
+        let block = self.block();
+        let span = start.cover(block.span);
+        Expr::Limited(LimitedExpr {
+            annotations,
+            block,
+            span,
+        })
+    }
+
+    fn local_annotated_stmt(&mut self) -> Stmt {
+        let annotations = self.local_annotations();
+        if self.cursor.at_keyword(Keyword::For)
+            || self.cursor.at_keyword(Keyword::While)
+            || self.cursor.at_keyword(Keyword::Retry)
+        {
+            let start = annotations.first().expect("local annotation").span;
+            let statement = self.stmt();
+            let span = start.cover(statement.span());
+            return Stmt::Limited(LimitedStmt {
+                annotations,
+                statement: Box::new(statement),
+                span,
+            });
+        }
+        if !self.cursor.at_punct(Punct::LBrace) {
+            let span = self.cursor.peek().span;
+            self.diagnostics.push(Diagnostic::syntax(
+                SyntaxDiagnosticCode::InvalidItem,
+                span,
+                "local `@limits` must precede a for, while, retry, or block",
+            ));
+            self.recover_stmt();
+            return Stmt::Error(span);
+        }
+        let expr = self.local_annotated_block(annotations);
+        let span = expr.span();
+        Stmt::Expr(ExprStmt { expr, span })
     }
 
     fn with_optional_trailing_semicolon(&mut self, stmt: Stmt) -> Stmt {

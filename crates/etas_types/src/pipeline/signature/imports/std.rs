@@ -479,6 +479,9 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         return;
     };
     ctx.signature_facts.known_std_types.index_error = Some(index_error);
+    ctx.signature_facts.known_std_types.budget_exceeded = registry
+        .lookup_qualified(&["std", "runtime", "error", "BudgetExceeded"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
 }
 
 fn record_code_type(

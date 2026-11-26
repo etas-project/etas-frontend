@@ -12,6 +12,11 @@ pub(super) struct HirTreeChildren<'hir> {
 }
 
 enum HirTreeChildIterState<'hir> {
+    Limited {
+        bounds: &'hir [HirExprId],
+        index: usize,
+        body: Option<crate::HirBlockId>,
+    },
     Empty,
     Fixed {
         children: [Option<HirTreeChild>; 4],
@@ -31,6 +36,7 @@ enum HirTreeChildIterState<'hir> {
         index: usize,
     },
     RecordFields {
+        base: Option<HirExprId>,
         fields: &'hir [HirFieldInit],
         index: usize,
     },
@@ -78,6 +84,18 @@ impl Iterator for HirTreeChildren<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.state {
+            HirTreeChildIterState::Limited {
+                bounds,
+                index,
+                body,
+            } => {
+                if let Some(bound) = bounds.get(*index) {
+                    *index += 1;
+                    Some(HirTreeChild::Expr(*bound))
+                } else {
+                    body.take().map(HirTreeChild::Block)
+                }
+            }
             HirTreeChildIterState::Empty => None,
             HirTreeChildIterState::Fixed { children, index } => {
                 while *index < children.len() {
@@ -111,7 +129,14 @@ impl Iterator for HirTreeChildren<'_> {
                 }
                 None
             }
-            HirTreeChildIterState::RecordFields { fields, index } => {
+            HirTreeChildIterState::RecordFields {
+                base,
+                fields,
+                index,
+            } => {
+                if let Some(base) = base.take() {
+                    return Some(HirTreeChild::Expr(base));
+                }
                 while let Some(field) = fields.get(*index) {
                     *index += 1;
                     if let HirFieldInit::Named { value, .. } = field {
@@ -309,6 +334,13 @@ pub(super) fn expr_children(program: &HirProgram, expr: HirExprId) -> HirTreeChi
         return HirTreeChildren::empty();
     };
     match expr {
+        HirExpr::Limited { bounds, body, .. } => HirTreeChildren {
+            state: HirTreeChildIterState::Limited {
+                bounds,
+                index: 0,
+                body: Some(*body),
+            },
+        },
         HirExpr::Literal(_)
         | HirExpr::Path(_)
         | HirExpr::Reflect(_)
@@ -317,6 +349,7 @@ pub(super) fn expr_children(program: &HirProgram, expr: HirExprId) -> HirTreeChi
         | HirExpr::Error { .. } => HirTreeChildren::empty(),
         HirExpr::Record(record) => HirTreeChildren {
             state: HirTreeChildIterState::RecordFields {
+                base: record.base,
                 fields: &record.fields,
                 index: 0,
             },

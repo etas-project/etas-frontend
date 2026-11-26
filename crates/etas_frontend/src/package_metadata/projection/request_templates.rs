@@ -42,6 +42,7 @@ impl ProjectMetadataProjection<'_> {
                 .iter()
                 .map(|instance| {
                     Ok(etas_package_metadata::ActionRequestTemplate {
+                        injection_name: instance.injection_name.clone(),
                         action: self.summary_effect_ref_metadata(&instance.action, type_names)?,
                         signature: instance
                             .signature

@@ -12,6 +12,12 @@ pub use ast::{BinaryOp as HirBinaryOp, UnaryOp as HirUnaryOp};
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirExpr {
+    Limited {
+        bounds: Vec<HirExprId>,
+        body: HirBlockId,
+        target: HirLimitTarget,
+        span: Span,
+    },
     Literal(HirLiteral),
     Path(ResolvedPath),
     Reflect(Box<crate::HirReflectExpr>),
@@ -167,7 +173,8 @@ impl HirExpr {
             Self::Path(path) => path.span,
             Self::Reflect(reflection) => reflection.span,
             Self::Record(record) => record.span,
-            Self::Tuple { span, .. }
+            Self::Limited { span, .. }
+            | Self::Tuple { span, .. }
             | Self::Array { span, .. }
             | Self::List { span, .. }
             | Self::ListCons { span, .. }
@@ -223,11 +230,22 @@ impl HirLiteral {
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirRecordExpr {
+    pub base: Option<HirExprId>,
     pub path: Option<ResolvedPath>,
     pub generic_args: Vec<HirGenericArg>,
     pub fields: Vec<HirFieldInit>,
     pub injections: Option<HirRecordInjections>,
     pub span: Span,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
+pub enum HirLimitTarget {
+    Block,
+    For(crate::HirStmtId),
+    While(crate::HirStmtId),
+    Retry(crate::HirStmtId),
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
@@ -279,6 +297,7 @@ pub enum HirArg {
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirHandlerArm {
+    pub provider: bool,
     pub action: ResolvedActionRef,
     pub generic_args: Vec<HirGenericArg>,
     pub patterns: Vec<HirPatId>,

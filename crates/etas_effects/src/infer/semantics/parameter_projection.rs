@@ -213,7 +213,10 @@ impl EffectSemantics<'_> {
         let mut identities = self.type_queries.parameter_projection_ids.borrow_mut();
         let paths = identities.entry((owner, parameter)).or_default();
         let id = match paths.get(&path) {
-            Some(id) => { self.dependencies.read(InputFact::Projection(*id)); return Ok(*id); },
+            Some(id) => {
+                self.dependencies.read(InputFact::Projection(*id));
+                return Ok(*id);
+            }
             None => NativeParameterProjection::path_identity(owner, parameter, &path)
                 .map_err(|_| invalid())?,
         };

@@ -195,7 +195,26 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 let generics =
                     super::callables::callable_generic_params(ctx, state, &decl.type_params);
                 let representation = match decl.body {
-                    HirTypeDeclBody::Bodyless => None,
+                    HirTypeDeclBody::Bodyless
+                        if ctx
+                            .signature_facts
+                            .source_type_roles
+                            .contains_key(&decl.symbol)
+                            // Maintained std also declares private VM capabilities
+                            // without a public source role (task handles, retained
+                            // compiler observations and stream admission owners).
+                            || (canonical_source_type_name(ctx, decl.symbol)
+                                .is_some_and(|name| name.starts_with("std."))
+                                && ctx.hir.symbols.get(decl.symbol).is_some_and(|symbol| {
+                                    symbol.visibility == etas_hir::Visibility::Private
+                                })) =>
+                    {
+                        None
+                    }
+                    HirTypeDeclBody::Bodyless => Some(
+                        ctx.interner
+                            .intern(Type::Record(crate::RecordType { fields: Vec::new() })),
+                    ),
                     HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
                     HirTypeDeclBody::Sequence {
                         element,

@@ -148,6 +148,19 @@ pub trait HirAnalysisSemantics {
         state
     }
 
+    fn begin_limit_bounds(&mut self, _expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    fn finish_limit_bounds(
+        &mut self,
+        _expr: HirExprId,
+        _entry: Self::Domain,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        control
+    }
+
     fn after_expr(&mut self, _expr: HirExprId, state: Self::Domain) -> Self::Domain {
         state
     }

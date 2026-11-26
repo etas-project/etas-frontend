@@ -87,7 +87,8 @@ Rewrite:
 
 ```text
 var latest = fallback;
-for item in [old_1, old_2, current] limit Iterations(3) {
+@limits([Iterations(3)])
+for item in [old_1, old_2, current] {
     latest = item;
 }
 ```

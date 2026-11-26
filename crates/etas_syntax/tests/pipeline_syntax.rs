@@ -11,6 +11,7 @@ fn limit_and_limits_are_ordinary_identifiers_in_pipelines() {
 flow limit(limits: i32) -> i32 {
     return limits ~> first ~> second;
 }
+
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -25,6 +26,21 @@ flow limit(limits: i32) -> i32 {
         panic!("pipeline");
     };
     assert_eq!(pipeline.stages.len(), 2);
+}
+
+#[test]
+fn rejects_removed_postfix_limit_syntax() {
+    let parsed = parse_program(SourceFile::anonymous(
+        "flow main() { for value in [1, 2, 3] limit Iterations(3) {} }",
+    ));
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_syntax::Severity::Error),
+        "removed postfix `limit` syntax must be rejected: {:?}",
+        parsed.diagnostics,
+    );
 }
 
 #[test]

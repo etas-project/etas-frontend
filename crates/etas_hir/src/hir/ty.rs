@@ -88,6 +88,12 @@ pub struct HirFieldDecl {
     pub span: Span,
 }
 
+impl HirFieldDecl {
+    pub fn is_public(&self) -> bool {
+        self.visibility == ast::Visibility::Public
+    }
+}
+
 #[derive(
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]

@@ -642,11 +642,13 @@ impl EffectSemantics<'_> {
                         }
                     }
                 }
-                HirExpr::Block(block) => match self.hir.blocks.get(*block)?.final_expr {
-                    Some(value) => pending.push((value, path)),
-                    None if self.block_type_is_never(*block) => {}
-                    None => return None,
-                },
+                HirExpr::Block(block) | HirExpr::Limited { body: block, .. } => {
+                    match self.hir.blocks.get(*block)?.final_expr {
+                        Some(value) => pending.push((value, path)),
+                        None if self.block_type_is_never(*block) => {}
+                        None => return None,
+                    }
+                }
                 HirExpr::Try { expr: operand, .. } if matches!(step, Step::VariantPayload { variant, position: 0 } if variant == "Ok") =>
                 {
                     pending.push((*operand, rest.to_vec()));

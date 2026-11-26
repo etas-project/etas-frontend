@@ -7020,7 +7020,7 @@ flow main() -> unit {
 }
 
 #[test]
-fn row_polymorphic_call_rejects_incompatible_latent_sources_for_one_row() {
+fn row_polymorphic_call_joins_distinct_latent_sources_for_one_row() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
@@ -7046,14 +7046,23 @@ flow main() -> unit ![Console.stdout_write, Error<i32>] {
     add_std_symbol_type_facts(&hir, &mut types);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
     assert!(
-        output.diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("latent flow sources do not agree on the row bound to `effect E`")
-        }),
-        "{:?}",
-        output.diagnostics
+        summary
+            .escaping_effects
+            .effects
+            .contains(&Effect::Action(ActionRef {
+                tag: CONSOLE_TAG,
+                action: CONSOLE_STDOUT_WRITE_ACTION,
+            }))
+    );
+    assert!(
+        summary
+            .escaping_effects
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Error(_)))
     );
 }
 
@@ -7089,7 +7098,7 @@ flow main() -> unit ![Console.stdout_write] {
 }
 
 #[test]
-fn latent_source_cannot_violate_a_concrete_fixed_row_equation() {
+fn latent_sources_can_use_different_subsets_of_a_fixed_row_upper_bound() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
@@ -7109,12 +7118,23 @@ flow main() -> unit ![Console.stdout_write, Error<i32>] {
     add_std_symbol_type_facts(&hir, &mut types);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
     assert!(
-        output.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("latent flow sources do not agree on the row bound to `effect E`")),
-        "{:?}",
-        output.diagnostics
+        summary
+            .escaping_effects
+            .effects
+            .contains(&Effect::Action(ActionRef {
+                tag: CONSOLE_TAG,
+                action: CONSOLE_STDOUT_WRITE_ACTION,
+            }))
+    );
+    assert!(
+        summary
+            .escaping_effects
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Error(_)))
     );
 }
 
@@ -7173,7 +7193,7 @@ flow main() -> unit ![Console.stdout_write] {
 }
 
 #[test]
-fn inferred_concrete_row_does_not_skip_a_later_latent_source() {
+fn inferred_concrete_row_accepts_a_later_pure_latent_source() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
@@ -7195,12 +7215,16 @@ flow main() -> unit ![Console.stdout_write] {
     add_std_symbol_type_facts(&hir, &mut types);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("latent flow sources do not agree on the row bound to `effect E`")),
-        "{:?}",
-        output.diagnostics
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    assert_eq!(
+        summary.escaping_effects.effects,
+        [Effect::Action(ActionRef {
+            tag: CONSOLE_TAG,
+            action: CONSOLE_STDOUT_WRITE_ACTION,
+        })]
+        .into_iter()
+        .collect()
     );
 }
 

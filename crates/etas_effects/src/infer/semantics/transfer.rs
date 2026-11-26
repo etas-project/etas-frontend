@@ -135,6 +135,41 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
+    fn begin_limit_bounds(&mut self, _expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
+        state.summary = EffectSummary::default();
+        state
+    }
+
+    fn finish_limit_bounds(
+        &mut self,
+        expr: HirExprId,
+        entry: Self::Domain,
+        mut control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        let span = self.hir.exprs[expr].span(&self.hir.blocks);
+        let mut invalid = false;
+        control.for_each_state_mut(|state| {
+            if !state.summary.requested_actions.is_empty()
+                || !state.summary.escaping_effects.is_empty()
+                || state.summary.determinism != crate::Determinism::Deterministic
+                || state.summary.support != InterpreterSupport::LocalOnly
+                || state.incomplete
+            {
+                invalid = true;
+                state.summary.support =
+                    InterpreterSupport::Rejected(FrontendRejectionReason::MissingRequirement);
+            }
+            let mut combined = entry.summary.clone();
+            combined.seq_assign(&state.summary);
+            state.summary = combined;
+        });
+        if invalid {
+            self.diagnostics.push(Diagnostic::effect_check(EffectDiagnosticCode::MissingOrInvalidLimit, span,
+                "local @limits arguments must be deterministic, action-free, and proven not to suspend"));
+        }
+        control
+    }
+
     fn begin_match_arm(
         &mut self,
         expr: HirExprId,
@@ -774,6 +809,23 @@ impl EffectSemantics<'_> {
         }
         self.validate_callback_arguments(expr, state);
         self.note_operation_outcomes(expr, state);
+        if matches!(
+            self.hir.exprs.get(expr),
+            Some(HirExpr::Limited {
+                target: etas_hir::HirLimitTarget::While(_) | etas_hir::HirLimitTarget::Retry(_),
+                ..
+            })
+        ) {
+            if let Some(error) = self.types.facts.known_std_types.budget_exceeded {
+                state.summary.record_escaping_effect(Effect::Error(error));
+            } else {
+                self.mark_incomplete_at(
+                    self.hir.exprs[expr].span(&self.hir.blocks),
+                    "local loop budget requires the checked std BudgetExceeded type",
+                    state,
+                );
+            }
+        }
         if let Some(HirExpr::Infer { action, .. }) = self.hir.exprs.get(expr) {
             let span = action.span;
             let Some(fact) = self.types.facts.agent_inferences.get(&expr) else {

@@ -121,7 +121,9 @@ impl LowerCtx {
                                         effect,
                                         action,
                                         generic_args: Vec::new(),
-                                        args: Vec::new(),
+                                        args: vec![ast::Arg::Positional(ast::Expr::Literal(ast::Literal::String {
+                                            value: field.name.text.clone(), span: field.name.span,
+                                        }))],
                                         span,
                                     }), scope, item_id);
                                     annotation.args.push(crate::HirAnnotationArg::Positional { value, span });

@@ -43,6 +43,6 @@ pub use external_metadata_validation::ValidateExternalEnvironmentPass;
 pub use loop_progress::AnalyzeLoopProgressPass;
 pub use top_level_let::ValidateTopLevelLetPass;
 pub use type_check::BuildSignatureFactsPass;
-pub use type_check_body::{TypeCheckBodyPass, CheckLibraryBodiesPass};
+pub use type_check_body::{CheckLibraryBodiesPass, TypeCheckBodyPass};
 pub use type_check_finalize::FinalizeTypeFactsPass;
 pub use type_reuse::ReuseTypeBodyFactsPass;

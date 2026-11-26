@@ -1041,6 +1041,12 @@ impl AstDump for ast::Block {
 impl AstDump for Stmt {
     fn dump(&self, f: &mut AstDumpWriter) {
         match self {
+            Self::Limited(stmt) => f.node("LimitedStmt", stmt.span, Vec::new(), |f| {
+                for annotation in &stmt.annotations {
+                    annotation.dump(f);
+                }
+                stmt.statement.dump(f);
+            }),
             Self::Let(stmt) => f.node("LetStmt", stmt.span, Vec::new(), |f| {
                 stmt.pattern.dump(f);
                 if let Some(ty) = &stmt.ty {
@@ -1178,6 +1184,12 @@ impl AstDump for ast::ReflectExpr {
 impl AstDump for Expr {
     fn dump(&self, f: &mut AstDumpWriter) {
         match self {
+            Self::Limited(expr) => f.node("LimitedExpr", expr.span, Vec::new(), |f| {
+                for annotation in &expr.annotations {
+                    annotation.dump(f);
+                }
+                expr.block.dump(f);
+            }),
             Self::Literal(lit) => lit.dump(f),
             Self::Path(path) => f.line(
                 "PathExpr",

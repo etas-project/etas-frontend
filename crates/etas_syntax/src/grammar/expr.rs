@@ -203,6 +203,10 @@ impl Parser<'_> {
             });
         }
         match self.cursor.peek().kind {
+            TokenKind::Punct(Punct::At) => {
+                let annotations = self.local_annotations();
+                self.local_annotated_block(annotations)
+            }
             TokenKind::IntLit => {
                 let token = self.cursor.bump();
                 Expr::Literal(Literal::Int {
@@ -754,24 +758,39 @@ impl Parser<'_> {
 
     pub(crate) fn handler_arm(&mut self) -> HandlerArm {
         let start = self.cursor.peek().span;
-        if let Some(ty) = self.try_handler_type_head() {
-            let head = start.cover(self.previous_span());
-            let (effect, action) = EffectRef::typed_injection(ty, head);
-            let value = self.expr();
-            let end = self.expect_punct(Punct::Semi, "expected `;` after dependency provider");
-            let span = start.cover(end);
-            return HandlerArm {
-                effect,
-                action,
-                generic_args: Vec::new(),
-                patterns: Vec::new(),
-                continuation: None,
-                body: HandlerArmBody::Stmt(Box::new(Stmt::Resume(ResumeStmt {
-                    span: value.span().cover(end),
-                    value: Some(value),
-                }))),
-                span,
+        if self.cursor.peek().kind == TokenKind::Ident
+            && matches!(
+                self.cursor.nth(1).kind,
+                TokenKind::Punct(Punct::Colon | Punct::Comma | Punct::RBrace)
+            )
+        {
+            let name = self.name("expected dependency name");
+            let (ty, value, shorthand) = if self.cursor.eat_punct(Punct::Colon).is_some() {
+                let ty = self.type_expr();
+                self.expect_punct(Punct::FatArrow, "expected `=>` after dependency type");
+                (Some(ty), self.expr(), false)
+            } else {
+                let value = Expr::Path(Path {
+                    segments: vec![name.clone()],
+                    span: name.span,
+                });
+                (None, value, true)
             };
+            return self.dependency_provider_arm(
+                start,
+                DependencyProviderHead::Named { name, ty },
+                value,
+                shorthand,
+            );
+        }
+        if let Some(ty) = self.try_handler_type_head() {
+            let value = self.expr();
+            return self.dependency_provider_arm(
+                start,
+                DependencyProviderHead::Type(ty),
+                value,
+                false,
+            );
         }
         let before = self.cursor.position();
         let (effect, action) = self.effect_action_ref("expected handler action path");
@@ -801,6 +820,7 @@ impl Parser<'_> {
         let span = effect.span.cover(body.span());
         self.ensure_progress(before, "expected handler arm");
         HandlerArm {
+            provider: None,
             effect,
             action,
             generic_args,
@@ -808,6 +828,46 @@ impl Parser<'_> {
             continuation,
             body,
             span,
+        }
+    }
+
+    fn dependency_provider_arm(
+        &mut self,
+        start: Span,
+        provider: DependencyProviderHead,
+        value: Expr,
+        shorthand: bool,
+    ) -> HandlerArm {
+        let end = if let Some(separator) = self
+            .cursor
+            .eat_punct(Punct::Comma)
+            .or_else(|| self.cursor.eat_punct(Punct::Semi))
+        {
+            separator.span
+        } else if shorthand && self.cursor.at_punct(Punct::RBrace) {
+            value.span()
+        } else {
+            self.expect_punct(Punct::Semi, "expected `,` or `;` after dependency provider")
+        };
+        let ty = match &provider {
+            DependencyProviderHead::Type(ty) => ty.clone(),
+            DependencyProviderHead::Named { ty, .. } => {
+                ty.clone().unwrap_or(TypeExpr::Error(start))
+            }
+        };
+        let (effect, action) = EffectRef::typed_injection(ty, start);
+        HandlerArm {
+            provider: Some(provider),
+            effect,
+            action,
+            generic_args: Vec::new(),
+            patterns: Vec::new(),
+            continuation: None,
+            body: HandlerArmBody::Stmt(Box::new(Stmt::Resume(ResumeStmt {
+                span: value.span().cover(end),
+                value: Some(value),
+            }))),
+            span: start.cover(end),
         }
     }
 

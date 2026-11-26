@@ -69,9 +69,15 @@ pub(crate) fn defer_context(summary: &mut EffectSummary, call: etas_hir::HirExpr
 }
 
 impl TraceEquations {
-    pub(crate) fn reuse_closed_equations(&mut self, mut old: Self, dirty: &HashSet<etas_hir::HirItemId>) {
-        old.equation_owners.retain(|_, unit| unit.owner().is_some_and(|i| !dirty.contains(&i)));
-        old.bodies.retain(|key, _| old.equation_owners.contains_key(key));
+    pub(crate) fn reuse_closed_equations(
+        &mut self,
+        mut old: Self,
+        dirty: &HashSet<etas_hir::HirItemId>,
+    ) {
+        old.equation_owners
+            .retain(|_, unit| unit.owner().is_some_and(|i| !dirty.contains(&i)));
+        old.bodies
+            .retain(|key, _| old.equation_owners.contains_key(key));
         self.bodies = old.bodies;
         self.equation_owners = old.equation_owners;
     }
@@ -98,7 +104,9 @@ impl TraceEquations {
         if let Some(waiting) = self.waiting_facts.remove(&id) {
             self.pending_facts.extend(waiting);
         }
-        if let Some(unit) = self.active.first() { self.equation_owners.insert(id, *unit); }
+        if let Some(unit) = self.active.first() {
+            self.equation_owners.insert(id, *unit);
+        }
         self.bodies.insert(id, std::mem::take(trace));
         *trace = Trace::Recursive { id, body: None };
     }

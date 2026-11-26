@@ -35,6 +35,12 @@ impl<'a> MemoryOracle<'a> {
 }
 
 impl AliasOracle for MemoryOracle<'_> {
+    fn record_fields(&self, expr: HirExprId) -> Option<Vec<String>> {
+        let ty = *self.types.facts.expr_types.get(&expr)?;
+        let record =
+            etas_types::record_fields_with_applied_params(&self.types.store, ty).ok()??;
+        Some(record.fields.into_iter().map(|field| field.name).collect())
+    }
     fn expression_target(&self, expr: HirExprId) -> Option<AliasTarget> {
         let ty = self.types.facts.expr_memory_places.get(&expr)?;
         let etas_types::Type::MemoryPlace(place) = self.types.store.get(*ty)? else {

@@ -144,6 +144,11 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
                 ctx,
                 &["std", "runtime", "error", "IndexError"],
             );
+        ctx.signature_facts.known_std_types.budget_exceeded =
+            crate::lower::type_ref::selected_source_type(
+                ctx,
+                &["std", "runtime", "error", "BudgetExceeded"],
+            );
         let selected = |ctx: &mut TypePipelineContext<'_>, name: &str| {
             crate::lower::type_ref::selected_source_type(ctx, &["std", "task", name])
         };

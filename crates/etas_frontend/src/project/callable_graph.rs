@@ -224,6 +224,7 @@ fn request_template(
             .iter()
             .map(|instance| {
                 Ok(etas_effects::ExternalActionRequestMetadata {
+                    injection_name: instance.injection_name.clone(),
                     action: effect(&instance.action, resolver)?,
                     signature: instance
                         .signature

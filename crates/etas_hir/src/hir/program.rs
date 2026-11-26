@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirProgram {
+    pub private_record_fields: std::collections::BTreeMap<Vec<String>, Vec<String>>,
     pub constructor_external_bindings: Vec<HirConstructorExternalBinding>,
     /// Explicit provider choice; source syntax must not fall back per symbol to
     /// the legacy collection representation or algorithm implementations.

@@ -32,7 +32,11 @@ impl ProjectMetadataProjection<'_> {
                     _ => None,
                 })
         };
-        if !agent && !fields.iter().any(|field| template(field).is_some()) {
+        if !agent
+            && !fields
+                .iter()
+                .any(|field| template(field).is_some() || !field.is_public())
+        {
             return Ok(None);
         }
         let names = parameters
@@ -99,8 +103,7 @@ impl ProjectMetadataProjection<'_> {
                                 "constructor provider has no checked perform expression",
                             ));
                         };
-                        if !args.is_empty()
-                            || self
+                        if self
                                 .checked
                                 .types
                                 .expression_producer_type(template)
@@ -128,6 +131,12 @@ impl ProjectMetadataProjection<'_> {
                                 path.push(action.action.clone());
                                 Ok::<_, PackageMetadataError>(path)
                             })?;
+                        let named = action_path.iter().map(String::as_str)
+                            .eq(["std", "effects", "Inject", "get"]);
+                        if !args.is_empty() && !(named && matches!(args.as_slice(), [etas_hir::HirArg::Positional(value)]
+                            if matches!(&self.checked.hir.exprs[*value], HirExpr::Literal(etas_hir::HirLiteral::String { .. })))) {
+                            return Err(invalid("constructor provider has an unsupported action payload"));
+                        }
                         Ok(ConstructorInjection {
                             action: MetadataEffectRef {
                                 path: action_path,
@@ -162,6 +171,7 @@ impl ProjectMetadataProjection<'_> {
                     })
                     .transpose()?;
                 Ok(ConstructorField {
+                    public: field.is_public(),
                     name: self
                         .checked
                         .symbols

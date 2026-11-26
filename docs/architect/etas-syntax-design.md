@@ -532,9 +532,8 @@ while needs_revision(draft) {
 }
 
 // This is the semantic form.
-while needs_revision(draft)
-    limit Iterations(3), Tokens(30_000)
-{
+@limits([Iterations(3), Tokens(30_000)])
+while needs_revision(draft) {
     draft = Rewriter.run(draft);
 }
 ```

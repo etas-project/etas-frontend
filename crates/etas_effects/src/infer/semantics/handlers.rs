@@ -102,7 +102,7 @@ impl EffectSemantics<'_> {
                         return control;
                     }
                 };
-                let Some((handled, produced)) = rows else {
+                let Some((mut handled, produced)) = rows else {
                     let mut result = body_state;
                     let mut summary = handler_state.summary;
                     summary.seq_assign(&result.summary);
@@ -119,7 +119,9 @@ impl EffectSemantics<'_> {
                     registry: self.registry,
                     types: &self.types.store,
                 };
-                let definitely_handled = match self.definitely_handled_actions(handler) {
+                let (definitely_handled, named_dependencies) = match self
+                    .definitely_handled_actions(handler, &body_state.summary.handler_requests)
+                {
                     Ok(row) => row,
                     Err(interruption) => {
                         self.callable_summaries.borrow_mut().interruption = Some(interruption);
@@ -127,6 +129,12 @@ impl EffectSemantics<'_> {
                         return control;
                     }
                 };
+                let inject = self.registry.action_by_name("std.effects.Inject.get");
+                handled.effects = handled.effects.iter().filter(|effect| {
+                    let injection = matches!(effect, crate::Effect::AppliedAction(instance) if Some(&instance.action) == inject.as_ref())
+                        || matches!(effect, crate::Effect::Action(action) if Some(action) == inject.as_ref());
+                    !injection || definitely_handled.effects.iter().any(|handled| coverage.covers(handled, effect))
+                }).cloned().collect();
                 let inert_handler = handler_only_normal
                     && self.handler_evaluation_is_inert(handler, &entry, &handler_state);
                 let resuming_completion = if only_normal && inert_handler {
@@ -201,6 +209,14 @@ impl EffectSemantics<'_> {
                     .summary
                     .handler_requests
                     .subtract_handled(&coverage, &definitely_handled);
+                result.summary.map_behavior_parts(|part| {
+                    part.handler_requests
+                        .subtract_named_handled(&coverage, &named_dependencies)
+                });
+                result
+                    .summary
+                    .handler_requests
+                    .subtract_named_handled(&coverage, &named_dependencies);
                 let remaining = result.summary.escaping_effects.clone();
                 if !value_completion {
                     result
@@ -364,18 +380,28 @@ impl EffectSemantics<'_> {
                 unsupported = true;
                 continue;
             };
+            let dependency_name = match arm_data.patterns.as_slice() {
+                [pattern] => match &self.hir.pats[*pattern] {
+                    etas_hir::HirPat::Literal(etas_hir::HirLiteral::String { value, .. }) => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
             if let crate::Effect::AppliedAction(instance) = &effect
                 && Some(&instance.action) == inject.as_ref()
                 && let [etas_types::EffectArgRef::Type(ty)] = instance.args.as_slice()
-                && !dependency_keys.insert(*ty)
+                && !dependency_keys.insert((dependency_name, *ty))
             {
                 self.diagnostics.push(Diagnostic::effect_check(
                     EffectDiagnosticCode::DuplicateDependencyHandler,
                     arm_data.span,
-                    "duplicate handler arm for the same Inject dependency type",
+                    "duplicate handler arm for the same Inject dependency name and type",
                 ));
             }
-            let arm_summary = self.unit_summary(&crate::EffectUnit::HandlerArm { owner, arm: *arm })
+            let arm_summary = self
+                .unit_summary(&crate::EffectUnit::HandlerArm { owner, arm: *arm })
                 .cloned();
             let Some(arm_summary) = arm_summary else {
                 state = self.incomplete_at(
@@ -592,33 +618,35 @@ impl EffectSemantics<'_> {
     pub(super) fn definitely_handled_actions(
         &self,
         expr: HirExprId,
-    ) -> Result<EffectRow, etas_utils::PipelineInterruption> {
+        requests: &crate::RequestInstantiationSummary,
+    ) -> Result<(EffectRow, Vec<(crate::Effect, String)>), etas_utils::PipelineInterruption> {
         let Some((handler, fact)) = self.immutable_handler_value(expr)? else {
-            return Ok(EffectRow::empty());
+            return Ok((EffectRow::empty(), Vec::new()));
         };
         let Some(HirExpr::Handler { handlers, .. }) = self.hir.exprs.get(handler) else {
-            return Ok(EffectRow::empty());
+            return Ok((EffectRow::empty(), Vec::new()));
         };
         let Some(owner) = self.hir.index().expr_item.get(&handler).copied() else {
-            return Ok(EffectRow::empty());
+            return Ok((EffectRow::empty(), Vec::new()));
         };
         if handlers.len() != fact.arms.len() {
-            return Ok(EffectRow::empty());
+            return Ok((EffectRow::empty(), Vec::new()));
         }
         let mut effects = EffectSet::new();
+        let mut named = Vec::new();
         for (arm, arm_fact) in handlers.iter().zip(&fact.arms) {
             if let Some(control) = self.query_control {
                 control.checkpoint()?;
             }
             if arm_fact.unit != (EffectUnit::HandlerArm { owner, arm: *arm }) {
-                return Ok(EffectRow::empty());
+                return Ok((EffectRow::empty(), Vec::new()));
             }
             self.read_arm_owner(*arm);
             let (Some(data), Some(effect)) = (
                 self.hir.handler_arms.get(*arm),
                 self.inputs.handler_action_effects.get(arm),
             ) else {
-                return Ok(EffectRow::empty());
+                return Ok((EffectRow::empty(), Vec::new()));
             };
             if data.patterns.iter().all(|pattern| {
                 matches!(
@@ -627,9 +655,46 @@ impl EffectSemantics<'_> {
                 )
             }) {
                 effects.insert(effect.clone());
+            } else if data.provider {
+                if let [pattern] = data.patterns.as_slice() {
+                    if let etas_hir::HirPat::Literal(etas_hir::HirLiteral::String {
+                        value, ..
+                    }) = &self.hir.pats[*pattern]
+                    {
+                        named.push((effect.clone(), value.clone()));
+                    }
+                }
             }
         }
-        Ok(EffectRow::closed(effects))
+        if let crate::RequestInstantiationSummary::Available {
+            actions,
+            parameters,
+        } = requests
+        {
+            let coverage = EffectCoverage {
+                registry: self.registry,
+                types: &self.types.store,
+            };
+            for (effect, _) in &named {
+                let matching = actions
+                    .iter()
+                    .filter(|request| coverage.covers(effect, &request.action))
+                    .collect::<Vec<_>>();
+                if parameters.is_empty()
+                    && !matching.is_empty()
+                    && matching.iter().all(|request| {
+                        request.injection_name.as_ref().is_some_and(|name| {
+                            named.iter().any(|(provider, provided_name)| {
+                                provided_name == name && coverage.covers(provider, &request.action)
+                            })
+                        })
+                    })
+                {
+                    effects.insert(effect.clone());
+                }
+            }
+        }
+        Ok((EffectRow::closed(effects), named))
     }
 
     fn handler_value_item_summary(&self, expr: HirExprId) -> Option<EffectSummary> {
@@ -646,8 +711,7 @@ impl EffectSemantics<'_> {
         ) {
             return None;
         }
-        self.unit_summary(&EffectUnit::Item(item))
-            .cloned()
+        self.unit_summary(&EffectUnit::Item(item)).cloned()
     }
 
     fn checked_handler_rows(&self, expr: HirExprId, _span: Span) -> Option<CheckedHandlerRows> {
@@ -924,6 +988,12 @@ impl EffectSemantics<'_> {
             HirExpr::Block(block) => {
                 self.scan_handler_controls_in_block_with_context(*block, in_lambda, scan)
             }
+            HirExpr::Limited { bounds, body, .. } => {
+                for bound in bounds {
+                    self.scan_handler_controls_in_expr(*bound, in_lambda, scan);
+                }
+                self.scan_handler_controls_in_block_with_context(*body, in_lambda, scan);
+            }
             HirExpr::If {
                 cond,
                 then_block,
@@ -1021,6 +1091,9 @@ impl EffectSemantics<'_> {
                 }
             }
             HirExpr::Record(record) => {
+                if let Some(base) = record.base {
+                    self.scan_handler_controls_in_expr(base, in_lambda, scan);
+                }
                 for field in &record.fields {
                     self.scan_handler_controls_in_field(field, in_lambda, scan);
                 }

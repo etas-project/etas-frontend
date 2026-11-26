@@ -144,7 +144,8 @@ impl EffectSemantics<'_> {
                 if !coverage.covers(arm.action, effect) {
                     continue;
                 }
-                let Some(exits) = self.unit_summary(&arm.fact.unit)
+                let Some(exits) = self
+                    .unit_summary(&arm.fact.unit)
                     .and_then(|summary| summary.exits.as_ref())
                 else {
                     return Ok(());
@@ -317,7 +318,8 @@ impl EffectSemantics<'_> {
                     {
                         continue;
                     }
-                    let finished = self.unit_summary(&arm.fact.unit)
+                    let finished = self
+                        .unit_summary(&arm.fact.unit)
                         .and_then(|summary| summary.exits.as_ref())
                         .and_then(crate::CallableExitSummary::handler_finish_sources);
                     match finished {
