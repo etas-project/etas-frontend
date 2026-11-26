@@ -132,6 +132,28 @@ pub(in crate::passes::analysis::effect_check) fn external_parameter_defaults(
             )?;
         }
         for spec in &metadata.spec_signatures {
+            if !spec
+                .callable
+                .iter()
+                .chain(
+                    spec.methods
+                        .iter()
+                        .filter_map(|method| method.signature.as_ref()),
+                )
+                .any(|signature| !signature.parameter_defaults.is_empty())
+            {
+                continue;
+            }
+            let owner_params = types
+                .facts
+                .external_specs
+                .signatures
+                .iter()
+                .find(|(identity, _)| {
+                    identity.package == metadata.package.0 && identity.path == spec.path
+                })
+                .map(|(_, signature)| signature.generic_params.as_slice())
+                .ok_or("spec default has no checked owner parameter interface")?;
             for signature in spec.callable.iter().chain(
                 spec.methods
                     .iter()
@@ -141,7 +163,7 @@ pub(in crate::passes::analysis::effect_check) fn external_parameter_defaults(
                     &signature.parameter_defaults,
                     split_external_generic_params(&signature.generic_params).ordered,
                     signature.params.len(),
-                    &[],
+                    owner_params,
                 )?;
             }
         }
@@ -178,12 +200,20 @@ pub(in crate::passes::analysis::effect_check) fn external_parameter_defaults(
                 .ok_or("default method has no checked owner parameter interface")?
                 .owner_params
                 .as_slice();
-            add(
-                &method.parameter_defaults,
-                generics,
-                root.params.len(),
-                owner_params,
-            )?;
+            // Inherited bindings retain their defining spec's generic scope.
+            // That canonical contract is loaded from the spec, once.
+            let defaults = method
+                .parameter_defaults
+                .iter()
+                .filter(|default| {
+                    matches!(
+                        default.reference.owner,
+                        etas_code::descriptor::ParameterDefaultOwner::Method(_)
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            add(&defaults, generics, root.params.len(), owner_params)?;
         }
     }
     Ok(result.into_values().collect())

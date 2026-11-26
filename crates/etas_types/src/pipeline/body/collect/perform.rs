@@ -25,6 +25,18 @@ pub fn collect_perform<E>(
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
+    // Owner type arguments remain part of the checked request even when its
+    // action signature has already specialized the owner's parameters.
+    for argument in &action.effect.args {
+        if let etas_hir::HirEffectArg::Type(reference) = argument {
+            if let Some(ty) = crate::lower::type_ref::lower_type_ref(ctx.ctx, *reference) {
+                ctx.state
+                    .provisional
+                    .selector_type_refs
+                    .insert(*reference, ty);
+            }
+        }
+    }
     if let ResolveResult::Resolved(symbol) = action.action_symbol
         && let super::handler_request::ActionIdentity::Standard(target) =
             super::handler_request::action_identity(ctx, symbol)

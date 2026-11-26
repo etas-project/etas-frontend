@@ -347,6 +347,14 @@ impl EffectSemantics<'_> {
             .into_iter()
             .flat_map(|fact| fact.owner_bindings.iter().copied())
             .collect::<std::collections::HashMap<_, _>>();
+        if let EffectUnit::ParameterDefault { parameter, .. } = callee {
+            self.bind_parameter_default_generics(
+                site.call,
+                Some(parameter),
+                &mut type_bindings,
+                &mut type_parameters,
+            )?;
+        }
         if let Some(environment) = environment {
             let snapshot = self.callable_environment(environment)?;
             let owner = callee

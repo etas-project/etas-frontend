@@ -121,3 +121,25 @@ flow main() -> string ![Agentic] {
     };
     DefinitionCatalog::build(checked, &origins, Default::default()).unwrap();
 }
+
+#[test]
+fn injected_method_bindings_use_owner_and_inherited_spec_generics() {
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        r#"module injection;
+public effect Supply<T> { action get() -> T; }
+type Box<T> = { n: T };
+impl Box<T> { flow read(self, @inject(Supply<T>.get) value: T) -> T ![] { return value; } }
+spec Value<A> { flow read(self, @inject(Supply<A>.get) value: A) -> A ![]; }
+type ValueBox<B> = { n: B };
+impl ValueBox<B> ~ Value<B> { flow read(self, value: B) -> B ![] { return value; } }
+public flow run() -> i32 ![] {
+    let a = Box { n = 0 }.read() with { Supply<i32>.get() => 21; };
+    let b = ValueBox { n = 0 }.read() with { Supply<i32>.get() => 21; };
+    return a + b;
+}
+"#,
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}

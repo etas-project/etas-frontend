@@ -445,6 +445,31 @@ fn build_selected(
         types.extend_from_slice(&implementation.args);
         projector.project_implementation_contract(owner, &implementation.generic_params, &types)?;
     }
+    // Inherent impls own the same canonical generic binders as spec impls.
+    // Binding summaries can refer to them even when the method body is pure.
+    let mut inherent_contracts = BTreeMap::new();
+    for method in checked
+        .types
+        .type_impl_methods
+        .values()
+        .filter(|method| method.inherent)
+    {
+        let identity = identities
+            .method(method.symbol)
+            .ok_or(ProjectionError::MissingCallable(method.symbol))?;
+        let owner = identity.implementation();
+        if execution && !implementations.contains(owner) {
+            continue;
+        }
+        inherent_contracts.entry(owner.clone()).or_insert(method);
+    }
+    for (owner, method) in inherent_contracts {
+        projector.project_implementation_contract(
+            &owner,
+            &method.owner_params,
+            &[method.self_type],
+        )?;
+    }
     let projection = projector.finish_native()?;
     let parameter_defaults =
         crate::code::parameter_defaults::collect_units(checked.as_ref().into(), &identities)?;
