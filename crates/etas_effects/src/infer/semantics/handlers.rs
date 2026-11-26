@@ -964,6 +964,12 @@ impl EffectSemantics<'_> {
         if scan.normal.is_none() {
             return;
         }
+        let never = self.types.facts.expr_types.get(&expr).is_some_and(|ty| {
+            matches!(
+                self.types.store.get(*ty),
+                Some(Type::Primitive(PrimitiveType::Never))
+            )
+        });
         let Some(expr) = self.hir.exprs.get(expr) else {
             return;
         };
@@ -1147,6 +1153,9 @@ impl EffectSemantics<'_> {
             | HirExpr::EmptyRecordOrMap { .. }
             | HirExpr::EmptySequence { .. }
             | HirExpr::Error { .. } => {}
+        }
+        if never {
+            scan.normal = None;
         }
     }
 

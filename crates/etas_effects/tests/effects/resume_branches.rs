@@ -3,6 +3,9 @@ use super::*;
 #[test]
 fn mutually_exclusive_resume_branches_are_single_use() {
     for control in [
+        "if cached { resume 1; } else { 2 }",
+        "if cached { finish 1; } 2",
+        "match cached { true => { resume 1; }, false => 2 }",
         "if cached { resume 1; } else { resume 2; }",
         "if cached { if other { resume 1; } else { resume 2; } } else { resume 3; }",
         "match cached { true => { resume 1; }, false => { resume 2; } }",
@@ -53,10 +56,16 @@ flow main(cached: bool, other: bool) -> i32 {{
 }
 
 #[test]
-fn handler_control_rejects_missing_completion() {
-    for control in [
-        "if cached { resume 1; }",
-        "if cached { resume 1; } else { let value = 2; }",
+fn handler_control_rejects_missing_completion_and_wrong_tail_types() {
+    for (control, expected) in [
+        (
+            "if cached { resume 1; }",
+            etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
+        ),
+        (
+            "if cached { resume 1; } else { let value = 2; }",
+            etas_core::TypeDiagnosticCode::BranchTypeMismatch,
+        ),
     ] {
         let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(format!(
             r#"
@@ -71,8 +80,10 @@ flow main(cached: bool) -> i32 {{
         let hir = lower_program(&parsed.value);
         let types = etas_types::check_program(&hir);
         assert!(
-            types.diagnostics.iter().any(|diagnostic| diagnostic.code
-                == DiagnosticCode::Type(etas_core::TypeDiagnosticCode::HandlerCompletionRequired)),
+            types
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::Type(expected.clone())),
             "{control}: {:?}",
             types.diagnostics
         );

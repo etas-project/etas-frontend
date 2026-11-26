@@ -259,6 +259,7 @@ pub enum DependencyProviderHead {
 pub enum HandlerArmBody {
     Stmt(Box<super::Stmt>),
     Block(Block),
+    Expr(Box<Expr>),
 }
 
 impl HandlerArmBody {
@@ -266,6 +267,7 @@ impl HandlerArmBody {
         match self {
             Self::Stmt(stmt) => stmt.span(),
             Self::Block(block) => block.span,
+            Self::Expr(expr) => expr.span(),
         }
     }
 }

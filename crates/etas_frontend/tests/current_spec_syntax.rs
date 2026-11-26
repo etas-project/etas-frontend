@@ -70,3 +70,46 @@ flow main() -> string ![] {
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(output.checked.is_some());
 }
+
+#[test]
+fn handler_tail_values_resume_with_independent_action_and_answer_types() {
+    check(
+        r#"module app;
+effect Choice { action choose(value: i32) -> i32; }
+flow selected(value: i32) -> i32 ![] {
+    let local = handler { Choice.choose(value) => value + 1; };
+    return perform Choice.choose(value) with local;
+}
+flow main() -> string ![] {
+    let result = handle { let sum = selected(20) + perform Choice.choose(20); "chosen" } with {
+        Choice.choose(value) as k => {
+            if value == 0 { finish "empty"; }
+            if value < 0 { resume 1; }
+            let twice = number => { return number * 2; };
+            twice(value) + 1
+        }
+    };
+    return "ok";
+}"#,
+    );
+}
+
+#[test]
+fn handler_tails_keep_never_paths_and_nested_blocks() {
+    check(
+        r#"module app;
+effect Choice { action choose() -> i32; }
+effect Failure { action stop() -> never; }
+flow stop() -> never ![Failure] { return perform Failure.stop(); }
+flow main() -> i32 ![] {
+    return handle { handle { perform Choice.choose() } with {
+        Choice.choose() => {
+            { let ignored = 2; ignored; };
+            if false { stop() } else { 42 }
+        }
+    } } with {
+        Failure.stop() => finish 0;
+    };
+}"#,
+    );
+}

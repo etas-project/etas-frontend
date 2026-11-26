@@ -491,8 +491,9 @@ fn validate_handler_arm_completion<E>(
             ctx.validate(crate::ValidationRequest::Diagnostic {
                 code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
                 span,
-                message: "handler arm must explicitly resume, finish, or terminate with never"
-                    .to_owned(),
+                message:
+                    "handler arm requires a tail value, resume, finish, or a never-returning path"
+                        .to_owned(),
             });
         }
     }

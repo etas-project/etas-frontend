@@ -254,6 +254,7 @@ fn visit_program_paths(program: &ast::Program, mut visit: impl FnMut(&ast::Path)
                         match &arm.body {
                             ast::HandlerArmBody::Stmt(stmt) => work.push(AstWork::Stmt(stmt)),
                             ast::HandlerArmBody::Block(block) => work.push(AstWork::Block(block)),
+                            ast::HandlerArmBody::Expr(expr) => work.push(AstWork::Expr(expr)),
                         }
                     }
                 }
@@ -461,6 +462,7 @@ fn visit_expr<'a>(
                 match &arm.body {
                     ast::HandlerArmBody::Stmt(stmt) => work.push(AstWork::Stmt(stmt)),
                     ast::HandlerArmBody::Block(block) => work.push(AstWork::Block(block)),
+                    ast::HandlerArmBody::Expr(expr) => work.push(AstWork::Expr(expr)),
                 }
             }
         }

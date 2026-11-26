@@ -736,10 +736,23 @@ impl LowerCtx {
         scope: ScopeId,
         item_id: HirItemId,
     ) -> HirBlockId {
-        match body {
+        let block = match body {
             ast::HandlerArmBody::Block(block) => self.lower_block(block, scope, item_id),
             ast::HandlerArmBody::Stmt(stmt) => self.lower_stmt_body_block(stmt, scope, item_id),
+            ast::HandlerArmBody::Expr(expr) => self.lower_expr_body_block(expr, scope, item_id),
+        };
+        // Only the arm's outer tail supplies an action result. Nested blocks
+        // and loops retain their ordinary expression and statement semantics.
+        if let Some(value) = self.hir.blocks[block].final_expr.take() {
+            let span = self.hir.exprs[value].span(&self.hir.blocks);
+            let resume = self.hir.stmts.alloc(HirStmt::Resume {
+                value: Some(value),
+                span,
+            });
+            self.source_map.map_stmt(resume, span);
+            self.hir.blocks[block].stmts.push(resume);
         }
+        block
     }
 
     pub(super) fn lower_stmt_body_block(

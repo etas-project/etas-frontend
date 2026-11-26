@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "etas_effects"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bincode",
  "etas_builtin",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "etas_frontend"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "bincode",
  "blake3",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "etas_hir"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "etas_core",
  "etas_package_metadata",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "etas_syntax"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ariadne",
  "etas_core",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "etas_types"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bincode",
  "blake3",

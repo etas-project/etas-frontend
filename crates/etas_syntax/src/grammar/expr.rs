@@ -805,17 +805,13 @@ impl Parser<'_> {
         self.expect_punct(Punct::FatArrow, "expected `=>` before handler body");
         let body = if self.cursor.at_punct(Punct::LBrace) {
             HandlerArmBody::Block(self.block())
-        } else {
-            if !self.cursor.at_keyword(Keyword::Resume) && !self.cursor.at_keyword(Keyword::Finish)
-            {
-                let span = self.cursor.peek().span;
-                self.diagnostics.push(Diagnostic::syntax(
-                    SyntaxDiagnosticCode::InvalidExpression,
-                    span,
-                    "handler arm shorthand must be `resume value;` or `finish value;`; use `{ ... }` for a handler arm block",
-                ));
-            }
+        } else if self.cursor.at_keyword(Keyword::Resume) || self.cursor.at_keyword(Keyword::Finish)
+        {
             HandlerArmBody::Stmt(Box::new(self.stmt()))
+        } else {
+            let value = self.expr();
+            self.expect_punct(Punct::Semi, "expected `;` after handler arm expression");
+            HandlerArmBody::Expr(Box::new(value))
         };
         let span = effect.span.cover(body.span());
         self.ensure_progress(before, "expected handler arm");

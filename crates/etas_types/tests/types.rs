@@ -1701,7 +1701,7 @@ let BadFallback: ![Approval for string] = handler {
 }
 
 #[test]
-fn check_program_rejects_implicit_handler_fallback_expression() {
+fn check_program_rejects_resuming_never_action_with_a_handler_tail_value() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
@@ -1722,7 +1722,7 @@ let StopFallback: ![Error for string] = handler {
 
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::HandlerCompletionRequired)
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)
         }),
         "{:?}",
         output.diagnostics

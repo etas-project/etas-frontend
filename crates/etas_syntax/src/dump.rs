@@ -1530,6 +1530,7 @@ impl AstDump for ast::HandlerArmBody {
                 });
             }
             Self::Block(block) => block.dump(f),
+            Self::Expr(expr) => expr.dump(f),
         }
     }
 }

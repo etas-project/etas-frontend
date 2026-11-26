@@ -272,17 +272,6 @@ pub fn collect_stmt<E>(
                 .transpose()?
                 .unwrap_or(unit);
             if let Some(expected) = expected {
-                if matches!(
-                    ctx.ctx.interner.store().get(expected),
-                    Some(crate::Type::Primitive(PrimitiveType::Never))
-                ) {
-                    ctx.validate(crate::ValidationRequest::Diagnostic {
-                        code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                        span,
-                        message: "cannot resume a handled action whose return type is never"
-                            .to_owned(),
-                    });
-                }
                 ctx.emit(TypeConstraint::Assignable {
                     from: actual,
                     to: expected,
