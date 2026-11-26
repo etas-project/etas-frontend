@@ -27,7 +27,7 @@ pub mod objects;
 pub use modules::LibrarySlicePlan;
 mod restore;
 
-const SCHEMA: u32 = 95;
+const SCHEMA: u32 = 96;
 const EFFECT_ANALYSIS_SCHEMA: u32 = 1;
 const PREPARED_EFFECT_MAGIC: &[u8; 8] = b"ETASEFF3";
 
@@ -262,7 +262,7 @@ impl LibraryHirImage {
     /// Native codec for a toolchain-paired installation. Portable library
     /// artifacts continue using the self-describing body codec.
     pub fn encode_prepared(&self) -> Result<Vec<u8>, LibraryHirImageError> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(error)
+        encode_prepared_value(self)
     }
 
     pub fn decode_prepared(payload: &[u8]) -> Result<Self, LibraryHirImageError> {
@@ -275,6 +275,7 @@ impl LibraryHirImage {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, LibraryHirImageError> {
         let mut cursor = std::io::Cursor::new(bytes);
+        let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
         let image: Self = ciborium::de::from_reader(&mut cursor).map_err(error)?;
         if cursor.position() != bytes.len() as u64 {
             return Err(error("trailing bytes in library HIR image"));
@@ -346,9 +347,7 @@ impl LibraryHirImage {
             .get()
             .ok_or_else(|| error("installed library has no solved Effect analysis"))?;
         let mut bytes = PREPARED_EFFECT_MAGIC.to_vec();
-        bytes.extend(
-            bincode::serde::encode_to_vec(analysis, bincode::config::standard()).map_err(error)?,
-        );
+        bytes.extend(encode_prepared_value(analysis)?);
         Ok(bytes)
     }
 
@@ -405,6 +404,7 @@ impl LibraryHirImage {
         let (schema, analysis): (u32, ArchivedEffectAnalysis) = {
             let _decode = profile.span("std.decode_effect_analysis", "std");
             let mut cursor = std::io::Cursor::new(payload);
+            let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
             let analysis = ciborium::de::from_reader(&mut cursor).map_err(error)?;
             if cursor.position() != payload.len() as u64 {
                 return Err(error("trailing bytes in library Effect analysis"));
@@ -454,6 +454,7 @@ fn error(value: impl std::fmt::Display) -> LibraryHirImageError {
 fn decode_prepared_value<T: serde::de::DeserializeOwned>(
     payload: &[u8],
 ) -> Result<T, LibraryHirImageError> {
+    let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
     let (value, consumed) = bincode::serde::decode_from_slice(
         payload,
         bincode::config::standard().with_limit::<{ 512 * 1024 * 1024 }>(),
@@ -465,7 +466,13 @@ fn decode_prepared_value<T: serde::de::DeserializeOwned>(
     Ok(value)
 }
 
+fn encode_prepared_value(value: &impl Serialize) -> Result<Vec<u8>, LibraryHirImageError> {
+    let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
+    bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(error)
+}
+
 fn encode_value(value: &impl Serialize) -> Result<Vec<u8>, LibraryHirImageError> {
+    let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(value, &mut bytes).map_err(error)?;
     Ok(bytes)

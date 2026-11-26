@@ -30,9 +30,89 @@ struct InputSolution {
     values: BTreeMap<InputEquation, BTreeSet<LatentSource>>,
     changed: bool,
     nodes: usize,
+    inputs: BTreeMap<u32, NativeCallInputs>,
+}
+
+impl InputSolution {
+    fn join_inputs(&mut self, id: u32, incoming: NativeCallInputs) -> NativeCallInputs {
+        match self.inputs.entry(id) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                self.changed = true;
+                entry.insert(incoming).clone()
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let inputs = entry.get_mut();
+                for (known, incoming) in inputs.arguments.iter_mut().zip(incoming.arguments) {
+                    let before = known.sources.len();
+                    known.sources.extend(incoming.sources);
+                    self.changed |= known.sources.len() != before;
+                    for projection in incoming.projections {
+                        if let Some(known) = known
+                            .projections
+                            .iter_mut()
+                            .find(|known| known.path == projection.path)
+                        {
+                            let before = known.sources.len();
+                            known.sources.extend(projection.sources);
+                            self.changed |= known.sources.len() != before;
+                        } else {
+                            known.projections.push(projection);
+                            self.changed = true;
+                        }
+                    }
+                    known
+                        .projections
+                        .sort_by(|left, right| left.path.cmp(&right.path));
+                }
+                inputs.clone()
+            }
+        }
+    }
 }
 
 impl EffectSemantics<'_> {
+    pub(super) fn bind_metadata_parameter_origins(
+        &self,
+        key: CodeFingerprint,
+        parameters: &[CallableValueParameter],
+        environment: &mut CallableEnvironment,
+        environment_id: Option<CallableEnvironmentId>,
+        state: &EffectState,
+        call: HirExprId,
+    ) -> Result<(), Error> {
+        // All projections read the same bound frame. Share their equations and
+        // accumulate each call input instead of restarting a solver per field.
+        let mut solution = InputSolution::default();
+        loop {
+            solution.changed = false;
+            solution.expanded.clear();
+            for parameter in parameters {
+                if let Some(sources) = self.metadata_parameter_inputs(
+                    key,
+                    *parameter,
+                    &[],
+                    environment,
+                    environment_id,
+                    state,
+                    call,
+                    &mut solution,
+                )? {
+                    environment.parameters.insert(
+                        Target::Graph {
+                            graph: key,
+                            parameter: *parameter,
+                        },
+                        sources,
+                    );
+                }
+            }
+            if !solution.changed {
+                return Ok(());
+            }
+            self.callable_summaries.borrow_mut().invalidate();
+        }
+    }
+
     pub(super) fn metadata_parameter_origins(
         &self,
         key: CodeFingerprint,
@@ -252,10 +332,7 @@ impl EffectSemantics<'_> {
                     arguments,
                     ..provisional
                 };
-                let previous = self
-                    .native_call_inputs(native_id)
-                    .ok_or_else(|| invalid("metadata input equation is missing"))?;
-                solution.changed |= previous.as_ref() != &incoming;
+                let incoming = solution.join_inputs(native_id, incoming);
                 self.join_call_inputs(incoming)
             })?;
             if missing {

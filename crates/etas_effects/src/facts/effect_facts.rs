@@ -120,8 +120,9 @@ pub struct EffectMaterializationInputs {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectFacts {
+    /// Checked external identities are shared by all item-owned fact views.
     pub external_parameter_projections:
-        BTreeMap<etas_code::CodeFingerprint, super::ExternalParameterProjection>,
+        std::sync::Arc<BTreeMap<etas_code::CodeFingerprint, super::ExternalParameterProjection>>,
     pub parameter_projections:
         BTreeMap<etas_code::CodeFingerprint, super::NativeParameterProjection>,
     pub suspension: BTreeMap<EffectUnit, crate::suspension::SuspensionSummary>,

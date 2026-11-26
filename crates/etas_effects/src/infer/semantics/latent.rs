@@ -714,6 +714,13 @@ impl EffectSemantics<'_> {
             .is_some_and(|ty| self.type_contains_flow(ty))
     }
 
+    pub(super) fn known_data_payload(&self, ty: TypeId) -> bool {
+        self.latent_type_shapes
+            .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))
+            .data_payload_parameters(self.types, ty)
+            .is_some_and(|parameters| parameters.is_empty())
+    }
+
     pub(crate) fn type_contains_flow(&self, ty: etas_types::TypeId) -> bool {
         self.latent_type_shapes
             .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))

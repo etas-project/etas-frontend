@@ -546,12 +546,14 @@ fn decode_persisted<T: Clone + 'static>(
 }
 
 fn encode_bincode<T: serde::Serialize>(value: &T) -> CacheResult<Vec<u8>> {
+    let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
     bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(|error| {
         CacheError::InvalidEnvelope(format!("frontend artifact serialization failed: {error}"))
     })
 }
 
 fn decode_bincode<T: serde::de::DeserializeOwned>(payload: &[u8]) -> CacheResult<T> {
+    let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
     let (value, consumed) = bincode::serde::decode_from_slice(payload, bincode::config::standard())
         .map_err(|error| {
             CacheError::InvalidEnvelope(format!(

@@ -1,7 +1,9 @@
 //! Canonical checked objects: shared declaration/type data and disjoint module
 //! bodies. Execution closures are assembled views of these objects, never
 //! independently published copies of a checked program.
-use super::{LibraryHirImage, LibraryHirImageError, decode_prepared_value, error};
+use super::{
+    LibraryHirImage, LibraryHirImageError, decode_prepared_value, encode_prepared_value, error,
+};
 use crate::{ModuleId, SemanticDependency};
 use etas_hir::*;
 use serde::{Deserialize, Serialize};
@@ -22,9 +24,7 @@ pub struct LibraryObjectIndex {
 impl LibraryObjectIndex {
     pub fn encode(&self) -> Result<Vec<u8>, LibraryHirImageError> {
         let mut bytes = b"ETASOBJ2".to_vec();
-        bytes.extend(
-            bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(error)?,
-        );
+        bytes.extend(encode_prepared_value(self)?);
         Ok(bytes)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, LibraryHirImageError> {
@@ -531,8 +531,7 @@ impl LibraryHirImage {
             })
             .collect::<BTreeMap<_, _>>();
         for (item, body) in parts {
-            let bytes =
-                bincode::serde::encode_to_vec(body, bincode::config::standard()).map_err(error)?;
+            let bytes = encode_prepared_value(&body)?;
             objects
                 .get_mut(&index.definitions[&item])
                 .unwrap()
@@ -544,13 +543,7 @@ impl LibraryHirImage {
             index,
             modules: objects
                 .into_iter()
-                .map(|(id, object)| {
-                    Ok((
-                        id,
-                        bincode::serde::encode_to_vec(object, bincode::config::standard())
-                            .map_err(error)?,
-                    ))
-                })
+                .map(|(id, object)| Ok((id, encode_prepared_value(&object)?)))
                 .collect::<Result<_, LibraryHirImageError>>()?,
         })
     }

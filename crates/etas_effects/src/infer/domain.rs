@@ -5,6 +5,8 @@ use etas_utils::{JoinSemiLattice, PartialOrder};
 
 use crate::{Effect, EffectRow, EffectSet, RequirementSet};
 
+pub mod trace_codec;
+
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
@@ -327,7 +329,7 @@ pub enum ActionTraceDomain {
     Repeat(Box<ActionTraceDomain>),
     /// An immutable subgraph shared by callable summary instances.
     /// Portable projections traverse it transparently.
-    Shared(std::sync::Arc<SharedActionTrace>),
+    Shared(#[serde(with = "trace_codec")] std::sync::Arc<SharedActionTrace>),
     /// Least fixed point of an ordered trace equation. A missing body refers
     /// to the enclosing equation with this identity; it is never epsilon.
     Recursive {

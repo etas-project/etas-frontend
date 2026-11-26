@@ -5,12 +5,14 @@ use etas_types::{CheckedSpecRef, SpecKind, Type, TypeId, TypeOutput};
 #[derive(Clone, Default, PartialEq, Eq)]
 struct Shape {
     callable: bool,
+    unresolved: bool,
     parameters: BTreeSet<TypeId>,
 }
 
 impl Shape {
     fn union(&mut self, other: &Self) {
         self.callable |= other.callable;
+        self.unresolved |= other.unresolved;
         self.parameters.extend(&other.parameters);
     }
 }
@@ -101,6 +103,17 @@ impl LatentTypeShapes {
         read(&derived[offset])
     }
 
+    pub(crate) fn data_payload_parameters(
+        &self,
+        types: &TypeOutput,
+        ty: TypeId,
+    ) -> Option<Vec<TypeId>> {
+        self.with_shape(types, ty, |shape| {
+            (!shape.callable && !shape.unresolved)
+                .then(|| shape.parameters.iter().copied().collect())
+        })
+    }
+
     pub(crate) fn contains(&self, types: &TypeOutput, ty: TypeId) -> bool {
         self.with_shape(types, ty, |shape| {
             shape.callable
@@ -141,6 +154,8 @@ impl LatentTypeShapes {
             // members. A private marker can therefore appear in a data record
             // without making every constructor and field update a callback.
             shape.callable = bounds.iter().any(|bound| !marker_spec(types, &bound.spec));
+        } else if matches!(value, Type::Var(_)) {
+            shape.unresolved = true;
         } else if matches!(value, Type::Named(_)) {
             shape.parameters.insert(ty);
         } else if let Type::Applied { constructor, args } = value {
@@ -155,6 +170,7 @@ impl LatentTypeShapes {
             }
             let template = child_shape(owner);
             shape.callable = template.callable;
+            shape.unresolved = template.unresolved;
             for parameter in &template.parameters {
                 if let Some(position) = parameters
                     .iter()

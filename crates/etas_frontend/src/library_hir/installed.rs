@@ -1,5 +1,7 @@
 //! Authenticated installed facts with a lazy diagnostic/reflection source archive.
-use super::{LibraryHirImage, LibraryHirImageError, decode_prepared_value, error};
+use super::{
+    LibraryHirImage, LibraryHirImageError, decode_prepared_value, encode_prepared_value, error,
+};
 use crate::{
     CheckedProgramData,
     code::{
@@ -36,9 +38,7 @@ pub(super) fn encode(checked: &CheckedProgramData) -> Result<Vec<u8>, LibraryHir
         exposure: checked.definition_sources.installed_exposure(),
     };
     let mut bytes = MAGIC.to_vec();
-    bytes.extend(
-        bincode::serde::encode_to_vec(&publication, bincode::config::standard()).map_err(error)?,
-    );
+    bytes.extend(encode_prepared_value(&publication)?);
     Ok(bytes)
 }
 

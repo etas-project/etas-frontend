@@ -88,7 +88,8 @@ impl EffectSemantics<'_> {
         }
         let witness = selected
             .ok_or_else(|| invalid("metadata object has no evidence for the selected member"))?;
-        let payload = self.metadata_object_payload(source, &packed, &node.payload_sources)?;
+        let payload =
+            self.metadata_object_payload(source, &packed, &node.payload_sources, input.call)?;
         let mut actual = input.snapshot.clone();
         actual
             .parameters
@@ -176,21 +177,36 @@ impl EffectSemantics<'_> {
         source: MetadataObjectSource,
         environment: &CallableEnvironment,
         sources: &[CallableValueSource],
+        call: etas_hir::HirExprId,
     ) -> Result<BTreeSet<LatentSource>, EffectSpecializationError> {
         let mut result = BTreeSet::new();
         for item in sources {
             match item {
-                CallableValueSource::Parameter(parameter) => result.extend(
-                    environment
-                        .parameters
-                        .get(&ParameterCallTarget::Graph {
-                            graph: source.graph,
-                            parameter: *parameter,
-                        })
-                        .ok_or_else(|| {
-                            invalid("metadata object payload has no captured parameter")
-                        })?,
-                ),
+                CallableValueSource::Parameter(parameter) => {
+                    let target = ParameterCallTarget::Graph {
+                        graph: source.graph,
+                        parameter: *parameter,
+                    };
+                    let origins = match environment.parameters.get(&target) {
+                        Some(origins) => origins.clone(),
+                        None => self
+                            .metadata_parameter_origins(
+                                source.graph,
+                                *parameter,
+                                environment,
+                                source.environment,
+                                &super::super::state::EffectState {
+                                    owner: Some(environment.owner),
+                                    ..Default::default()
+                                },
+                                call,
+                            )?
+                            .ok_or_else(|| {
+                                invalid("metadata object payload has no captured parameter")
+                            })?,
+                    };
+                    result.extend(origins);
+                }
                 CallableValueSource::Existential(object) => {
                     result.insert(LatentSource::MetadataObject(MetadataObjectSource {
                         object: *object,

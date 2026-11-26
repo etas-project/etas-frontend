@@ -37,6 +37,10 @@ fn assert_partition(output: &ProjectOutput) -> usize {
     let mut encoded_bytes = 0;
     for body in output.effect_body_outputs.values() {
         let facts = &body.facts;
+        assert!(std::sync::Arc::ptr_eq(
+            &facts.external_parameter_projections,
+            &global.external_parameter_projections,
+        ));
         for (id, snapshot) in &facts.callable_environments {
             assert_eq!(snapshot.owner, body.owner);
             assert!(

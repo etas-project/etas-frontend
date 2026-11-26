@@ -78,6 +78,14 @@ impl EffectSemantics<'_> {
         ty: TypeId,
         path: &[ValueProjectionStep],
     ) -> Result<Option<TypeId>, TypeSubstitutionError> {
+        self.requested_type(self.project_existing_value(ty, path))
+    }
+
+    pub(super) fn project_existing_value(
+        &self,
+        ty: TypeId,
+        path: &[ValueProjectionStep],
+    ) -> Result<Option<TypeId>, TypeSubstitutionError> {
         if let Some(result) = self
             .type_queries
             .projections
@@ -87,13 +95,13 @@ impl EffectSemantics<'_> {
         {
             return Ok(*result);
         }
-        let result = self.requested_type(etas_types::value_projection::project_indexed(
+        let result = etas_types::value_projection::project_indexed(
             &self.types.store,
             &self.types.facts,
             self.type_lookup(),
             ty,
             path,
-        ))?;
+        )?;
         self.type_queries
             .projections
             .borrow_mut()

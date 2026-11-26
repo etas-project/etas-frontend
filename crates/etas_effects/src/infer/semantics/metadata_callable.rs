@@ -322,10 +322,65 @@ impl EffectSemantics<'_> {
                 }
                 other => other,
             })?;
-        let environment = source
+        let mut environment = source
             .environment
             .map(|id| self.callable_environment(id))
             .transpose()?;
+        let invocation_state = EffectState {
+            owner: environment.as_ref().map(|environment| environment.owner),
+            application: source.environment.map(Self::callable_invocation_context),
+            ..EffectState::default()
+        };
+        if let (Some(id), Some(environment)) = (source.environment, &mut environment) {
+            let mut parameters = node
+                .parameter_bindings
+                .iter()
+                .map(|binding| binding.parameter)
+                .collect::<BTreeSet<_>>();
+            for reference in summary.action_trace.parameter_calls() {
+                if let crate::ParameterCallTarget::MetadataSpecMethod { invocation, .. } =
+                    reference.target
+                {
+                    if let Some(definition) = self.method_evidence.borrow().get(&invocation) {
+                        parameters.extend(definition.parameters.iter().filter_map(
+                            |(_, target)| match target {
+                                crate::ParameterCallTarget::Graph { graph, parameter }
+                                    if *graph == source.graph =>
+                                {
+                                    Some(*parameter)
+                                }
+                                _ => None,
+                            },
+                        ));
+                    }
+                }
+            }
+            parameters.retain(|parameter| {
+                parameter.projection.is_some()
+                    && environment
+                        .parameters
+                        .contains_key(&crate::ParameterCallTarget::Graph {
+                            graph: source.graph,
+                            parameter: etas_package_metadata::CallableValueParameter {
+                                projection: None,
+                                ..*parameter
+                            },
+                        })
+            });
+            if !parameters.is_empty() {
+                let application = self
+                    .capture_site_expression(id.application)
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                self.bind_metadata_parameter_origins(
+                    source.graph,
+                    &parameters.into_iter().collect::<Vec<_>>(),
+                    environment,
+                    Some(id),
+                    &invocation_state,
+                    application,
+                )?;
+            }
+        }
         let scopes = self.metadata_callable_scopes(source)?;
         // A declaration descriptor keeps its inputs formal. A checked method
         // application captures them, including when its descriptor is exported.
@@ -380,11 +435,7 @@ impl EffectSemantics<'_> {
                     })
                     .collect::<super::specialize::TraceArgumentBindings>()
             });
-        let invocation_state = EffectState {
-            owner: environment.as_ref().map(|environment| environment.owner),
-            application: source.environment.map(Self::callable_invocation_context),
-            ..EffectState::default()
-        };
+
         self.bind_spec_method_arguments(
             &summary,
             &mut bindings,
@@ -497,10 +548,17 @@ impl EffectSemantics<'_> {
                     found.insert(LatentSource::Metadata(source));
                 }
                 CallableValueSource::Parameter(parameter) => {
-                    let origins = self.metadata_parameter_origins(key, *parameter, &environment, environment_id, state, output)?
-                        .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
-                            reason: format!("returned metadata parameter {parameter:?} has no captured value origins"),
-                        })?;
+                    let target = crate::ParameterCallTarget::Graph {
+                        graph: key,
+                        parameter: *parameter,
+                    };
+                    let origins = match environment.parameters.get(&target) {
+                        Some(origins) => origins.clone(),
+                        None => self.metadata_parameter_origins(key, *parameter, &environment, environment_id, state, output)?
+                            .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                                reason: format!("returned metadata parameter {parameter:?} has no captured value origins"),
+                            })?,
+                    };
                     found.extend(origins);
                 }
             }
@@ -539,9 +597,26 @@ impl EffectSemantics<'_> {
             return Ok(());
         }
         for projection in projections {
-            let found = match &projection.sources {
-                Some(sources) => self.metadata_value_sources(context, sources, state, output)?,
-                None => BTreeSet::from([LatentSource::Unavailable { expr: output }]),
+            let data = self
+                .types
+                .facts
+                .expr_types
+                .get(&output)
+                .and_then(|ty| {
+                    self.project_existing_value(*ty, &projection.path)
+                        .ok()
+                        .flatten()
+                })
+                .is_some_and(|ty| self.known_data_payload(ty));
+            let found = if data {
+                BTreeSet::new()
+            } else {
+                match &projection.sources {
+                    Some(sources) => {
+                        self.metadata_value_sources(context, sources, state, output)?
+                    }
+                    None => BTreeSet::from([LatentSource::Unavailable { expr: output }]),
+                }
             };
             let key = (output, projection.path.clone());
             state
@@ -566,7 +641,7 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         application: HirExprId,
     ) -> Option<BTreeSet<LatentSource>> {
-        let (_, node, _) = self.metadata_callable(source)?;
+        let (_, node, checked) = self.metadata_callable(source)?;
         if !node.params.is_empty() {
             let environment = source
                 .environment
@@ -585,6 +660,39 @@ impl EffectSemantics<'_> {
             }) {
                 return None;
             }
+        }
+        let data_output = (|| {
+            let template = self
+                .project_existing_value(checked.output, path)
+                .ok()
+                .flatten()
+                .unwrap_or(checked.output);
+            let parameters = self
+                .latent_type_shapes
+                .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))
+                .data_payload_parameters(self.types, template)?;
+            if parameters.is_empty() {
+                return Some(true);
+            }
+            let (types, _) = self.metadata_environment_generics(source).ok()?;
+            let owner_parameters = self.metadata_environment_type_parameters(source).ok()?;
+            let names = types.into_iter().collect();
+            let mut substitution = etas_types::TypeSubstitutionEngine::existing_indexed(
+                &self.types.store,
+                self.type_lookup(),
+                &names,
+            )
+            .with_type_parameters(&owner_parameters);
+            for parameter in parameters {
+                let argument = substitution.substitute(parameter).ok()?;
+                if argument == parameter || !self.known_data_payload(argument) {
+                    return None;
+                }
+            }
+            Some(true)
+        })();
+        if data_output == Some(true) {
+            return Some(BTreeSet::new());
         }
         let mut selected = if path.is_empty() {
             Vec::new()
@@ -988,31 +1096,6 @@ impl EffectSemantics<'_> {
             self.record_callable_environment(id, environment.clone())?;
             Some(id)
         };
-        if environment_id.is_some() {
-            for parameter in graph
-                .parameter_references()
-                .into_iter()
-                .filter(|parameter| parameter.projection.is_some())
-            {
-                if let Some(sources) = self.metadata_parameter_origins(
-                    key,
-                    parameter,
-                    &environment,
-                    environment_id,
-                    state,
-                    output,
-                )? {
-                    environment.parameters.insert(
-                        crate::ParameterCallTarget::Graph {
-                            graph: key,
-                            parameter,
-                        },
-                        sources,
-                    );
-                }
-            }
-            self.record_callable_environment(environment_id.unwrap(), environment.clone())?;
-        }
         Ok((key, environment, environment_id))
     }
 
