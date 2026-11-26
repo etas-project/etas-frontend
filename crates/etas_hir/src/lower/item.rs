@@ -819,6 +819,13 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirAgentDecl {
+        for annotation in decl.params.iter().flat_map(|param| &param.annotations) {
+            self.diagnostics.push(etas_core::Diagnostic::type_check(
+                etas_core::TypeDiagnosticCode::InvalidAnnotation,
+                annotation.span,
+                "declare injected invocation parameters on an agent method",
+            ));
+        }
         let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes

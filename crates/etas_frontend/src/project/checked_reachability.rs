@@ -82,20 +82,24 @@ impl crate::CheckedProgramData {
         let summary = self.effects.unit_effects.get(&unit).ok_or(
             CheckedReachabilityError::MissingParameterDefaultAnalysis(parameter),
         )?;
-        if summary.determinism != etas_effects::Determinism::Deterministic
-            || !summary.escaping_effects.is_empty()
-            || !summary.requested_actions.is_empty()
-            || !summary.default_actions.is_empty()
-            || !summary.handled_actions.is_empty()
-            || matches!(
-                summary.support,
-                etas_effects::InterpreterSupport::Rejected(_)
-            )
-            || !self
-                .effects
-                .suspension
-                .get(&unit)
-                .is_some_and(|fact| fact.proven_non_suspending())
+        if matches!(
+            summary.support,
+            etas_effects::InterpreterSupport::Rejected(_)
+        ) || (!self.hir.parameter_injections.contains(&parameter)
+            && (summary.determinism != etas_effects::Determinism::Deterministic
+                || !summary.escaping_effects.is_empty()
+                || !summary.requested_actions.is_empty()
+                || !summary.default_actions.is_empty()
+                || !summary.handled_actions.is_empty()
+                || matches!(
+                    summary.support,
+                    etas_effects::InterpreterSupport::Rejected(_)
+                )
+                || !self
+                    .effects
+                    .suspension
+                    .get(&unit)
+                    .is_some_and(|fact| fact.proven_non_suspending())))
         {
             return Err(invalid());
         }

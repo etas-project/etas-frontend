@@ -44,6 +44,13 @@ impl Parser<'_> {
             let start = self.cursor.peek().span;
             let params = self.param_list();
             for param in &params {
+                for annotation in &param.annotations {
+                    self.diagnostics.push(Diagnostic::syntax(
+                        SyntaxDiagnosticCode::InvalidItem,
+                        annotation.span,
+                        "anonymous flow parameters cannot be injected",
+                    ));
+                }
                 if let Some(default) = &param.default {
                     self.diagnostics.push(Diagnostic::syntax(
                         SyntaxDiagnosticCode::InvalidItem,

@@ -828,6 +828,9 @@ impl AstDump for ast::ProtocolMsg {
 impl AstDump for ast::Param {
     fn dump(&self, f: &mut AstDumpWriter) {
         f.node("Param", self.span, name_fields(f, &self.name), |f| {
+            for annotation in &self.annotations {
+                annotation.dump(f);
+            }
             match &self.ty {
                 ast::ParamType::Explicit(ty) => ty.dump(f),
                 ast::ParamType::SelfReceiver { updating, span } => {

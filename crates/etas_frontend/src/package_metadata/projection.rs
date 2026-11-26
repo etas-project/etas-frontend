@@ -2530,6 +2530,32 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|reference| (slot, reference))
             })
             .map(|(slot, reference)| {
+                if let etas_types::ParameterDefaultRef::External { reference } = reference {
+                    let mut default = self
+                        .checked
+                        .definition_environment
+                        .environment()
+                        .external_public_metadata
+                        .iter()
+                        .flat_map(|metadata| metadata.parameter_defaults())
+                        .find(|default| &default.reference == reference)
+                        .cloned()
+                        .ok_or_else(|| {
+                            invalid("external omitted parameter has no published binding contract")
+                        })?;
+                    default.slot = slot as u32;
+                    return Ok(default);
+                }
+                let binding =
+                    if let etas_types::ParameterDefaultRef::Source { parameter } = reference {
+                        if self.checked.hir.parameter_injections.contains(parameter) {
+                            Some(self.parameter_binding_summary(*parameter)?)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                 let callable_value =
                     if let etas_types::ParameterDefaultRef::Source { parameter } = reference {
                         let etas_hir::SymbolDef::Param { owner, .. } = self
@@ -2577,12 +2603,125 @@ impl<'a> ProjectMetadataProjection<'a> {
                     }
                 };
                 Ok(etas_package_metadata::ParameterDefault {
+                    binding,
                     slot: slot as u32,
                     reference,
                     callable_value,
                 })
             })
             .collect()
+    }
+
+    fn parameter_binding_summary(
+        &self,
+        parameter: etas_hir::SymbolId,
+    ) -> Result<etas_package_metadata::ParameterBindingSummary, PackageMetadataError> {
+        let etas_hir::SymbolDef::Param { owner, .. } = self
+            .checked
+            .hir
+            .symbols
+            .get(parameter)
+            .expect("checked injected parameter")
+            .def
+        else {
+            unreachable!()
+        };
+        let unit = etas_effects::EffectUnit::ParameterDefault {
+            owner,
+            parameter,
+            expr: self.checked.hir.parameter_defaults[&parameter],
+        };
+        let summary = self
+            .checked
+            .effects
+            .unit_effects
+            .get(&unit)
+            .ok_or_else(|| invalid("injected parameter has no solved binding summary"))?;
+        let signature = self.checked.types.item_signatures.get(&owner);
+        let mut types = signature
+            .map(callable_type_generic_names)
+            .unwrap_or_default();
+        let mut effects = signature
+            .map(callable_effect_generic_names)
+            .unwrap_or_default();
+        for symbol in self.checked.hir.parameter_generic_parameters(parameter) {
+            let symbol = self
+                .checked
+                .hir
+                .symbols
+                .get(symbol)
+                .expect("checked parameter generic");
+            match symbol.kind {
+                etas_hir::SymbolKind::TypeParam => {
+                    types.insert(symbol.name.clone());
+                }
+                etas_hir::SymbolKind::EffectParam => {
+                    effects.insert(symbol.name.clone());
+                }
+                _ => unreachable!(),
+            }
+        }
+        let labels = self.trace_parameter_labels(owner)?;
+        let mut behavior = callable_returns::behavior(summary)
+            .ok_or_else(|| invalid("injected parameter has incomplete behavior"))?;
+        behavior.suspension = self.checked.effects.suspension.get(&unit).map(|summary| {
+            etas_code::descriptor::SuspensionInfo {
+                may_suspend: summary.may_suspend,
+                unknown: summary.unknown,
+            }
+        });
+        Ok(etas_package_metadata::ParameterBindingSummary {
+            behavior,
+            public_effects: self.effect_row_metadata(
+                &summary.escaping_effects,
+                &types,
+                &effects,
+            )?,
+            requested_actions: self.effect_row_metadata(
+                &summary.requested_actions,
+                &types,
+                &effects,
+            )?,
+            handled_requested_actions: self.effect_row_metadata(
+                &summary.handled_actions,
+                &types,
+                &effects,
+            )?,
+            default_handler_effects: etas_package_metadata::DefaultHandlerEffects {
+                behavior: self.default_behavior_metadata(summary, &types, &effects, &labels)?,
+                direct_effects: self.effect_row_metadata(
+                    &summary.escaping_effects,
+                    &types,
+                    &effects,
+                )?,
+                default_actions: self.effect_row_metadata(
+                    &summary.default_actions,
+                    &types,
+                    &effects,
+                )?,
+                handlers: summary
+                    .default_handler_effects
+                    .iter()
+                    .flat_map(|effects| &effects.handlers)
+                    .map(|handler| {
+                        Ok(etas_package_metadata::DefaultHandlerContribution {
+                            action: self.summary_effect_ref_metadata(&handler.action, &types)?,
+                            produced: self.effect_row_metadata(
+                                &handler.produced,
+                                &types,
+                                &effects,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<_, PackageMetadataError>>()?,
+            },
+            action_trace: self.action_trace_metadata(&summary.action_trace, &types, &labels)?,
+            handler_requests: self.request_template_metadata(
+                &summary.handler_requests,
+                &types,
+                &labels,
+            )?,
+        })
     }
 
     fn callable_param_names(&self, item: HirItemId) -> Result<Vec<String>, PackageMetadataError> {
@@ -2638,6 +2777,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::with_capacity(tool.params.len());
         for (param, ty) in tool.params.iter().zip(signature.params.iter()) {
+            if self.checked.hir.parameter_injections.contains(param) {
+                continue;
+            }
             let Some(symbol) = self.checked.hir.symbols.get(*param) else {
                 return Err(PackageMetadataError::InvalidToolSchema {
                     path,
@@ -2648,7 +2790,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                 symbol.name.clone(),
                 json_schema_for_type(*ty, &self.checked.type_store, 0)?,
             );
-            required.push(Value::String(symbol.name.clone()));
+            if !self.checked.hir.parameter_defaults.contains_key(param) {
+                required.push(Value::String(symbol.name.clone()));
+            }
         }
 
         Ok(MetadataToolSchema {

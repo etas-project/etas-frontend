@@ -427,6 +427,10 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         AnalysisStep::handled(self.perform_action(expr, action, generic_args, args, span, state))
     }
 
+    fn bind_call_arguments(&mut self, call: HirExprId, state: Self::Domain) -> Self::Domain {
+        self.apply_omitted_argument_effects(call, state)
+    }
+
     fn direct_call(
         &mut self,
         _call: HirExprId,

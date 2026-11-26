@@ -234,6 +234,7 @@ pub(crate) fn project(
             .map(|fingerprint| fingerprint.as_bytes().as_slice()),
     );
     Ok(ParameterDefaultInfo {
+        injected: input.parameter_injections.contains(&parameter),
         owner,
         parameter: slot,
         revision: CodeFingerprint::of_parts("etas.code.parameter-default-source.v1", parts),

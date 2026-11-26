@@ -288,13 +288,13 @@ impl Parser<'_> {
         let mut has_default = false;
         let params = self.comma_list(Punct::RParen, |this| {
             let param = this.param(allow_receiver && first);
-            if param.default.is_some() {
+            if param.default.is_some() || !param.annotations.is_empty() {
                 has_default = true;
             } else if has_default && matches!(param.ty, ParamType::Explicit(_)) {
                 this.diagnostics.push(Diagnostic::syntax(
                     SyntaxDiagnosticCode::InvalidItem,
                     param.span,
-                    "required parameters must precede defaulted parameters",
+                    "required parameters must precede defaulted or injected parameters",
                 ));
             }
             first = false;
@@ -305,6 +305,10 @@ impl Parser<'_> {
     }
 
     fn param(&mut self, allow_receiver: bool) -> Param {
+        let mut annotations = Vec::new();
+        while self.cursor.at_punct(Punct::At) {
+            annotations.push(self.annotation());
+        }
         let updating = self
             .cursor
             .eat_keyword(Keyword::Var)
@@ -346,6 +350,7 @@ impl Parser<'_> {
                 ));
             }
             return Param {
+                annotations,
                 span: default
                     .as_ref()
                     .map_or(span, |default| span.cover(default.span())),
@@ -364,6 +369,7 @@ impl Parser<'_> {
             .eat_punct(Punct::Eq)
             .map(|_| Box::new(self.expr()));
         Param {
+            annotations,
             span: name
                 .span
                 .cover(default.as_ref().map_or(ty.span(), |default| default.span())),

@@ -4,6 +4,41 @@ pub(super) fn collect(
     metadata: &ProjectExternalPublicMetadataInput,
 ) -> Result<Vec<etas_types::ExternalTypeInput>, crate::code::descriptor::ProjectionError> {
     let mut types = Vec::new();
+    for binding in metadata
+        .parameter_defaults()
+        .filter_map(|default| default.binding.as_ref())
+    {
+        let mut parts = vec![
+            Part::Row(&binding.public_effects),
+            Part::Row(&binding.requested_actions),
+            Part::Row(&binding.handled_requested_actions),
+            Part::Trace(&binding.action_trace),
+            Part::Row(&binding.default_handler_effects.direct_effects),
+            Part::Row(&binding.default_handler_effects.default_actions),
+        ];
+        if let Some(behavior) = &binding.default_handler_effects.behavior {
+            parts.push(Part::Behavior(behavior));
+        }
+        collect_parts(&mut types, parts)?;
+        for action in binding
+            .handler_requests
+            .iter()
+            .flat_map(|requests| &requests.actions)
+        {
+            if let Some(signature) = &action.signature {
+                for ty in signature
+                    .params
+                    .iter()
+                    .chain(std::iter::once(&signature.output))
+                {
+                    add(&mut types, ty)?;
+                }
+            }
+            for binding in action.type_bindings.iter().flatten() {
+                add(&mut types, &binding.ty)?;
+            }
+        }
+    }
     for graph in metadata
         .parameter_defaults()
         .filter_map(|default| default.callable_value.as_ref())

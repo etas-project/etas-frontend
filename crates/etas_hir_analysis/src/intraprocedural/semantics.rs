@@ -220,6 +220,11 @@ pub trait HirAnalysisSemantics {
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain>;
 
+    /// Invocation bindings run after supplied expressions and before the body.
+    fn bind_call_arguments(&mut self, _call: HirExprId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
     fn direct_call(
         &mut self,
         call: HirExprId,

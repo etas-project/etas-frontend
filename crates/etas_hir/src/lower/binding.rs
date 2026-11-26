@@ -47,10 +47,45 @@ impl LowerCtx {
                 };
                 // Retain a definition-site expression before introducing this
                 // parameter, for the default checker and call binder.
-                let default = param
+                let mut default = param
                     .default
                     .as_ref()
                     .map(|value| self.lower_expr(value, scope, item_id));
+                for (index, annotation) in param.annotations.iter().enumerate() {
+                    let valid = index == 0
+                        && matches!(annotation.path.segments.as_slice(), [name] if name.text == "inject")
+                        && matches!(annotation.args.as_slice(), [] | [ast::AnnotationArg::Positional(ast::Expr::Perform(_))])
+                        && matches!(param.ty, ast::ParamType::Explicit(_))
+                        && param.name.text != "self"
+                        && param.default.is_none();
+                    if !valid {
+                        self.diagnostics.push(etas_core::Diagnostic::type_check(
+                            etas_core::TypeDiagnosticCode::InvalidAnnotation,
+                            annotation.span,
+                            "a callable parameter accepts one @inject or @inject(Action), without a default or receiver",
+                        ));
+                        continue;
+                    }
+                    let mut expression = match annotation.args.as_slice() {
+                        [ast::AnnotationArg::Positional(value)] => value.clone(),
+                        [] => {
+                            let ast::ParamType::Explicit(ty) = &param.ty else { unreachable!() };
+                            let (effect, action) = ast::EffectRef::typed_injection((**ty).clone(), annotation.span);
+                            ast::Expr::Perform(ast::PerformExpr {
+                                effect, action, generic_args: Vec::new(),
+                                args: vec![ast::Arg::Positional(ast::Expr::Literal(ast::Literal::String {
+                                    value: param.name.text.clone(), span: param.name.span,
+                                }))],
+                                span: annotation.span,
+                            })
+                        }
+                        _ => unreachable!(),
+                    };
+                    if let ast::Expr::Perform(perform) = &mut expression {
+                        perform.span = annotation.span.cover(param.span);
+                    }
+                    default = Some(self.lower_expr(&expression, scope, item_id));
+                }
                 let symbol = self.bind_symbol_with_def(
                     scope,
                     SymbolData {
@@ -71,6 +106,9 @@ impl LowerCtx {
                 );
                 if let Some(default) = default {
                     self.hir.parameter_defaults.insert(symbol, default);
+                    if !param.annotations.is_empty() {
+                        self.hir.parameter_injections.insert(symbol);
+                    }
                 }
                 symbol
             })

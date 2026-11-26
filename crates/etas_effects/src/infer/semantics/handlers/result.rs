@@ -16,6 +16,133 @@ struct CheckedHandlerArm<'a> {
 }
 
 impl EffectSemantics<'_> {
+    /// Provider results belong to the invocation's handler scope. Keep callable
+    /// parameters symbolic until that scope supplies their checked origins.
+    pub(in crate::infer::semantics) fn bind_injected_callback_results(
+        &self,
+        application: HirExprId,
+        handler: HirExprId,
+        state: &mut EffectState,
+    ) -> Result<(), EffectSpecializationError> {
+        let calls = state.summary.action_trace.parameter_calls();
+        if calls.is_empty() {
+            return Ok(());
+        }
+        let Some((literal, _)) = self
+            .immutable_handler_value(handler)
+            .map_err(EffectSpecializationError::Interrupted)?
+        else {
+            return Ok(());
+        };
+        let Some(owner) = self.hir.index().expr_item.get(&literal).copied() else {
+            return Ok(());
+        };
+        let Some(arms) = self.checked_handler_arms(literal, Some(owner))? else {
+            return Ok(());
+        };
+        let coverage = EffectCoverage {
+            registry: self.registry,
+            types: &self.types.store,
+        };
+        let mut bindings = super::super::specialize::TraceArgumentBindings::new();
+        for call in calls {
+            let target = self
+                .parameter_projection_target(call.target)
+                .map(|(target, _)| target)
+                .unwrap_or(call.target);
+            let crate::ParameterCallTarget::Native(parameter) = target else {
+                continue;
+            };
+            if !self.hir.parameter_injections.contains(&parameter) {
+                continue;
+            }
+            let etas_hir::SymbolDef::Param { owner, .. } = self
+                .hir
+                .symbols
+                .get(parameter)
+                .expect("checked injected parameter")
+                .def
+            else {
+                unreachable!()
+            };
+            let expr = self.hir.parameter_defaults[&parameter];
+            if !contains_provider_request(
+                &state.summary.action_trace,
+                self.hir.exprs[expr].span(&self.hir.blocks),
+            ) {
+                continue;
+            }
+            let HirExpr::Perform { args, .. } = &self.hir.exprs[expr] else {
+                unreachable!("injection is a provider request")
+            };
+            let Some(summary) = self.unit_summary(&EffectUnit::ParameterDefault {
+                owner,
+                parameter,
+                expr,
+            }) else {
+                continue;
+            };
+            let Some(effect) = summary.requested_actions.effects.iter().next() else {
+                continue;
+            };
+            let mut origins = BTreeSet::new();
+            for arm in &arms {
+                if !coverage.covers(arm.action, effect) {
+                    continue;
+                }
+                let Some(resumed) = self
+                    .unit_summary(&arm.fact.unit)
+                    .and_then(|summary| summary.exits.as_ref())
+                    .and_then(|exits| exits.handler_resume_sources())
+                else {
+                    continue;
+                };
+                let EffectUnit::HandlerArm { arm: id, .. } = arm.fact.unit else {
+                    unreachable!()
+                };
+                let Some(payload) =
+                    self.resume_payload_bindings(&self.hir.handler_arms[id].patterns, args)
+                else {
+                    continue;
+                };
+                let sources =
+                    self.returned_callable_bindings(&resumed, &payload, state, application, None)?;
+                origins.extend(sources);
+                if arm.unconditional {
+                    bindings.insert(target, TraceArgumentBinding::Origins(origins));
+                    break;
+                }
+            }
+        }
+        if bindings.is_empty() {
+            return Ok(());
+        }
+        let trace = state.summary.action_trace.clone();
+        let mut summary = state.summary.clone();
+        self.merge_parameter_call_summaries(
+            &mut summary,
+            &trace,
+            &bindings,
+            state,
+            &BTreeSet::new(),
+        )?;
+        summary.action_trace = self.specialize_parameter_call_trace(&trace, &bindings, state)?;
+        summary.exits = Some(state.exits.clone());
+        self.solve_callback_completion(&mut summary, &bindings, &[], state)?;
+        if let Some(exits) = &mut summary.exits {
+            for exit in &mut exits.exits {
+                exit.trace = self.specialize_parameter_call_trace(&exit.trace, &bindings, state)?;
+            }
+            for exit in &mut exits.parameter_exits {
+                exit.prefix =
+                    self.specialize_parameter_call_trace(&exit.prefix, &bindings, state)?;
+            }
+            state.exits = exits.clone();
+        }
+        state.summary = summary;
+        Ok(())
+    }
+
     fn checked_handler_arms(
         &self,
         handler: HirExprId,
@@ -576,4 +703,32 @@ mod tests {
                 if interruption.kind == etas_utils::PipelineInterruptionKind::Cancelled
         ));
     }
+}
+
+fn contains_provider_request(trace: &ActionTraceDomain, span: etas_core::Span) -> bool {
+    let mut pending = vec![trace];
+    let mut shared = std::collections::HashSet::new();
+    while let Some(trace) = pending.pop() {
+        match trace {
+            ActionTraceDomain::Event(event)
+                if event.span == span && event.source == crate::ActionEventSource::Perform =>
+            {
+                return true;
+            }
+            ActionTraceDomain::Seq(parts)
+            | ActionTraceDomain::Choice(parts)
+            | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
+            ActionTraceDomain::Repeat(body)
+            | ActionTraceDomain::DefaultHandler { body, .. }
+            | ActionTraceDomain::TaskStart { body, .. }
+            | ActionTraceDomain::Recursive {
+                body: Some(body), ..
+            } => pending.push(body),
+            ActionTraceDomain::Shared(node) if shared.insert(std::sync::Arc::as_ptr(node)) => {
+                pending.push(&node.body)
+            }
+            _ => (),
+        }
+    }
+    false
 }

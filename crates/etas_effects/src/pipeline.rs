@@ -96,10 +96,11 @@ pub struct ExternalCallableValueMetadata {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ExternalParameterDefaultMetadata {
+    pub binding: Option<ExternalEffectSummaryMetadata>,
     pub owner_params: Vec<etas_types::CallableGenericParam>,
     pub reference: etas_code::descriptor::ParameterDefaultInfo,
     pub graph_key: etas_code::CodeFingerprint,
-    pub graph: etas_package_metadata::CallableValueGraph,
+    pub graph: Option<etas_package_metadata::CallableValueGraph>,
     pub generics: Vec<(String, etas_types::CallableGenericParamKind)>,
     pub arity: usize,
     pub values: Vec<ExternalCallableValueMetadata>,

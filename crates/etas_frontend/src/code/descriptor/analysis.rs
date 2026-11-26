@@ -88,9 +88,25 @@ impl DefinitionDescriptorProjector<'_> {
                 outcomes: None,
             });
         };
-        // Uninstantiated dispatch cannot advertise its partial sets as solved
-        // analysis. The effect summary retains its symbolic dependency.
+        // Uninstantiated dispatch and provider-returned callbacks cannot
+        // advertise partial sets as solved analysis. The checked body retains
+        // the symbolic dependency for specialization under its caller handler.
         let deferred_analysis = |target| {
+            let parameter = match target {
+                etas_effects::ParameterCallTarget::Native(parameter) => Some(parameter),
+                etas_effects::ParameterCallTarget::Projection(id) => self
+                    .checked
+                    .effects
+                    .and_then(|effects| effects.parameter_projections.get(&id))
+                    .map(|projection| projection.parameter),
+                _ => None,
+            };
+            if parameter.is_some_and(|parameter| {
+                self.checked.parameter_injections.contains(&parameter)
+                    && !parameters.contains(&parameter)
+            }) {
+                return true;
+            }
             matches!(
                 target,
                 etas_effects::ParameterCallTarget::SpecMethod { .. }

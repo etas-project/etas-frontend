@@ -568,6 +568,13 @@ impl ProjectEnvironmentInput {
         public_metadata.sort_by_key(|entry| entry.package);
         for metadata in public_metadata {
             parts.push(format!("public-package:{}", metadata.package.0));
+            let mut defaults = metadata.parameter_defaults().collect::<Vec<_>>();
+            defaults.sort_by(|left, right| {
+                (&left.reference, left.slot).cmp(&(&right.reference, right.slot))
+            });
+            for default in defaults {
+                parts.push(format!("parameter-binding:{default:?}"));
+            }
             let mut constructors = metadata.constructor_contracts.iter().collect::<Vec<_>>();
             constructors.sort_by(|left, right| left.path.cmp(&right.path));
             for contract in constructors {

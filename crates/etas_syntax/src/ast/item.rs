@@ -598,6 +598,7 @@ pub struct ProtocolMsg {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct Param {
+    pub annotations: Vec<Annotation>,
     pub name: Name,
     pub ty: ParamType,
     pub default: Option<Box<Expr>>,

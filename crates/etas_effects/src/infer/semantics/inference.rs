@@ -203,12 +203,35 @@ impl EffectSemantics<'_> {
             let metadata = self
                 .external_metadata_for_callable(&callable)
                 .ok_or("exposed external tool has no canonical effect summary")?;
-            let summary = self
+            let mut summary = self.external_tool_binding_summary(tool, span)?;
+            let body = self
                 .external_summary_from_metadata(metadata, span)
                 .ok_or("exposed external tool effect summary is incomplete")?;
+            summary.seq_assign(&body);
             choices.join_branch(&summary);
         }
         Ok(choices)
+    }
+
+    fn external_tool_binding_summary(
+        &self,
+        tool: &etas_code::DefinitionKey,
+        span: Span,
+    ) -> Result<EffectSummary, String> {
+        let mut bindings = self.external_defaults.iter().filter(|default| default.reference.injected
+            && matches!(&default.reference.owner, etas_code::descriptor::ParameterDefaultOwner::Declaration(owner) if owner == tool))
+            .collect::<Vec<_>>();
+        bindings.sort_by_key(|default| default.reference.parameter);
+        let mut summary = EffectSummary::local();
+        for default in bindings {
+            let binding = default
+                .binding
+                .as_ref()
+                .and_then(|binding| self.external_summary_from_metadata(binding, span))
+                .ok_or("exposed tool has no checked omitted-parameter behavior")?;
+            summary.seq_assign(&binding);
+        }
+        Ok(summary)
     }
 
     pub(super) fn tool_invocation_summary(
@@ -288,15 +311,54 @@ impl EffectSemantics<'_> {
             .ok_or("agent tool surface is missing checked facts")?
         {
             let tool = match tool {
-                ModelToolSource::Item(item) => self
-                    .latent_source_summary(
-                        super::shared::LatentSource::Unit(EffectUnit::Item(item)),
-                        span,
-                    )
-                    .map_err(|error| error.to_string())?,
-                ModelToolSource::External(path) => self
-                    .external_summary_for_path(&path, span)
-                    .ok_or("exposed external tool has no checked effect summary")?,
+                ModelToolSource::Item(item) => {
+                    let mut binding = EffectSummary::local();
+                    if let Some(HirItem::Tool(tool)) = self.hir.items.get(item) {
+                        for parameter in &tool.params {
+                            if !self.hir.parameter_injections.contains(parameter) {
+                                continue;
+                            }
+                            let unit = EffectUnit::ParameterDefault {
+                                owner: item,
+                                parameter: *parameter,
+                                expr: self.hir.parameter_defaults[parameter],
+                            };
+                            if let Some(summary) = self.unit_summary(&unit) {
+                                binding.seq_assign(summary);
+                            }
+                        }
+                    }
+                    let body = self
+                        .latent_source_summary(
+                            super::shared::LatentSource::Unit(EffectUnit::Item(item)),
+                            span,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    binding.seq_assign(&body);
+                    binding
+                }
+                ModelToolSource::External(path) => {
+                    let metadata = self
+                        .external_summaries
+                        .iter()
+                        .find(|metadata| {
+                            super::engine::external_summary_matches_path(metadata, &path)
+                        })
+                        .ok_or("exposed external tool has no checked effect summary")?;
+                    let mut binding = match metadata
+                        .callable_contract
+                        .as_ref()
+                        .and_then(|contract| contract.header.id.as_declaration())
+                    {
+                        Some(tool) => self.external_tool_binding_summary(tool, span)?,
+                        None => EffectSummary::local(),
+                    };
+                    let body = self
+                        .external_summary_from_metadata(metadata, span)
+                        .ok_or("exposed external tool has no checked effect summary")?;
+                    binding.seq_assign(&body);
+                    binding
+                }
             };
             choices.join_branch(&tool);
         }

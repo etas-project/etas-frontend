@@ -109,14 +109,10 @@ impl EffectSemantics<'_> {
             .iter()
             .find(|default| default.graph_key == key)
         {
-            return (default.graph.values.len() == default.values.len()
-                && default.graph.objects.len() == default.objects.len())
-            .then_some((
-                &default.graph,
-                &default.values,
-                &default.objects,
-                default.span,
-            ));
+            let graph = default.graph.as_ref()?;
+            return (graph.values.len() == default.values.len()
+                && graph.objects.len() == default.objects.len())
+            .then_some((graph, &default.values, &default.objects, default.span));
         }
         if let Some(index) = self.implementation_graphs.get(&key) {
             if self.frozen_graphs.contains_key(&key)
@@ -519,6 +515,9 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         output: HirExprId,
     ) -> Result<(), EffectSpecializationError> {
+        if !self.expr_type_contains_flow(output) && !self.expr_type_has_parameters(output) {
+            return Ok(());
+        }
         if sources.is_empty() {
             return Err(EffectSpecializationError::InvalidCallableReturnSources);
         }
@@ -536,6 +535,9 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         output: HirExprId,
     ) -> Result<(), EffectSpecializationError> {
+        if !self.expr_type_contains_flow(output) && !self.expr_type_has_parameters(output) {
+            return Ok(());
+        }
         for projection in projections {
             let found = match &projection.sources {
                 Some(sources) => self.metadata_value_sources(context, sources, state, output)?,

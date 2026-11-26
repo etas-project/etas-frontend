@@ -17,6 +17,10 @@ pub struct HirProgram {
     /// Definition-site expressions; the declared parameter type remains T.
     #[serde(default, serialize_with = "crate::serde_ordered::map")]
     pub parameter_defaults: HashMap<crate::SymbolId, crate::HirExprId>,
+    /// Omitted-argument expressions allowed to perform actions. Their effects
+    /// belong to the call's binding phase, independently of the callable body.
+    #[serde(default)]
+    pub parameter_injections: std::collections::BTreeSet<crate::SymbolId>,
     pub modules: Vec<HirModuleId>,
     pub symbols: SymbolTable,
     pub scopes: ScopeTree,
@@ -168,6 +172,27 @@ impl HirProgram {
         let parameters = self.parameter_list(parameter)?;
         let index = parameters.iter().position(|symbol| *symbol == parameter)?;
         Some(&parameters[..index])
+    }
+
+    /// Generic binders in the declaration environment of an omitted argument.
+    pub fn parameter_generic_parameters(&self, parameter: crate::SymbolId) -> Vec<crate::SymbolId> {
+        let mut scope = self
+            .scopes
+            .iter()
+            .find(|scope| scope.symbols.contains(&parameter));
+        let mut result = Vec::new();
+        while let Some(current) = scope {
+            result.extend(current.symbols.iter().copied().filter(|symbol| {
+                self.symbols.get(*symbol).is_some_and(|symbol| {
+                    matches!(
+                        symbol.kind,
+                        crate::SymbolKind::TypeParam | crate::SymbolKind::EffectParam
+                    )
+                })
+            }));
+            scope = current.parent.and_then(|parent| self.scopes.get(parent));
+        }
+        result
     }
 
     pub fn mark_block_optimized_out(&mut self, block: crate::HirBlockId) {

@@ -303,7 +303,17 @@ impl EffectSemantics<'_> {
         ) {
             return Ok(summary.clone());
         }
-        let args = self.call_arguments(site, params.len())?;
+        let arity = if let EffectUnit::ParameterDefault { parameter, .. } = callee {
+            self.hir
+                .parameter_list(parameter)
+                .map_or(params.len(), <[_]>::len)
+        } else {
+            params.len()
+        };
+        let mut args = self.call_arguments(site, arity)?;
+        if matches!(callee, EffectUnit::ParameterDefault { .. }) {
+            args.truncate(params.len());
+        }
         let mut bindings = Vec::new();
         let mut trace_bindings = environment
             .map(|id| self.native_environment_bindings(id))
@@ -496,6 +506,9 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn unit_type_params(&self, unit: EffectUnit) -> Vec<etas_hir::SymbolId> {
+        if let EffectUnit::ParameterDefault { parameter, .. } = unit {
+            return self.hir.parameter_generic_parameters(parameter);
+        }
         let EffectUnit::Item(item) = unit else {
             return Vec::new();
         };

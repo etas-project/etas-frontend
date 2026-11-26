@@ -65,6 +65,9 @@ where
             HirExpr::Call { callee, args, .. } => {
                 let control = self.expr_control(callee, state)?;
                 let control = self.args_control(&args, control)?;
+                let control = control.with_normal_processed(|state| {
+                    Control::normal(self.semantics.bind_call_arguments(expr, state))
+                });
                 control.try_with_normal_processed(|state| {
                     self.direct_call_control(expr, callee, span, state)
                 })?
@@ -73,6 +76,9 @@ where
             HirExpr::SpecMethodCall { receiver, args, .. } => {
                 let control = self.expr_control(receiver, state)?;
                 let control = self.args_control(&args, control)?;
+                let control = control.with_normal_processed(|state| {
+                    Control::normal(self.semantics.bind_call_arguments(expr, state))
+                });
                 self.apply_normal_step(control, |this, state| {
                     this.semantics.spec_method_call(expr, span, state)
                 })?
@@ -260,6 +266,9 @@ where
                 _ => unreachable!("method call chain should contain only method calls"),
             };
             control = self.args_control(&args, control)?;
+            control = control.with_normal_processed(|state| {
+                Control::normal(self.semantics.bind_call_arguments(call, state))
+            });
             control = self.apply_normal_step(control, |this, state| {
                 this.semantics.method_call(call, span, state)
             })?;

@@ -126,10 +126,12 @@ impl EffectSemantics<'_> {
             ));
         }
         for default in self.external_defaults {
-            for (position, node) in default.graph.values.iter().enumerate() {
+            let Some(graph) = default.graph.as_ref() else {
+                continue;
+            };
+            for (position, node) in graph.values.iter().enumerate() {
                 if let Some(checked) = default.values.get(position)
-                    && let Some(generics) =
-                        node_generic_kinds(&default.graph, node, &default.generics)
+                    && let Some(generics) = node_generic_kinds(graph, node, &default.generics)
                 {
                     enqueue(
                         &mut pending,

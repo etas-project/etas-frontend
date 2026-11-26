@@ -164,6 +164,59 @@ pub(crate) fn lower_callable_graph_in_scope(
     lower_graph(graph, &resolver)
 }
 
+pub(crate) fn lower_parameter_binding(
+    binding: &metadata::ParameterBindingSummary,
+    types: &TypeOutput,
+    generics: &[(String, etas_types::CallableGenericParamKind)],
+) -> Result<etas_effects::ExternalEffectSummaryMetadata, String> {
+    let resolver = CheckedExternalTypeResolver::new(types);
+    Ok(etas_effects::ExternalEffectSummaryMetadata {
+        behavior: Some(binding.behavior.clone()),
+        generic_params: generics.to_vec(),
+        type_param_names: generics
+            .iter()
+            .filter(|(_, kind)| *kind == etas_types::CallableGenericParamKind::Type)
+            .map(|(name, _)| name.clone())
+            .collect(),
+        effect_param_names: generics
+            .iter()
+            .filter(|(_, kind)| *kind == etas_types::CallableGenericParamKind::Effect)
+            .map(|(name, _)| name.clone())
+            .collect(),
+        handler_requests: binding
+            .handler_requests
+            .as_ref()
+            .map(|requests| request_template(requests, &resolver))
+            .transpose()?,
+        public_effects: row(&binding.public_effects, &resolver)?,
+        requested_actions: row(&binding.requested_actions, &resolver)?,
+        handled_requested_actions: row(&binding.handled_requested_actions, &resolver)?,
+        default_handler_effects: Some(etas_effects::ExternalDefaultHandlerEffectsMetadata {
+            behavior: binding
+                .default_handler_effects
+                .behavior
+                .as_ref()
+                .map(|value| default_behavior(value, &resolver))
+                .transpose()?,
+            direct_effects: row(&binding.default_handler_effects.direct_effects, &resolver)?,
+            default_actions: row(&binding.default_handler_effects.default_actions, &resolver)?,
+            handlers: binding
+                .default_handler_effects
+                .handlers
+                .iter()
+                .map(|handler| {
+                    Ok(etas_effects::ExternalDefaultHandlerContributionMetadata {
+                        action: effect(&handler.action, &resolver)?,
+                        produced: row(&handler.produced, &resolver)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+        }),
+        action_trace: trace(&binding.action_trace, &resolver)?,
+        ..Default::default()
+    })
+}
+
 fn lower_graph(
     graph: &metadata::CallableValueGraph,
     resolver: &CheckedExternalTypeResolver<'_>,

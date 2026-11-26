@@ -8,6 +8,9 @@ pub(crate) fn validate(
     let mut defaults = hir.parameter_defaults.iter().collect::<Vec<_>>();
     defaults.sort_by_key(|(parameter, _)| **parameter);
     for (&parameter, &expr) in defaults {
+        if hir.parameter_injections.contains(&parameter) {
+            continue;
+        }
         let Some(etas_hir::SymbolDef::Param { owner, .. }) =
             hir.symbols.get(parameter).map(|symbol| &symbol.def)
         else {

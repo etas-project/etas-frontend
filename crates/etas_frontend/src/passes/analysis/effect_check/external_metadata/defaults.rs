@@ -32,14 +32,20 @@ pub(in crate::passes::analysis::effect_check) fn external_parameter_defaults(
                 })
                 .collect::<Vec<_>>();
             for default in defaults {
-                let Some(graph) = &default.callable_value else {
+                if default.callable_value.is_none() && default.binding.is_none() {
                     continue;
-                };
-                graph
-                    .validate_references(Some((arity, &kinds)))
-                    .map_err(|error| error.to_string())?;
-                let fingerprint = etas_package_metadata::callable_value_graph_fingerprint(graph)
-                    .map_err(|error| error.to_string())?;
+                }
+                let graph = default.callable_value.as_ref();
+                if let Some(graph) = graph {
+                    graph
+                        .validate_references(Some((arity, &kinds)))
+                        .map_err(|error| error.to_string())?;
+                }
+                let fingerprint = graph
+                    .map(etas_package_metadata::callable_value_graph_fingerprint)
+                    .transpose()
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or(default.reference.fingerprint());
                 let reference = default.reference.fingerprint();
                 let graph_key = etas_code::CodeFingerprint::of_parts(
                     "etas.effects.parameter-default.v1",
@@ -49,14 +55,27 @@ pub(in crate::passes::analysis::effect_check) fn external_parameter_defaults(
                     ],
                 );
                 let value = etas_effects::ExternalParameterDefaultMetadata {
+                    binding: default
+                        .binding
+                        .as_ref()
+                        .map(|binding| {
+                            crate::project::lower_parameter_binding(binding, types, &generics)
+                        })
+                        .transpose()?,
                     reference: default.reference.clone(),
                     graph_key,
-                    graph: graph.clone(),
+                    graph: graph.cloned(),
                     owner_params: owner_params.to_vec(),
                     generics: generics.clone(),
                     arity,
-                    values: crate::project::lower_callable_graph(graph, types)?,
-                    objects: crate::project::lower_callable_objects(graph, types)?,
+                    values: graph
+                        .map(|graph| crate::project::lower_callable_graph(graph, types))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    objects: graph
+                        .map(|graph| crate::project::lower_callable_objects(graph, types))
+                        .transpose()?
+                        .unwrap_or_default(),
                 };
                 if let Some(previous) = result.get(&default.reference) {
                     let previous: &etas_effects::AnchoredExternalMetadata<

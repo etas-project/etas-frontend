@@ -984,6 +984,15 @@ impl Parser<'_> {
         let name = self.name("expected action name");
         let selector_params = self.action_selector_params();
         let params = self.param_list();
+        for param in &params {
+            for annotation in &param.annotations {
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    annotation.span,
+                    "effect action parameters cannot be injected",
+                ));
+            }
+        }
         self.expect_punct(Punct::Arrow, "expected action return type");
         let return_type = self.type_expr();
         let default_handler_effects = self

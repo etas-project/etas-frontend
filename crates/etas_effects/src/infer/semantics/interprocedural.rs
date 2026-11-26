@@ -466,171 +466,187 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
-        if let Ok(Some(main)) = self.autonomous_entry(expr) {
-            match main.declaration.target {
-                etas_types::method::MethodTarget::Source { callable, .. }
-                | etas_types::method::MethodTarget::Agent { callable, .. } => {
-                    return vec![EffectUnit::Item(callable)];
-                }
-                _ => {}
-            }
-        }
-        if let Some(targets) = self.spec_method_targets.get(&expr) {
-            return targets.iter().copied().collect();
-        }
-        if let Some(pack) = self.types.facts.existential_packs.get(&expr) {
-            return pack
-                .witnesses
-                .iter()
-                .filter_map(|witness| match witness.target {
+        let mut dependencies = (|| {
+            if let Ok(Some(main)) = self.autonomous_entry(expr) {
+                match main.declaration.target {
                     etas_types::method::MethodTarget::Source { callable, .. }
                     | etas_types::method::MethodTarget::Agent { callable, .. } => {
-                        Some(EffectUnit::Item(callable))
-                    }
-                    _ => None,
-                })
-                .collect();
-        }
-        if let Some(target) = self.checked_method_target(expr) {
-            return vec![target];
-        }
-        if let Some(fact) = self.types.facts.reflections.get(&expr) {
-            use etas_types::facts::reflection::CheckedReflectionTarget;
-            let declaration = match fact.target {
-                CheckedReflectionTarget::Callable { declaration }
-                | CheckedReflectionTarget::Agent { declaration, .. }
-                | CheckedReflectionTarget::AgentDefaultEntry { declaration, .. } => {
-                    Some(declaration)
-                }
-                _ => None,
-            };
-            if let Some(symbol) =
-                declaration.and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
-                && let Some(SymbolDef::Item { item }) =
-                    self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
-            {
-                let unit = if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Agent(_)))
-                {
-                    match self.agent_default_call_target(*item) {
-                        CallTarget::Direct(unit) => Some(unit),
-                        _ => None,
-                    }
-                } else {
-                    Some(EffectUnit::Item(*item))
-                };
-                if let Some(unit) = unit
-                    && self.analysis_units.contains(&unit)
-                    && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
-                {
-                    return vec![unit];
-                }
-            }
-        }
-        if matches!(self.hir.exprs.get(expr), Some(HirExpr::StageCompose { .. }))
-            && let Some(owner) = context.unit.owner()
-            && let Some(unit) = self.anonymous_flow_unit_for_expr(owner, expr)
-            && unit != context.unit
-        {
-            return vec![unit];
-        }
-        if let Some(HirExpr::Path(path)) = self.hir.exprs.get(expr) {
-            let symbol = match &path.resolution {
-                ResolveResult::Resolved(symbol) => Some(*symbol),
-                ResolveResult::PartiallyResolved(partial) => partial.resolved_prefix,
-                _ => None,
-            };
-            if let Some(symbol) =
-                symbol.and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
-            {
-                match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
-                    Some(SymbolDef::TopLevelLet {
-                        item,
-                        classification,
-                        ..
-                    }) if !matches!(
-                        classification,
-                        etas_hir::TopLevelLetClassification::ResourceHandle(_)
-                    ) =>
-                    {
-                        return vec![EffectUnit::Item(*item)];
-                    }
-                    Some(SymbolDef::Item { item }) => {
-                        // References depend on the callable's solved behavior,
-                        // but do not invoke it or add its actions to this body.
-                        let target = match self.hir.items.get(*item) {
-                            Some(etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_)) => {
-                                Some(EffectUnit::Item(*item))
-                            }
-                            Some(etas_hir::HirItem::Agent(_)) => {
-                                match self.agent_default_call_target(*item) {
-                                    CallTarget::Direct(unit) => Some(unit),
-                                    _ => None,
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(unit) = target
-                            && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
-                        {
-                            return vec![unit];
-                        }
+                        return vec![EffectUnit::Item(callable)];
                     }
                     _ => {}
                 }
             }
-        }
-        let captured_invocation = matches!(context.unit, EffectUnit::AnonymousFlow { value, .. } if value == expr)
-            || matches!(self.hir.exprs.get(expr), Some(HirExpr::Pipeline { .. }));
-        if captured_invocation && let Some(captures) = self.captured_values.get(&context.unit) {
-            let mut dependencies = std::collections::BTreeSet::new();
-            let sources = match self.hir.exprs.get(expr) {
-                Some(HirExpr::Pipeline { stages, .. }) => stages
+            if let Some(targets) = self.spec_method_targets.get(&expr) {
+                return targets.iter().copied().collect();
+            }
+            if let Some(pack) = self.types.facts.existential_packs.get(&expr) {
+                return pack
+                    .witnesses
                     .iter()
-                    .filter_map(|stage| captures.value_sources(stage.expr))
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<_>>(),
-                _ => captures.values.values().flatten().copied().collect(),
-            };
-            for source in sources {
-                if let Some(unit) = source.captured_call_target()
-                    && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
+                    .filter_map(|witness| match witness.target {
+                        etas_types::method::MethodTarget::Source { callable, .. }
+                        | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                            Some(EffectUnit::Item(callable))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+            }
+            if let Some(target) = self.checked_method_target(expr) {
+                return vec![target];
+            }
+            if let Some(fact) = self.types.facts.reflections.get(&expr) {
+                use etas_types::facts::reflection::CheckedReflectionTarget;
+                let declaration = match fact.target {
+                    CheckedReflectionTarget::Callable { declaration }
+                    | CheckedReflectionTarget::Agent { declaration, .. }
+                    | CheckedReflectionTarget::AgentDefaultEntry { declaration, .. } => {
+                        Some(declaration)
+                    }
+                    _ => None,
+                };
+                if let Some(symbol) = declaration
+                    .and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
+                    && let Some(SymbolDef::Item { item }) =
+                        self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
                 {
-                    dependencies.insert(unit);
-                }
-            }
-            return dependencies.into_iter().collect();
-        }
-        let mut agents = std::collections::BTreeSet::new();
-        if let Some(agent) = self
-            .types
-            .facts
-            .agent_inferences
-            .get(&expr)
-            .map(|fact| (fact.agent, fact.owner))
-            .or_else(|| self.tool_invocation_agent(expr).ok().flatten())
-        {
-            agents.insert(agent);
-        }
-        for (_, context) in self.call_generic_bindings(expr).types {
-            if let Some(etas_types::Type::AgentContext(etas_types::AgentContextRef::Source(method))) =
-                self.types.store.get(context)
-                && let Some(method) = self.types.facts.agent_methods.get(method)
-            {
-                agents.insert((method.agent, method.body));
-            }
-        }
-        let mut dependencies = std::collections::BTreeSet::new();
-        for (agent, method) in agents {
-            if let Some(tools) = self.agent_model_tools(agent, method) {
-                for tool in tools {
-                    if let super::inference::ModelToolSource::Item(item) = tool {
-                        dependencies.insert(EffectUnit::Item(item));
+                    let unit =
+                        if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Agent(_))) {
+                            match self.agent_default_call_target(*item) {
+                                CallTarget::Direct(unit) => Some(unit),
+                                _ => None,
+                            }
+                        } else {
+                            Some(EffectUnit::Item(*item))
+                        };
+                    if let Some(unit) = unit
+                        && self.analysis_units.contains(&unit)
+                        && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
+                    {
+                        return vec![unit];
                     }
                 }
             }
-        }
-        dependencies.into_iter().collect()
+            if matches!(self.hir.exprs.get(expr), Some(HirExpr::StageCompose { .. }))
+                && let Some(owner) = context.unit.owner()
+                && let Some(unit) = self.anonymous_flow_unit_for_expr(owner, expr)
+                && unit != context.unit
+            {
+                return vec![unit];
+            }
+            if let Some(HirExpr::Path(path)) = self.hir.exprs.get(expr) {
+                let symbol = match &path.resolution {
+                    ResolveResult::Resolved(symbol) => Some(*symbol),
+                    ResolveResult::PartiallyResolved(partial) => partial.resolved_prefix,
+                    _ => None,
+                };
+                if let Some(symbol) =
+                    symbol.and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
+                {
+                    match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
+                        Some(SymbolDef::TopLevelLet {
+                            item,
+                            classification,
+                            ..
+                        }) if !matches!(
+                            classification,
+                            etas_hir::TopLevelLetClassification::ResourceHandle(_)
+                        ) =>
+                        {
+                            return vec![EffectUnit::Item(*item)];
+                        }
+                        Some(SymbolDef::Item { item }) => {
+                            // References depend on the callable's solved behavior,
+                            // but do not invoke it or add its actions to this body.
+                            let target = match self.hir.items.get(*item) {
+                                Some(etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_)) => {
+                                    Some(EffectUnit::Item(*item))
+                                }
+                                Some(etas_hir::HirItem::Agent(_)) => {
+                                    match self.agent_default_call_target(*item) {
+                                        CallTarget::Direct(unit) => Some(unit),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(unit) = target
+                                && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
+                            {
+                                return vec![unit];
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let captured_invocation = matches!(context.unit, EffectUnit::AnonymousFlow { value, .. } if value == expr)
+                || matches!(self.hir.exprs.get(expr), Some(HirExpr::Pipeline { .. }));
+            if captured_invocation && let Some(captures) = self.captured_values.get(&context.unit) {
+                let mut dependencies = std::collections::BTreeSet::new();
+                let sources = match self.hir.exprs.get(expr) {
+                    Some(HirExpr::Pipeline { stages, .. }) => stages
+                        .iter()
+                        .filter_map(|stage| captures.value_sources(stage.expr))
+                        .flatten()
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    _ => captures.values.values().flatten().copied().collect(),
+                };
+                for source in sources {
+                    if let Some(unit) = source.captured_call_target()
+                        && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
+                    {
+                        dependencies.insert(unit);
+                    }
+                }
+                return dependencies.into_iter().collect();
+            }
+            let mut agents = std::collections::BTreeSet::new();
+            if let Some(agent) = self
+                .types
+                .facts
+                .agent_inferences
+                .get(&expr)
+                .map(|fact| (fact.agent, fact.owner))
+                .or_else(|| self.tool_invocation_agent(expr).ok().flatten())
+            {
+                agents.insert(agent);
+            }
+            for (_, context) in self.call_generic_bindings(expr).types {
+                if let Some(etas_types::Type::AgentContext(etas_types::AgentContextRef::Source(
+                    method,
+                ))) = self.types.store.get(context)
+                    && let Some(method) = self.types.facts.agent_methods.get(method)
+                {
+                    agents.insert((method.agent, method.body));
+                }
+            }
+            let mut dependencies = std::collections::BTreeSet::new();
+            for (agent, method) in agents {
+                if let Some(tools) = self.agent_model_tools(agent, method) {
+                    for tool in tools {
+                        if let super::inference::ModelToolSource::Item(item) = tool {
+                            dependencies.insert(EffectUnit::Item(item));
+                            if let Some(etas_hir::HirItem::Tool(tool)) = self.hir.items.get(item) {
+                                for parameter in &tool.params {
+                                    if self.hir.parameter_injections.contains(parameter) {
+                                        dependencies.insert(EffectUnit::ParameterDefault {
+                                            owner: item,
+                                            parameter: *parameter,
+                                            expr: self.hir.parameter_defaults[parameter],
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            dependencies.into_iter().collect()
+        })();
+        dependencies.extend(self.omitted_argument_units(expr));
+        dependencies
     }
 
     fn direct_call(

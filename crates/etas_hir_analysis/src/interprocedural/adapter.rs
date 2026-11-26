@@ -438,6 +438,10 @@ where
         )
     }
 
+    fn bind_call_arguments(&mut self, call: HirExprId, state: Self::Domain) -> Self::Domain {
+        self.semantics.bind_call_arguments(call, state)
+    }
+
     fn direct_call(
         &mut self,
         call: HirExprId,

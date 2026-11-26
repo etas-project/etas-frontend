@@ -12,7 +12,7 @@ mod checked_reachability;
 pub(crate) use callable_graph::{
     lower_callable_graph, lower_callable_graph_in_scope, lower_callable_objects,
     lower_callable_objects_in_scope, lower_callable_request_target,
-    lower_callable_request_target_in_scope, lower_default_behavior,
+    lower_callable_request_target_in_scope, lower_default_behavior, lower_parameter_binding,
 };
 mod context;
 mod dependency_namespaces;

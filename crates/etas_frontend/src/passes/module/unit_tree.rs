@@ -126,18 +126,18 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                         .item;
                     let has_body = match ast {
                         etas_syntax::ast::Item::Flow(flow) => {
-                            !matches!(flow.body, etas_syntax::ast::FlowBody::Decl { .. }) || flow.params.iter().any(|param| param.default.is_some())
+                            !matches!(flow.body, etas_syntax::ast::FlowBody::Decl { .. }) || flow.params.iter().any(|param| param.default.is_some() || !param.annotations.is_empty())
                         }
                         etas_syntax::ast::Item::Agent(agent) => {
-                            matches!(agent.body, etas_syntax::ast::AgentBody::Source(_)) || agent.params.iter().any(|param| param.default.is_some())
+                            matches!(agent.body, etas_syntax::ast::AgentBody::Source(_)) || agent.params.iter().any(|param| param.default.is_some() || !param.annotations.is_empty())
                         }
                         etas_syntax::ast::Item::Tool(tool) => {
-                            matches!(tool.body, etas_syntax::ast::ToolBody::Source(_)) || tool.params.iter().any(|param| param.default.is_some())
+                            matches!(tool.body, etas_syntax::ast::ToolBody::Source(_)) || tool.params.iter().any(|param| param.default.is_some() || !param.annotations.is_empty())
                         }
-                        etas_syntax::ast::Item::Effect(effect) => effect.body.actions().iter().any(|action| action.params.iter().any(|param| param.default.is_some())),
-                        etas_syntax::ast::Item::Spec(spec) => spec.items.iter().any(|member| matches!(member, etas_syntax::ast::SpecItem::FlowSignature(signature) if signature.params.iter().any(|param| param.default.is_some()))),
+                        etas_syntax::ast::Item::Effect(effect) => effect.body.actions().iter().any(|action| action.params.iter().any(|param| param.default.is_some() || !param.annotations.is_empty())),
+                        etas_syntax::ast::Item::Spec(spec) => spec.items.iter().any(|member| matches!(member, etas_syntax::ast::SpecItem::FlowSignature(signature) if signature.params.iter().any(|param| param.default.is_some() || !param.annotations.is_empty()))),
                         etas_syntax::ast::Item::Impl(decl) => decl.items.iter().any(|member| matches!(member,
-                            etas_syntax::ast::ImplItem::Action(action) if action.params.iter().any(|param| param.default.is_some()))),
+                            etas_syntax::ast::ImplItem::Action(action) if action.params.iter().any(|param| param.default.is_some() || !param.annotations.is_empty()))),
                         _ => false,
                     };
                     let mut bodies = Vec::new();
@@ -173,10 +173,9 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                                     if !matches!(
                                         flow.body,
                                         etas_syntax::ast::FlowBody::Decl { .. }
-                                    ) || flow
-                                        .params
-                                        .iter()
-                                        .any(|param| param.default.is_some()) =>
+                                    ) || flow.params.iter().any(|param| {
+                                        param.default.is_some() || !param.annotations.is_empty()
+                                    }) =>
                                 {
                                     flow.span
                                 }

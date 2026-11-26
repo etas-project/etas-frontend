@@ -84,6 +84,11 @@ impl EffectSemantics<'_> {
                     return control;
                 };
                 let mut body_state = parts.body.into_joined_domain();
+                if let Err(error) =
+                    self.bind_injected_callback_results(expr, handler, &mut body_state)
+                {
+                    body_state = self.incomplete_at(span, error.to_string(), body_state);
+                }
                 if let Some(HirExpr::Handle { body, .. }) = self.hir.exprs.get(expr) {
                     self.inputs
                         .handled_body_requests
