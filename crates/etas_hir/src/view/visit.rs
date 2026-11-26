@@ -59,6 +59,22 @@ pub fn walk_block<'view, 'hir, V>(
     walk_from(view, WalkFrame::EnterBlock(block), visitor);
 }
 
+/// Walk a block and all separately indexed semantic bodies it owns.
+pub fn walk_block_tree<'view, 'hir, V>(
+    view: &'view HirTreeView<'hir>,
+    block: HirBlockId,
+    visitor: &mut V,
+) where
+    V: HirVisitor<'view, 'hir>,
+{
+    walk_with_mode(
+        view,
+        WalkFrame::EnterBlock(block),
+        visitor,
+        BodyTraversal::Owned,
+    );
+}
+
 pub fn walk_expr<'view, 'hir, V>(view: &'view HirTreeView<'hir>, expr: HirExprId, visitor: &mut V)
 where
     V: HirVisitor<'view, 'hir>,

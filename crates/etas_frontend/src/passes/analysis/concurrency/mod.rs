@@ -74,7 +74,9 @@ pub struct RuntimeResourceSelector {
 )]
 pub struct ResourceGuardCall {
     pub callable: HirItemId,
-    pub arguments: Vec<HirExprId>,
+    /// None denotes a value unavailable before execution. Unknown keys use a
+    /// Store-wide guard; an unknown Store still requires the serial fallback.
+    pub arguments: Vec<Option<HirExprId>>,
 }
 
 #[derive(
