@@ -1588,9 +1588,9 @@ impl DefinitionIdentityIndex {
         if let Some(existing) = self.effect_tags.get(&tag)
             && existing != &identity
         {
-            return Err(ProjectionError::Invalid(
-                "checked effect tag has conflicting package identities".into(),
-            ));
+            return Err(ProjectionError::Invalid(format!(
+                "checked effect tag {tag:?} has conflicting package identities: existing={existing:?}, incoming={identity:?}"
+            )));
         }
         self.effect_tags.insert(tag, identity);
         Ok(())
@@ -1642,7 +1642,7 @@ impl DefinitionIdentityIndex {
             && previous != &key
         {
             return Err(ProjectionError::Invalid(format!(
-                "conflicting definition identities for {}",
+                "conflicting definition identities for {}: existing={previous:?}, incoming={key:?}",
                 path.join(".")
             )));
         }

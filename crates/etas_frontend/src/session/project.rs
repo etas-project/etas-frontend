@@ -200,7 +200,13 @@ where
             standard_library: self.standard_library.clone(),
             memory_probe,
         });
-        if let PassControl::Failed(failure) = &pipeline_run.control {
+        if let PassControl::Failed(failure) = &pipeline_run.control
+            && !pipeline_run
+                .output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+        {
             return Err(FrontendSessionError::Pipeline(failure.message.clone()));
         }
         let output = pipeline_run.output;
@@ -1313,5 +1319,38 @@ mod tests {
         );
         assert_eq!(state.pending_changed_sources, vec![source]);
         assert!(!state.pending_project_wide_change);
+    }
+
+    #[test]
+    fn pipeline_failure_preserves_preceding_source_diagnostics() {
+        let mut state = FrontendProjectState::new(
+            ProjectInput::single_source(SourceInput::anonymous("flow main() -> unit { return; }")),
+            etas_cache::MemoryArtifactStore::new(),
+            std::sync::Arc::new(etas_std::standard_registry()),
+            None,
+        );
+        let diagnostic = etas_core::Diagnostic::type_check(
+            etas_core::TypeDiagnosticCode::TypeMismatch,
+            etas_core::Span::empty(SourceId(0), etas_core::TextSize::ZERO),
+            "source declaration has the wrong type",
+        );
+        let response = state
+            .check_with_pipeline(Default::default(), None, |request| {
+                let mut output = crate::ProjectContext::new(request.input).into_project_output();
+                output.diagnostics.push(diagnostic.clone());
+                FrontendPipelineRun {
+                    output,
+                    reused_artifacts: Vec::new(),
+                    control: PassControl::Failed(PassFailure::new("definition projection failed")),
+                    records: Vec::new(),
+                    memory_samples: Vec::new(),
+                    candidate_contract: None,
+                    candidate_emission: None,
+                    candidate_descriptors: None,
+                }
+            })
+            .expect("preceding source diagnostics must remain available");
+        assert_eq!(response.diagnostics.diagnostics, vec![diagnostic]);
+        assert!(response.output.checked.is_none());
     }
 }

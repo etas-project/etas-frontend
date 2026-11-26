@@ -919,9 +919,12 @@ impl EffectRegistry {
                     continue;
                 }
             }
-            if let Some(existing) = self
-                .tag_by_name(name)
-                .filter(|existing| self.can_source_effect_bind_standard_tag(name, *existing))
+            // Source standard-library contracts bind their execution identities
+            // above. An application declaration can independently use the same name.
+            if !hir.source_standard_types
+                && let Some(existing) = self
+                    .tag_by_name(name)
+                    .filter(|existing| self.can_source_effect_bind_standard_tag(name, *existing))
             {
                 self.symbol_tags.insert(effect.symbol, existing);
                 self.register_effect_names(hir, effect, existing);
@@ -1441,6 +1444,34 @@ fn symbol_name(hir: &HirProgram, symbol: SymbolId) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_application_approval_has_an_independent_effect_identity() {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+            "module nomo.application.edit.effects; public effect Approval { action request() -> unit; }",
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let mut hir = etas_hir::lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        hir.source_standard_types = true;
+        let registry = EffectRegistry::from_hir_and_types(&hir, &types).unwrap();
+        let application = registry
+            .tag_by_name("nomo.application.edit.effects.Approval")
+            .unwrap();
+        assert_ne!(application, APPROVAL_TAG);
+        assert_eq!(
+            registry.tag_by_name("std.effects.Approval"),
+            Some(APPROVAL_TAG)
+        );
+        assert_eq!(
+            registry
+                .action_by_name("nomo.application.edit.effects.Approval.request")
+                .unwrap()
+                .tag,
+            application
+        );
+    }
 
     #[test]
     fn dependency_action_metadata_registers_canonical_and_import_visible_names() {
