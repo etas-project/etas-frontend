@@ -42,7 +42,7 @@ flow main() -> Paper<i32> ![] {
 
 #[test]
 fn named_dependency_providers_keep_names_separate_from_type_fallbacks() {
-    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+    check_injection(
         r#"module std.effects;
 public effect Inject<T> { action get(name: string) -> T; }
 type Config = { @inject title: string, @inject author: string };
@@ -56,7 +56,30 @@ flow main() -> string ![] {
     let revised = config { title = "Updated" };
     return revised.title + config.author;
 }"#,
-    ));
+    );
+}
+
+#[test]
+fn injected_constructor_result_retains_the_provided_callback() {
+    check_injection(
+        r#"module std.effects;
+public effect Inject<T> { action get(name: string) -> T; }
+spec Service { flow read(self) -> i32 ![]; }
+type Reader = { run: () -> i32 ![] };
+impl Reader ~ Service { flow read(self) -> i32 ![] { return (self.run)(); } }
+type App<S ~ Service> = { @inject service: S };
+flow make<S ~ Service>() -> App<S> { return App<S> {}; }
+flow execute(a: App<Reader>) -> i32 ![] { return a.service.read(); }
+flow main() -> i32 ![] {
+  let a = make<Reader>() with { service: Reader => Reader { run = () => 42 }; };
+  return execute(a);
+}
+"#,
+    );
+}
+
+fn check_injection(source: &str) {
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
     input.options.entry_policy = EntryPolicy::Optional;
     for (index, source) in [
         "module std.runtime.budget; public type Money = { private amount: f64, private currency: string };",

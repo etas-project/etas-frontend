@@ -436,16 +436,18 @@ impl EffectSemantics<'_> {
             TraceArgumentBinding::Expression(expr) => {
                 self.latent_summary_for_expr(state, *expr, label)
             }
-            TraceArgumentBinding::Origins(sources) => {
-                self.latent_summary_for_origins(sources.iter().copied(), span, label)
-            }
-            TraceArgumentBinding::ProjectedExpression { .. }
+            TraceArgumentBinding::Origins(_)
+            | TraceArgumentBinding::ProjectedExpression { .. }
             | TraceArgumentBinding::ProjectedOrigins { .. }
-            | TraceArgumentBinding::InputData { .. } => self.latent_summary_for_origins(
-                self.trace_argument_origins(binding, state)?,
-                span,
-                label,
-            ),
+            | TraceArgumentBinding::InputData { .. } => {
+                let sources = self.trace_argument_origins(binding, state)?;
+                // A checked projection can select no value (e.g. None in a
+                // codec slot). Only the other alternatives can invoke a callback.
+                if sources.is_empty() {
+                    return Ok(EffectSummary::local());
+                }
+                self.latent_summary_for_origins(sources, span, label)
+            }
         }
     }
 

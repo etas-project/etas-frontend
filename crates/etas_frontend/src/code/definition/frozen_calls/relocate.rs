@@ -1074,6 +1074,7 @@ impl<'a> Relocation<'a> {
                         let sources = match sources {
                             ProjectedReturnSources::Known(sources) => ProjectedReturnSources::Known(sources.iter().map(|source| self.returned_source(source, scope)).collect::<Result<_, ProjectionError>>()?),
                             ProjectedReturnSources::Unavailable => ProjectedReturnSources::Unavailable,
+                            ProjectedReturnSources::InjectedField(name) => ProjectedReturnSources::InjectedField(name.clone()),
                         };
                         Ok((path.clone(), sources))
                     }).collect::<Result<_, ProjectionError>>()?,

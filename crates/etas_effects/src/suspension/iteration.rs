@@ -145,7 +145,10 @@ pub(super) fn successors(
             node.local.join(tails.local);
             node.calls.extend(tails.calls);
         }
-        Some(crate::ProjectedReturnSources::Unavailable) => {
+        Some(
+            crate::ProjectedReturnSources::Unavailable
+            | crate::ProjectedReturnSources::InjectedField(_),
+        ) => {
             node.local.join(SuspensionSummary::UNKNOWN);
         }
         None => {

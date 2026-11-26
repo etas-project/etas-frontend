@@ -414,6 +414,8 @@ type ValueProjectionSources = std::collections::BTreeMap<
 pub enum ProjectedReturnSources {
     Known(std::collections::BTreeSet<CallableReturnSource>),
     Unavailable,
+    /// This position is supplied by a named Inject.get at construction.
+    InjectedField(String),
 }
 
 impl CallableExitSummary {
@@ -637,6 +639,14 @@ fn join_projection_sources(
                         let before = current.len();
                         current.extend(found.iter().cloned());
                         changed |= current.len() != before;
+                    }
+                    (
+                        ProjectedReturnSources::InjectedField(a),
+                        ProjectedReturnSources::InjectedField(b),
+                    ) if a == b => {}
+                    (current, _) => {
+                        *current = ProjectedReturnSources::Unavailable;
+                        changed = true;
                     }
                 }
             }

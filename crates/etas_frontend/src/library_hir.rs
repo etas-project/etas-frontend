@@ -27,7 +27,7 @@ pub mod objects;
 pub use modules::LibrarySlicePlan;
 mod restore;
 
-const SCHEMA: u32 = 96;
+const SCHEMA: u32 = 97;
 const EFFECT_ANALYSIS_SCHEMA: u32 = 1;
 const PREPARED_EFFECT_MAGIC: &[u8; 8] = b"ETASEFF3";
 

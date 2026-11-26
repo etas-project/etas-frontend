@@ -303,6 +303,111 @@ impl EffectSemantics<'_> {
         Ok(())
     }
 
+    pub(in crate::infer::semantics) fn named_provider_sources(
+        &self,
+        application: HirExprId,
+        name: &str,
+        ty: etas_types::TypeId,
+        suffix: &[etas_code::descriptor::ValueProjectionStep],
+        state: &EffectState,
+    ) -> Option<BTreeSet<CallableValueOrigin>> {
+        let request = crate::Effect::AppliedAction(crate::ActionInstanceRef {
+            action: self.registry.action_by_name("std.effects.Inject.get")?,
+            args: vec![etas_types::EffectArgRef::Type(ty)],
+        });
+        let coverage = EffectCoverage {
+            registry: self.registry,
+            types: &self.types.store,
+        };
+        let (_, handlers) = super::super::argument_values::enclosing_handlers(
+            self.hir,
+            application,
+            self.query_control,
+        )
+        .ok()?;
+        for handler in handlers? {
+            let rows =
+                self.checked_handler_rows(handler, self.hir.exprs[handler].span(&self.hir.blocks))?;
+            if rows.handled.open.is_none()
+                && !rows
+                    .handled
+                    .effects
+                    .iter()
+                    .any(|effect| coverage.covers(effect, &request))
+            {
+                continue;
+            }
+            let (literal, _) = self.immutable_handler_value(handler).ok()??;
+            if self.handler_captures_mutable_binding(literal).ok()? {
+                return None;
+            }
+            let owner = self.hir.index().expr_item.get(&literal).copied();
+            for arm in self.checked_handler_arms(literal, owner).ok()?? {
+                if !coverage.covers(arm.action, &request) {
+                    continue;
+                }
+                let EffectUnit::HandlerArm { arm: id, .. } = arm.fact.unit else {
+                    return None;
+                };
+                let data = &self.hir.handler_arms[id];
+                let [pat] = data.patterns.as_slice() else {
+                    return None;
+                };
+                // HIR orders exact provider names before the type fallback.
+                match &self.hir.pats[*pat] {
+                    etas_hir::HirPat::Literal(etas_hir::HirLiteral::String { value, .. })
+                        if value != name =>
+                    {
+                        continue;
+                    }
+                    etas_hir::HirPat::Literal(etas_hir::HirLiteral::String { .. })
+                    | etas_hir::HirPat::Wildcard { .. } => {}
+                    _ => return None,
+                }
+                if !data.provider {
+                    return None;
+                }
+                let exits = self.unit_summary(&arm.fact.unit)?.exits.as_ref()?;
+                let bindings = TraceArgumentBindings::new();
+                if suffix.is_empty() {
+                    let returned = exits.handler_resume_sources()?;
+                    return self
+                        .returned_callable_bindings(&returned, &bindings, state, application, None)
+                        .ok()
+                        .map(|v| v.into_iter().collect());
+                }
+                let selected = super::super::return_projection::returned_positions(
+                    exits
+                        .value_projections
+                        .iter()
+                        .map(|(path, sources)| (path.as_slice(), sources)),
+                    suffix,
+                );
+                if selected.is_empty() {
+                    return None;
+                }
+                return selected.into_iter().try_fold(
+                    BTreeSet::new(),
+                    |mut found, (sources, remaining)| {
+                        let crate::ProjectedReturnSources::Known(sources) = sources else {
+                            return None;
+                        };
+                        found.extend(self.projected_return_bindings(
+                            sources,
+                            &remaining,
+                            &bindings,
+                            state,
+                            application,
+                            None,
+                        )?);
+                        Some(found)
+                    },
+                );
+            }
+        }
+        None
+    }
+
     fn resume_selectors_need_bindings(
         &self,
         effect: &crate::Effect,
@@ -419,6 +524,24 @@ impl EffectSemantics<'_> {
                 &|action| stopped.iter().any(|stop| coverage.covers(stop, action)),
                 self.query_control,
             )?;
+        if body_normal
+            && arms.as_ref().is_some_and(|arms| {
+                arms.iter()
+                    .all(|arm| arm.fact.completion.finishes == crate::FinishSummary::None)
+            })
+        {
+            let positions = state
+                .local_latent_values
+                .value_projections
+                .range((*body, Vec::new())..)
+                .take_while(|((id, _), _)| id == body)
+                .map(|((_, path), sources)| ((expr, path.clone()), sources.clone()))
+                .collect::<Vec<_>>();
+            state
+                .local_latent_values
+                .value_projections
+                .extend(positions);
+        }
         if body_normal {
             match self.latent_sources_for_expr(state, *body) {
                 Some(found) => sources.extend(found),

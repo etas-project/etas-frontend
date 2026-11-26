@@ -12,6 +12,13 @@ mod completion;
 
 impl EffectSemantics<'_> {
     pub(crate) fn record_resume_value(&self, value: Option<HirExprId>, state: &mut EffectState) {
+        if let (Some(value), Some(EffectUnit::HandlerArm { arm, .. })) = (value, state.unit)
+            && self.hir.handler_arms[arm].provider
+        {
+            let mut projected = CallableExitSummary::default();
+            self.record_value_return(value, state, &mut projected);
+            state.exits.join_assign(&projected);
+        }
         let outcome = match value {
             Some(value) => self
                 .checked_control_value(value, state)

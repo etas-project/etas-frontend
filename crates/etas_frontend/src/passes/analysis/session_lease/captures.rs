@@ -257,7 +257,8 @@ pub(crate) fn returned_captures(
                     .values()
                     .filter_map(|value| match value {
                         ProjectedReturnSources::Known(sources) => Some(sources),
-                        ProjectedReturnSources::Unavailable => None,
+                        ProjectedReturnSources::Unavailable
+                        | ProjectedReturnSources::InjectedField(_) => None,
                     }),
             )
             .flatten();

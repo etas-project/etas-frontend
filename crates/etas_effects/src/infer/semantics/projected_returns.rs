@@ -202,15 +202,48 @@ impl EffectSemantics<'_> {
                 .and_then(|sources| {
                     self.returned_callable_sources(state, &sources.into_iter().collect::<Vec<_>>())
                 });
-            projected.value_projections.insert(
-                path,
-                found.map_or(
-                    ProjectedReturnSources::Unavailable,
-                    ProjectedReturnSources::Known,
-                ),
-            );
+            let sources = found
+                .map(ProjectedReturnSources::Known)
+                .or_else(|| {
+                    self.injected_return_field(expr, &path)
+                        .map(ProjectedReturnSources::InjectedField)
+                })
+                .unwrap_or(ProjectedReturnSources::Unavailable);
+            projected.value_projections.insert(path, sources);
         }
         exits.join_assign(&projected);
+    }
+
+    fn injected_return_field(&self, expr: HirExprId, path: &[Step]) -> Option<String> {
+        let HirExpr::Record(record) = &self.hir.exprs[expr] else {
+            return None;
+        };
+        let [Step::Field(field), ..] = path else {
+            return None;
+        };
+        let injections = record.injections.as_ref()?;
+        let value = record.fields.iter().find_map(|init| match init {
+            HirFieldInit::Named { name, value, .. } if name == field => Some(value),
+            _ => None,
+        })?;
+        if !injections.values.contains(value) {
+            return None;
+        }
+        let request = self.inputs.performed_actions.get(value)?;
+        let crate::Effect::AppliedAction(instance) = &request.invocation else {
+            return None;
+        };
+        if instance.action != self.registry.action_by_name("std.effects.Inject.get")? {
+            return None;
+        }
+        let [arg] = request.args.as_slice() else {
+            return None;
+        };
+        let HirExpr::Literal(etas_hir::HirLiteral::String { value, .. }) = &self.hir.exprs[*arg]
+        else {
+            return None;
+        };
+        Some(value.clone())
     }
 
     pub(super) fn record_symbol_projections(

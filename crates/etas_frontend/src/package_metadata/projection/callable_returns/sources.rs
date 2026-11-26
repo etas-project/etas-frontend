@@ -17,7 +17,8 @@ impl Builder<'_, '_> {
                         etas_effects::ProjectedReturnSources::Known(sources) => {
                             self.sources(sources, scope, environment)?
                         }
-                        etas_effects::ProjectedReturnSources::Unavailable => None,
+                        etas_effects::ProjectedReturnSources::Unavailable
+                        | etas_effects::ProjectedReturnSources::InjectedField(_) => None,
                     },
                 });
             }

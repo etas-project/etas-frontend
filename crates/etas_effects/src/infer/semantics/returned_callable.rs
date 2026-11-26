@@ -317,6 +317,19 @@ impl EffectSemantics<'_> {
                 selected
                     .into_iter()
                     .try_fold(BTreeSet::new(), |mut all, (sources, suffix)| {
+                        if let crate::ProjectedReturnSources::InjectedField(name) = sources {
+                            let (field, suffix) = path.split_first()?;
+                            let ty = self
+                                .project_value(
+                                    *self.types.facts.expr_types.get(&site.call)?,
+                                    std::slice::from_ref(field),
+                                )
+                                .ok()??;
+                            all.extend(
+                                self.named_provider_sources(site.call, name, ty, suffix, state)?,
+                            );
+                            return Some(all);
+                        }
                         let crate::ProjectedReturnSources::Known(sources) = sources else {
                             return None;
                         };
