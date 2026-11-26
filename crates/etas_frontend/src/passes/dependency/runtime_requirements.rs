@@ -741,6 +741,39 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
         let expr_id = expr.id();
         self.exprs.insert(expr_id);
+        if let Some(types) = self.types {
+            let defaults = types
+                .checked_method_calls
+                .get(&expr_id)
+                .map(|call| call.defaults.as_slice())
+                .or_else(|| {
+                    types
+                        .declared_call_arguments
+                        .get(&expr_id)
+                        .map(|call| call.defaults.as_slice())
+                });
+            let declared = types
+                .checked_method_calls
+                .get(&expr_id)
+                .into_iter()
+                .flat_map(|call| call.signature.parameter_interface.as_deref().unwrap_or(&[]))
+                .filter_map(|parameter| parameter.default.as_ref());
+            for reference in defaults
+                .into_iter()
+                .flatten()
+                .map(|default| &default.source)
+                .chain(declared)
+            {
+                if let etas_types::ParameterDefaultRef::Source { parameter } = *reference
+                    && let Some(SymbolDef::Param { owner, .. }) =
+                        self.hir.symbols.get(parameter).map(|symbol| &symbol.def)
+                {
+                    // Inherited bindings execute in their defining spec, whose
+                    // body facts must accompany the implementation method.
+                    self.pending_items.push(*owner);
+                }
+            }
+        }
         if let Some(agent) = constructor_agent(self.hir, expr_id)
             && let Some(types) = self.types
         {

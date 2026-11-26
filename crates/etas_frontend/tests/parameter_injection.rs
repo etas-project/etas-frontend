@@ -129,17 +129,26 @@ fn injected_method_bindings_use_owner_and_inherited_spec_generics() {
 public effect Supply<T> { action get() -> T; }
 type Box<T> = { n: T };
 impl Box<T> { flow read(self, @inject(Supply<T>.get) value: T) -> T ![] { return value; } }
-spec Value<A> { flow read(self, @inject(Supply<A>.get) value: A) -> A ![]; }
+spec Value<A> { flow read(self, @inject(Supply<Array<A>>.get) value: Array<A>) -> Array<A> ![]; }
 type ValueBox<B> = { n: B };
-impl ValueBox<B> ~ Value<B> { flow read(self, value: B) -> B ![] { return value; } }
-public flow run() -> i32 ![] {
+impl ValueBox<B> ~ Value<B> { flow read(self, value: Array<B>) -> Array<B> ![] { return value; } }
+public flow main() -> i32 ![] {
     let a = Box { n = 0 }.read() with { Supply<i32>.get() => 21; };
-    let b = ValueBox { n = 0 }.read() with { Supply<i32>.get() => 21; };
-    return a + b;
+    let b = ValueBox { n = 0 }.read() with { Supply<Array<i32>>.get() => [21]; };
+    return a;
 }
 "#,
     ));
     input.options.entry_policy = EntryPolicy::Optional;
-    let output = Frontend.check_project(input);
+    let mut session = etas_frontend::FrontendSession::new();
+    let project = session.open_project(input);
+    let output = session
+        .check(
+            project,
+            etas_frontend::CheckRequest::full_project()
+                .with_scope(etas_frontend::CheckScope::EntryReachable),
+        )
+        .unwrap()
+        .output;
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }
