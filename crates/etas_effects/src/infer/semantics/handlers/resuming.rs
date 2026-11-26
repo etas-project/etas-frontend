@@ -148,7 +148,7 @@ impl EffectSemantics<'_> {
                 return Ok(false);
             };
             let (Some(summary), Some(checked), Some(effect)) = (
-                self.inputs.unit_effects.get(&arm.unit),
+                self.unit_summary(&arm.unit),
                 self.types.facts.handler_actions.get(&id),
                 self.inputs.handler_action_effects.get(&id),
             ) else {
@@ -200,6 +200,7 @@ impl EffectSemantics<'_> {
             if !matches!(self.hir.exprs.get(*call), Some(HirExpr::Perform { .. })) {
                 return Ok(false);
             }
+            self.read_expr_owner(*call);
             let Some(action) = self.inputs.performed_actions.get(call) else {
                 return Ok(false);
             };

@@ -1,5 +1,7 @@
 use super::engine::EffectSemantics;
 use super::shared::*;
+use crate::infer::recursive_trace::TraceFact;
+use etas_hir_analysis::intraprocedural::Control;
 
 impl HirAnalysisSemantics for EffectSemantics<'_> {
     type Domain = EffectState;
@@ -24,38 +26,30 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
-    fn end_loop(&mut self, body: etas_hir::HirBlockId, mut state: Self::Domain) -> Self::Domain {
-        let key = (state.unit, body, state.application);
-        self.loop_traces.finish_summary(key, &mut state.summary);
-        self.loop_traces.finish_exits(key, &mut state.exits);
-        for summary in self
-            .inputs
-            .expr_effects
-            .values_mut()
-            .chain(self.inputs.stmt_effects.values_mut())
-            .chain(self.inputs.inferred_parameter_effects.values_mut())
-        {
-            self.loop_traces.finish_summary(key, summary);
-        }
-        for fact in self.inputs.latent_effects.values_mut() {
-            self.loop_traces.finish_summary(key, &mut fact.summary);
-        }
+    fn end_loop_control(
+        &mut self,
+        _body: etas_hir::HirBlockId,
+        mut control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        let equation = self.loop_traces.end();
+        control.for_each_state_mut(|state| {
+            equation.finish_summary(&mut state.summary);
+            equation.finish_exits(&mut state.exits);
+        });
+        equation.finish_facts(&mut self.inputs);
         self.callable_summaries.get_mut().invalidate();
-        state
+        control
     }
 
     fn join_loop_state(
         &mut self,
-        body: etas_hir::HirBlockId,
+        _body: etas_hir::HirBlockId,
         state: &mut Self::Domain,
         back_edge: &Self::Domain,
     ) -> bool {
         let previous = state.clone();
         let header = if back_edge.unit.is_some() {
-            Some(self.loop_traces.join(
-                (previous.unit, body, previous.application),
-                &back_edge.summary.action_trace,
-            ))
+            Some(self.loop_traces.join(&back_edge.summary.action_trace))
         } else {
             None
         };
@@ -184,18 +178,21 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         expr: HirExprId,
         mut control: etas_hir_analysis::intraprocedural::Control<Self::Domain>,
     ) -> etas_hir_analysis::intraprocedural::Control<Self::Domain> {
-        control = control.with_normal_processed(|mut state| {
-            self.record_autonomous_start(expr, &mut state);
-            etas_hir_analysis::intraprocedural::Control::normal(state)
-        });
+        if let Some(state) = control.normal_state_mut() {
+            self.record_autonomous_start(expr, state);
+        }
         control.for_each_state_mut(|state| self.update_expr_state(expr, state));
         let completion = control
             .normal_state()
             .and_then(|state| state.unit)
             .and_then(|unit| self.call_completion_exits.remove(&(unit, expr)));
         if let Some(exits) = completion {
+            if self.pure_exprs.remove(&expr) {
+                self.inputs.expr_effects.entry(expr).or_default();
+            }
             if let Some(fact) = self.inputs.expr_effects.get_mut(&expr) {
                 fact.exits = Some(exits.clone());
+                self.record_trace_fact(TraceFact::Expr(expr));
             }
             if exits.has_only_terminal_exits() {
                 control.with_normal_processed(|mut state| {
@@ -372,6 +369,13 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             }
             _ => {}
         }
+        if state.summary == EffectSummary::default()
+            && !self.inputs.stmt_effects.contains_key(&stmt)
+        {
+            self.pure_stmts.insert(stmt);
+            return state;
+        }
+        self.record_trace_fact(TraceFact::Stmt(stmt));
         self.inputs.stmt_effects.insert(stmt, state.summary.clone());
         state
     }
@@ -840,8 +844,17 @@ impl EffectSemantics<'_> {
                 );
             }
         }
-        let mut fact = state.summary.clone();
-        fact.exits = None;
+        // Keep an already published slot: a trace equation may be watching it.
+        if state.summary == EffectSummary::default()
+            && !self.inputs.expr_effects.contains_key(&expr)
+        {
+            self.pure_exprs.insert(expr);
+            return;
+        }
+        let exits = state.summary.exits.take();
+        let fact = state.summary.clone();
+        state.summary.exits = exits;
+        self.record_trace_fact(TraceFact::Expr(expr));
         self.inputs.expr_effects.insert(expr, fact);
     }
 

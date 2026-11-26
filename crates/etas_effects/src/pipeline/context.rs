@@ -26,7 +26,7 @@ pub(super) struct EffectPipelineContext<'a> {
     pub(super) frozen_calls: Option<std::sync::Arc<crate::FrozenCallableEnvironment>>,
     pub(super) units: Option<Vec<EffectUnit>>,
     pub(super) memory_provenance:
-        Option<std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>>,
+        Option<std::sync::Arc<crate::infer::memory_provenance::MemoryProvenanceQuery<'a>>>,
     pub(super) registry_diagnostics: Vec<Diagnostic>,
     pub(super) artifacts: Option<EffectPipelineArtifacts>,
     pub(super) analysis: Option<EffectAnalysisOutput>,

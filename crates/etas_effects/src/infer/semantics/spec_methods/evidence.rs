@@ -1,3 +1,4 @@
+use crate::infer::analysis::dependencies::InputFact;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_hir::{HirExprId, HirItemId};
@@ -46,6 +47,7 @@ impl EffectSemantics<'_> {
         formal_parameters: &mut std::collections::BTreeSet<ParameterCallTarget>,
         resolve_captures: bool,
     ) -> Result<(), EffectSpecializationError> {
+        self.dependencies.read(InputFact::MethodEvidence);
         let mut calls = BTreeMap::new();
         summary.action_trace.collect_parameter_calls(&mut calls);
         if let Some(exits) = &summary.exits {

@@ -100,7 +100,7 @@ where
         if let Some(errored) = body_control.error_state() {
             result.join_error(errored.clone());
         }
-        Ok(self.map_control_states(result, |semantics, state| semantics.end_loop(body, state)))
+        Ok(self.semantics.end_loop_control(body, result))
     }
 
     pub(crate) fn while_loop_control(
@@ -152,7 +152,7 @@ where
                 result.join_error(errored.clone());
             }
         }
-        Ok(self.map_control_states(result, |semantics, state| semantics.end_loop(body, state)))
+        Ok(self.semantics.end_loop_control(body, result))
     }
 
     pub(crate) fn direct_call_control(

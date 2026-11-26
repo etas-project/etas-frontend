@@ -1,3 +1,4 @@
+use crate::infer::analysis::dependencies::InputFact;
 use std::collections::{BTreeMap, BTreeSet};
 
 use etas_code::{CodeFingerprint, descriptor::ValueProjectionStep as Step};
@@ -64,6 +65,7 @@ impl EffectSemantics<'_> {
     ) -> Option<(crate::ParameterCallTarget, Vec<Step>)> {
         match target {
             crate::ParameterCallTarget::ExternalProjection(id) => {
+                self.dependencies.read(InputFact::ExternalProjection(id));
                 let projections = self.external_parameter_projections.borrow();
                 let projection = projections.get(&id)?;
                 Some((projection.root, projection.path.clone()))
@@ -114,6 +116,7 @@ impl EffectSemantics<'_> {
         }
         let bytes = serde_json::to_vec(&(root, &path)).ok()?;
         let id = CodeFingerprint::of_bytes("etas.effects.external-parameter-projection.v1", &bytes);
+        self.dependencies.read(InputFact::ExternalProjection(id));
         let mut projections = self.external_parameter_projections.borrow_mut();
         if !projections.contains_key(&id) {
             let nodes = projections
@@ -135,6 +138,7 @@ impl EffectSemantics<'_> {
         &self,
         id: CodeFingerprint,
     ) -> Option<NativeParameterProjection> {
+        self.dependencies.read(InputFact::Projection(id));
         self.parameter_projections.borrow().get(&id).cloned()
     }
 
@@ -209,10 +213,11 @@ impl EffectSemantics<'_> {
         let mut identities = self.type_queries.parameter_projection_ids.borrow_mut();
         let paths = identities.entry((owner, parameter)).or_default();
         let id = match paths.get(&path) {
-            Some(id) => return Ok(*id),
+            Some(id) => { self.dependencies.read(InputFact::Projection(*id)); return Ok(*id); },
             None => NativeParameterProjection::path_identity(owner, parameter, &path)
                 .map_err(|_| invalid())?,
         };
+        self.dependencies.read(InputFact::Projection(id));
         if self.parameter_projections.borrow().contains_key(&id) {
             paths.insert(path, id);
             return Ok(id);

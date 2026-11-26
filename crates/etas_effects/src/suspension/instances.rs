@@ -421,7 +421,8 @@ pub(super) fn arguments(
         };
         ty.and_then(|ty| substitute_type(applied, ty))
             .is_none_or(|ty| {
-                context.payload_shapes.contains(ty) || context.payload_shapes.has_parameters(ty)
+                context.payload_shapes.contains(context.types, ty)
+                    || context.payload_shapes.has_parameters(context.types, ty)
             })
     });
     instance

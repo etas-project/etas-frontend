@@ -44,10 +44,7 @@ impl EffectSemantics<'_> {
         else {
             return Ok(summary);
         };
-        let Ok(places) = self
-            .memory_provenance
-            .arguments(self.hir, self.types, *receiver)
-        else {
+        let Ok(places) = self.memory_provenance.arguments(*receiver) else {
             return Ok(summary);
         };
         // A formal parameter is not a portable resource identity. Keep its

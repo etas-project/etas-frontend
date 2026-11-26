@@ -215,8 +215,8 @@ fn parameter(
     if let Some(etas_types::SymbolTypeFact::Param { ty }) =
         context.types.facts.symbol_types.get(&symbol)
         && let Some(ty) = instances::substitute_type(context, *ty)
-        && !context.payload_shapes.contains(ty)
-        && !context.payload_shapes.has_parameters(ty)
+        && !context.payload_shapes.contains(context.types, ty)
+        && !context.payload_shapes.has_parameters(context.types, ty)
     {
         return;
     }

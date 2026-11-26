@@ -1,3 +1,4 @@
+use crate::infer::analysis::dependencies::InputFact;
 use super::{engine::EffectSemantics, shared::*};
 
 mod structural;
@@ -116,7 +117,8 @@ impl EffectSemantics<'_> {
             if let Some(sources) = state.local_latent_values.symbol_sources(symbol) {
                 return Some(sources.iter().copied().collect());
             }
-            let known_global = self.global_values.symbol_sources(symbol).is_some()
+            self.dependencies.read(InputFact::Global(symbol));
+        let known_global = self.global_values.symbol_sources(symbol).is_some()
                 || self
                     .discovered_global_values
                     .symbol_sources(symbol)
@@ -193,6 +195,7 @@ impl EffectSemantics<'_> {
             .descriptor_contract_type(parameter)
             .unwrap_or(parameter);
         let flow = self.checked_payload_callable_contract(contract)?;
+        self.dependencies.read(InputFact::Parameter(symbol));
         if flow.declared_effects().is_none() && !self.parameter_effects.contains_key(&symbol) {
             return None;
         }
@@ -322,15 +325,12 @@ impl EffectSemantics<'_> {
                     | crate::FrozenCallableSummary::Replaced { pinned: summary } => {
                         Some((**summary).clone())
                     }
-                    crate::FrozenCallableSummary::AnalyzePinnedSource => self
-                        .inputs
-                        .unit_effects
-                        .get(&EffectUnit::Item(item))
+                    crate::FrozenCallableSummary::AnalyzePinnedSource => self.unit_summary(&EffectUnit::Item(item))
                         .cloned(),
                     crate::FrozenCallableSummary::Unavailable => None,
                 }
             }
-            LatentSource::Unit(unit) => self.inputs.unit_effects.get(&unit).cloned(),
+            LatentSource::Unit(unit) => self.unit_summary(&unit).cloned(),
             LatentSource::Parameter { owner, symbol } => {
                 let data = self.hir.symbols.get(symbol)?;
                 if !matches!(data.def, SymbolDef::Param { owner: actual, .. } if actual == owner) {
@@ -338,7 +338,8 @@ impl EffectSemantics<'_> {
                 }
                 let flow = self.checked_callable_contract_parameter(symbol)?;
                 let Some(row) = flow.declared_effects() else {
-                    return self.parameter_effects.get(&symbol).cloned();
+                    self.dependencies.read(InputFact::Parameter(symbol));
+        return self.parameter_effects.get(&symbol).cloned();
                 };
                 let mut summary =
                     self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span);

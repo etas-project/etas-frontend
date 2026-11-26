@@ -9,6 +9,41 @@ use etas_hir_analysis::{
 };
 use etas_types::{EffectArgRef, Type, TypeOutput};
 
+/// Analyze aliases on the first request for a resource origin. All solver
+/// rounds in this pipeline use the same checked program and selected units.
+pub(crate) struct MemoryProvenanceQuery<'a> {
+    types: &'a TypeOutput,
+    registry: &'a etas_std::StdRegistry,
+    units: Vec<crate::EffectUnit>,
+    context: etas_hir_analysis::HirAnalysisContext,
+    origins: std::sync::OnceLock<MemoryProvenance>,
+}
+
+impl<'a> MemoryProvenanceQuery<'a> {
+    pub(crate) fn new(
+        types: &'a TypeOutput,
+        registry: &'a etas_std::StdRegistry,
+        units: &[crate::EffectUnit],
+        context: &etas_hir_analysis::HirAnalysisContext,
+    ) -> Self {
+        Self {
+            types,
+            registry,
+            units: units.to_vec(),
+            context: context.clone(),
+            origins: Default::default(),
+        }
+    }
+
+    pub(crate) fn arguments(&self, expr: HirExprId) -> Result<Vec<EffectArgRef>, String> {
+        self.origins
+            .get_or_init(|| {
+                MemoryProvenance::analyze(self.types, self.registry, &self.units, &self.context)
+            })
+            .arguments(self.context.program(), self.types, expr)
+    }
+}
+
 /// Checked resource origins; unknown alias information is never an empty authority set.
 pub(crate) struct MemoryProvenance {
     facts: AliasFacts,

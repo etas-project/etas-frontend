@@ -45,6 +45,18 @@ where
         self.dependents.entry(callee).or_default().insert(caller);
     }
 
+    pub fn has_call(&self, caller: U, callee: U) -> bool {
+        self.dependencies
+            .get(&caller)
+            .is_some_and(|edges| edges.contains(&callee))
+    }
+
+    pub(super) fn clear_dependencies(&mut self, unit: U) {
+        for dependency in std::mem::take(self.dependencies.entry(unit).or_default()) {
+            self.dependents.get_mut(&dependency).unwrap().remove(&unit);
+        }
+    }
+
     pub fn units(&self) -> Vec<U> {
         self.dependencies.keys().copied().collect()
     }

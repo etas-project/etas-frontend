@@ -1051,7 +1051,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             SubstitutionTarget::Materialize(interner) => Ok(interner.intern(specialized)),
             SubstitutionTarget::Existing(store) => {
                 let found = if let Some(lookup) = self.existing_lookup {
-                    lookup.get(store, &specialized)
+                    lookup.resolve_substitution(store, &specialized)
                 } else {
                     store
                         .iter()
@@ -1703,6 +1703,45 @@ mod tests {
             Err(TypeSubstitutionError::UnmaterializedType(Type::Option(
                 integer
             )))
+        );
+    }
+
+    #[test]
+    fn nested_substitutions_are_visible_during_analysis_and_in_the_committed_store() {
+        let mut interner = TypeInterner::new();
+        let t = interner.intern(Type::Named(NamedTypeRef {
+            name: "T".into(),
+            source_parameter: None,
+        }));
+        let unit = interner.primitive(PrimitiveType::Unit);
+        let integer = interner.primitive(PrimitiveType::I32);
+        let pair = interner.intern(Type::Tuple(vec![t, unit]));
+        let template = interner.intern(Type::List(pair));
+        let mut output = crate::TypeOutput {
+            store: std::sync::Arc::new(interner.into_store()),
+            ..Default::default()
+        };
+        let bindings = HashMap::from([("T".into(), integer)]);
+        let result = output
+            .with_specializations(64, |checked| {
+                let lookup = super::super::TypeLookupIndex::for_substitutions(&checked.store);
+                let id =
+                    TypeSubstitutionEngine::existing_indexed(&checked.store, &lookup, &bindings)
+                        .substitute(template)
+                        .unwrap();
+                let Some(Type::List(element)) = checked.store.get(id) else {
+                    panic!("expected list")
+                };
+                assert_eq!(
+                    checked.store.get(*element),
+                    Some(&Type::Tuple(vec![integer, unit]))
+                );
+                id
+            })
+            .unwrap();
+        assert_eq!(
+            TypeSubstitutionEngine::existing(&output.store, &bindings).substitute(template),
+            Ok(result)
         );
     }
 

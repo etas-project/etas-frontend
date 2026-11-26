@@ -132,6 +132,14 @@ pub trait HirAnalysisSemantics {
         state
     }
 
+    fn end_loop_control(
+        &mut self,
+        body: HirBlockId,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        control.map_states(|state| self.end_loop(body, state))
+    }
+
     fn after_stmt(&mut self, _stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
         state
     }

@@ -347,8 +347,12 @@ where
         <S as HirAnalysisSemantics>::begin_loop(self.semantics, body, state)
     }
 
-    fn end_loop(&mut self, body: etas_hir::HirBlockId, state: Self::Domain) -> Self::Domain {
-        <S as HirAnalysisSemantics>::end_loop(self.semantics, body, state)
+    fn end_loop_control(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        self.semantics.end_loop_control(body, control)
     }
 
     fn after_stmt(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {

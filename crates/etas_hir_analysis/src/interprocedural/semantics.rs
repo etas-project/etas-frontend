@@ -20,6 +20,9 @@ pub trait InterproceduralSemantics {
     ) {
     }
 
+    /// Select the unit whose transfer or call discovery is about to read analysis facts.
+    fn select_unit(&mut self, _unit: Self::Unit) {}
+
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain;
 
     fn end_unit(

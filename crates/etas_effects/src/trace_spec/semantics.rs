@@ -231,25 +231,25 @@ impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
         state
     }
 
-    fn end_loop(&mut self, body: etas_hir::HirBlockId, mut state: Self::Domain) -> Self::Domain {
-        state.action_trace = self
-            .loop_traces
-            .finish((state.unit, body, None), &state.action_trace);
-        state
+    fn end_loop_control(
+        &mut self,
+        _body: etas_hir::HirBlockId,
+        mut control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        let equation = self.loop_traces.end();
+        control.for_each_state_mut(|state| equation.finish_trace(&mut state.action_trace));
+        control
     }
 
     fn join_loop_state(
         &mut self,
-        body: etas_hir::HirBlockId,
+        _body: etas_hir::HirBlockId,
         state: &mut Self::Domain,
         back_edge: &Self::Domain,
     ) -> bool {
         let previous = state.clone();
         let header = if back_edge.unit.is_some() {
-            Some(
-                self.loop_traces
-                    .join((previous.unit, body, None), &back_edge.action_trace),
-            )
+            Some(self.loop_traces.join(&back_edge.action_trace))
         } else {
             None
         };
@@ -505,9 +505,8 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
         >,
     ) {
         for unit in units {
-            if let Some(mut summary) = summaries.get(*unit).cloned() {
+            if let Some(summary) = summaries.get_mut(*unit) {
                 summary.action_trace = self.trace_equations.close(&summary.action_trace);
-                summaries.insert(*unit, summary);
             }
         }
     }

@@ -85,9 +85,18 @@ impl LibraryHirImage {
         self.clone().into_execution_slice(definitions)
     }
 
-    pub(crate) fn into_execution_slice(self, definitions: &BTreeSet<HirItemId>) -> Self {
-        let revision =
-            HirRevision::from_shared_program(self.program.clone()).expect("checked library HIR");
+    pub(super) fn declaration_image(&self, revision: &HirRevision) -> Self {
+        let mut common = self.clone();
+        let definitions = BTreeSet::new();
+        let nodes = self.retained_nodes(&definitions, revision);
+        common.retain_program(&definitions, &nodes);
+        common.semantic_dependencies = Arc::default();
+        common.declarations.clear();
+        common.methods.clear();
+        common
+    }
+
+    fn retained_nodes(&self, definitions: &BTreeSet<HirItemId>, revision: &HirRevision) -> Nodes {
         let view = revision.view();
         let mut nodes = Nodes::default();
         for (item, declaration) in self.program.items.iter() {
@@ -118,9 +127,11 @@ impl LibraryHirImage {
         ) {
             walk_expr_tree(&view, expression, &mut nodes);
         }
-        drop(revision);
-        let mut image = self;
-        let program = Arc::make_mut(&mut image.program);
+        nodes
+    }
+
+    fn retain_program(&mut self, definitions: &BTreeSet<HirItemId>, nodes: &Nodes) {
+        let program = Arc::make_mut(&mut self.program);
         for (item, declaration) in program.items.iter_mut() {
             if definitions.contains(&item) {
                 continue;
@@ -207,6 +218,16 @@ impl LibraryHirImage {
             }
         }
         sources.syntax_nodes.retain(|id, _| syntax.contains(id));
+    }
+
+    pub(crate) fn into_execution_slice(self, definitions: &BTreeSet<HirItemId>) -> Self {
+        let revision =
+            HirRevision::from_shared_program(self.program.clone()).expect("checked library HIR");
+        let nodes = self.retained_nodes(definitions, &revision);
+        drop(revision);
+        let mut image = self;
+        image.retain_program(definitions, &nodes);
+        let program = &image.program;
         image
             .body_slots
             .retain(|item, _| definitions.contains(item));

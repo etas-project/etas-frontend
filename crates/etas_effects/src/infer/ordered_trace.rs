@@ -2,44 +2,43 @@
 //! body and completion prefixes share that reference instead of copying the
 //! preceding iterations. Linear equations become Repeat; other equations keep
 //! their scoped recursive structure for the finite spec monitor.
-use std::collections::BTreeMap;
+use std::{cell::OnceCell, collections::HashSet};
 
+use super::recursive_trace::TraceFact;
 use etas_code::CodeFingerprint;
 use etas_hir::HirBlockId;
 
+use crate::facts::EffectMaterializationInputs;
 use crate::{ActionTraceDomain as Trace, CallableExitSummary, EffectSummary, EffectUnit};
 
 type LoopKey = (Option<EffectUnit>, HirBlockId, Option<CodeFingerprint>);
 
 #[derive(Default)]
-pub(crate) struct LoopTraces {
-    loops: BTreeMap<LoopKey, LoopTrace>,
-}
+pub(crate) struct LoopTraces(Vec<LoopTrace>);
 
-struct LoopTrace {
+pub(crate) struct LoopTrace {
     id: CodeFingerprint,
     entry: Trace,
     back: Option<Trace>,
-    solution: std::cell::OnceCell<Trace>,
+    solution: OnceCell<Trace>,
+    facts: HashSet<TraceFact>,
 }
 
 impl LoopTraces {
     pub(crate) fn begin(&mut self, key: LoopKey, entry: &Trace) -> Trace {
         let id = super::recursive_trace::identity(&("loop-header", key));
-        self.loops.insert(
-            key,
-            LoopTrace {
-                id,
-                entry: entry.clone(),
-                back: None,
-                solution: Default::default(),
-            },
-        );
+        self.0.push(LoopTrace {
+            id,
+            entry: entry.clone(),
+            back: None,
+            solution: OnceCell::new(),
+            facts: HashSet::new(),
+        });
         Trace::Recursive { id, body: None }
     }
 
-    pub(crate) fn join(&mut self, key: LoopKey, back: &Trace) -> Trace {
-        let equation = self.loops.get_mut(&key).expect("entered loop equation");
+    pub(crate) fn join(&mut self, back: &Trace) -> Trace {
+        let equation = self.0.last_mut().expect("entered loop equation");
         let changed = match &mut equation.back {
             Some(previous) => previous.choice_assign(back.clone()),
             None => {
@@ -56,56 +55,71 @@ impl LoopTraces {
         }
     }
 
-    pub(crate) fn finish(&self, key: LoopKey, trace: &Trace) -> Trace {
-        let equation = self.loops.get(&key).expect("entered loop equation");
-        let solution = equation.solution.get_or_init(|| {
+    pub(crate) fn facts_mut(&mut self) -> Option<&mut HashSet<TraceFact>> {
+        self.0.last_mut().map(|equation| &mut equation.facts)
+    }
+
+    pub(crate) fn end(&mut self) -> LoopTrace {
+        let equation = self.0.pop().expect("entered loop equation");
+        // Facts written in an inner loop can still refer to an outer header.
+        if let Some(parent) = self.facts_mut() {
+            parent.extend(&equation.facts);
+        }
+        equation
+    }
+}
+
+impl LoopTrace {
+    pub(crate) fn finish_trace(&self, trace: &mut Trace) {
+        if !references(trace, self.id) {
+            return;
+        }
+        let solution = self.solution.get_or_init(|| {
             let reference = Trace::Recursive {
-                id: equation.id,
+                id: self.id,
                 body: None,
             };
-            match &equation.back {
-                None => equation.entry.clone(),
+            match &self.back {
+                None => self.entry.clone(),
                 Some(back) => match after_prefix(back, &reference) {
                     Some(iteration) => {
-                        let mut trace = equation.entry.clone();
+                        let mut trace = self.entry.clone();
                         trace.seq_assign(iteration.repeat());
                         trace.shared()
                     }
                     None => {
-                        let mut body = equation.entry.clone();
+                        let mut body = self.entry.clone();
                         body.choice_assign(back.clone());
                         Trace::Recursive {
-                            id: equation.id,
+                            id: self.id,
                             body: Some(Box::new(body)),
                         }
                     }
                 },
             }
         });
-        substitute(trace, equation.id, solution)
+        *trace = substitute(trace, self.id, solution);
     }
 
-    pub(crate) fn finish_summary(&self, key: LoopKey, summary: &mut EffectSummary) {
-        let id = self.loops[&key].id;
-        if references(&summary.action_trace, id) {
-            summary.action_trace = self.finish(key, &summary.action_trace);
-        }
+    pub(crate) fn finish_summary(&self, summary: &mut EffectSummary) {
+        self.finish_trace(&mut summary.action_trace);
         if let Some(exits) = &mut summary.exits {
-            self.finish_exits(key, exits);
+            self.finish_exits(exits);
         }
     }
 
-    pub(crate) fn finish_exits(&self, key: LoopKey, exits: &mut CallableExitSummary) {
-        let id = self.loops[&key].id;
+    pub(crate) fn finish_exits(&self, exits: &mut CallableExitSummary) {
         for exit in &mut exits.exits {
-            if references(&exit.trace, id) {
-                exit.trace = self.finish(key, &exit.trace);
-            }
+            self.finish_trace(&mut exit.trace);
         }
         for exit in &mut exits.parameter_exits {
-            if references(&exit.prefix, id) {
-                exit.prefix = self.finish(key, &exit.prefix);
-            }
+            self.finish_trace(&mut exit.prefix);
+        }
+    }
+
+    pub(crate) fn finish_facts(&self, inputs: &mut EffectMaterializationInputs) {
+        for fact in &self.facts {
+            self.finish_summary(fact.summary_mut(inputs));
         }
     }
 }

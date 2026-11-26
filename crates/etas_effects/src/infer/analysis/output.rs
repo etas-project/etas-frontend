@@ -1,4 +1,4 @@
-use etas_hir_analysis::interprocedural::InterproceduralAnalysisResult;
+use etas_hir_analysis::interprocedural::SummarySolverResult;
 use etas_utils::ConvergenceStatus;
 
 use crate::EffectPipelineError;
@@ -9,10 +9,10 @@ use crate::infer::semantics::engine::EffectSemantics;
 use crate::infer::unit::EffectUnit;
 
 pub fn output_from_result(
-    result: InterproceduralAnalysisResult<EffectUnit, EffectSummary, EffectSemantics<'_>>,
+    mut semantics: EffectSemantics<'_>,
+    result: SummarySolverResult<EffectUnit, EffectSummary>,
 ) -> Result<EffectAnalysisOutput, EffectPipelineError> {
-    let InterproceduralAnalysisResult {
-        mut semantics,
+    let SummarySolverResult {
         summaries: summary_store,
         convergence: solver_convergence,
         diagnostics: solver_diagnostics,
@@ -49,20 +49,8 @@ pub fn output_from_result(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let (mut inputs, mut diagnostics, diagnostic_materialization_errors) = semantics.into_parts();
-    if let Some(error) = diagnostic_materialization_errors.into_iter().next() {
-        return Err(error);
-    }
-    let summaries = summary_store
-        .iter()
-        .map(|(unit, summary)| (*unit, summary.clone()))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    for (unit, summary) in &summaries {
-        inputs
-            .unit_effects
-            .entry(*unit)
-            .or_insert_with(|| summary.clone());
-    }
+    let (mut inputs, mut diagnostics) = semantics.into_parts()?;
+    let summaries = summary_store.into_summaries();
     let unresolved_deferred = inputs
         .deferred_first_class_calls
         .iter()

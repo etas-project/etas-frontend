@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize, ser::SerializeSeq};
 
 use super::{PrimitiveType, Type, TypeId};
 
+#[path = "store_specializations.rs"]
+mod specializations;
+use specializations::Specializations;
+
 /// A frozen, indexed type universe. Body stores append after this shared prefix.
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SharedTypeBase(Arc<FrozenTypes>);
@@ -114,7 +118,8 @@ impl<'de> Deserialize<'de> for SharedTypeBase {
 }
 
 impl SharedTypeBase {
-    pub fn new(store: TypeStore) -> Self {
+    pub fn new(mut store: TypeStore) -> Self {
+        store.finish_specializations();
         if let Some(base) = store.unchanged_base() {
             return base.clone();
         }
@@ -152,10 +157,11 @@ impl SharedTypeBase {
     }
 
     pub(crate) fn new_controlled(
-        store: TypeStore,
+        mut store: TypeStore,
         max_types: usize,
         control: &dyn etas_utils::PipelineExecutionControl,
     ) -> Result<Self, TypeBaseBuildError> {
+        store.finish_specializations();
         control
             .checkpoint()
             .map_err(TypeBaseBuildError::Interrupted)?;
@@ -247,8 +253,9 @@ impl SharedTypeBase {
     }
 }
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Debug, Default, etas_core::RetainedSize)]
 pub struct TypeStore {
+    specializations: Option<Box<Specializations>>,
     base: Option<SharedTypeBase>,
     types: Vec<Type>,
     nominal_identities: BTreeMap<TypeId, etas_code::DefinitionKey>,
@@ -264,24 +271,52 @@ pub struct TypeLookupIndex {
     first: HashMap<u64, TypeId>,
     collisions: HashMap<u64, Vec<TypeId>>,
     indexed_len: usize,
+    materializing: bool,
+    appended: std::sync::Mutex<(usize, HashMap<Type, TypeId>)>,
 }
 
 impl TypeLookupIndex {
     pub fn new(store: &TypeStore) -> Self {
         let mut index = Self {
             base: store.base.clone(),
-            first: HashMap::with_capacity(store.local_types().len()),
+            first: HashMap::with_capacity(store.types.len()),
             collisions: HashMap::new(),
             indexed_len: store.base_len(),
+            materializing: false,
+            appended: Default::default(),
         };
         index.include_appended_types(store);
         index
     }
 
+    /// Only the Effect inference index can publish checked structural substitutions.
+    pub fn for_substitutions(store: &TypeStore) -> Self {
+        let mut lookup = Self::new(store);
+        lookup.materializing = store.specializations.is_some();
+        lookup
+    }
+
+    pub(super) fn resolve_substitution(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {
+        if let Some(id) = self.get(store, ty) {
+            return Some(id);
+        }
+        if !self.materializing {
+            return None;
+        }
+        let session = store.specializations.as_ref()?;
+        let ty = canonical_type(ty.clone());
+        let _writer = session.writer.lock().unwrap();
+        self.get(store, &ty).or_else(|| {
+            let offset = session.push(ty)?;
+            Some(TypeId((store.prefix_len() + offset) as u32))
+        })
+    }
+
     /// Extend the index after interning new types in the same store. Indexed
     /// types, including their canonical identities, must remain unchanged.
     pub fn include_appended_types(&mut self, store: &TypeStore) {
-        for index in self.indexed_len..store.len() {
+        let end = store.len();
+        for index in self.indexed_len..end {
             let id = TypeId(index as u32);
             if store.nominal_identity(id).is_some() || store.parameter_identity(id).is_some() {
                 continue;
@@ -296,10 +331,29 @@ impl TypeLookupIndex {
                 }
             }
         }
-        self.indexed_len = store.len();
+        self.indexed_len = end;
     }
 
     pub fn get(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {
+        if let Some(id) = self.prefix_id(store, ty) {
+            return Some(id);
+        }
+        let session = store.specializations.as_ref()?;
+        let mut appended = self.appended.lock().unwrap();
+        let (indexed, ids) = &mut *appended;
+        let prefix = store.prefix_len();
+        let end = prefix + session.len();
+        for index in (*indexed).max(prefix)..end {
+            ids.insert(
+                session.get(index - prefix).unwrap().clone(),
+                TypeId(index as u32),
+            );
+        }
+        *indexed = end;
+        ids.get(ty).copied()
+    }
+
+    fn prefix_id(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {
         if let Some(id) = self.base.as_ref().and_then(|base| base.0.ids.get(ty)) {
             return Some(*id);
         }
@@ -333,7 +387,46 @@ fn identity_matches_type(identity: &etas_code::DefinitionKey, ty: &Type) -> bool
     }
 }
 
+impl Clone for TypeStore {
+    fn clone(&self) -> Self {
+        let mut types = self.types.clone();
+        types.extend(self.derived_types().cloned());
+        Self {
+            specializations: None,
+            types,
+            base: self.base.clone(),
+            nominal_identities: self.nominal_identities.clone(),
+            parameter_identities: self.parameter_identities.clone(),
+            parameter_ids: self.parameter_ids.clone(),
+        }
+    }
+}
+
 impl TypeStore {
+    pub(crate) fn begin_specializations(&mut self, limit: usize) {
+        assert!(self.specializations.is_none());
+        self.specializations = Some(Box::new(Specializations::new(
+            limit.min(u32::MAX as usize - self.len()),
+        )));
+    }
+
+    pub(crate) fn finish_specializations(&mut self) {
+        if let Some(derived) = self.specializations.take() {
+            self.types
+                .extend((0..derived.len()).map(|i| derived.get(i).unwrap().clone()));
+        }
+    }
+
+    fn prefix_len(&self) -> usize {
+        self.base_len() + self.types.len()
+    }
+
+    fn derived_types(&self) -> impl Iterator<Item = &Type> {
+        self.specializations.iter().flat_map(|types| {
+            (0..types.len()).map(|i| types.get(i).expect("published specialization"))
+        })
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -348,6 +441,7 @@ impl TypeStore {
 
     pub fn with_base(base: SharedTypeBase) -> Self {
         Self {
+            specializations: None,
             base: Some(base),
             types: Vec::new(),
             nominal_identities: BTreeMap::new(),
@@ -406,7 +500,7 @@ impl TypeStore {
     }
 
     pub fn len(&self) -> usize {
-        self.base_len() + self.types.len()
+        self.prefix_len() + self.specializations.as_ref().map_or(0, |s| s.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -424,7 +518,12 @@ impl TypeStore {
         if index < self.base_len() {
             self.base.as_ref()?.0.types.get(index)
         } else {
-            self.types.get(index - self.base_len())
+            let local = index - self.base_len();
+            self.types.get(local).or_else(|| {
+                self.specializations
+                    .as_ref()?
+                    .get(local.checked_sub(self.types.len())?)
+            })
         }
     }
 
@@ -433,6 +532,7 @@ impl TypeStore {
             .iter()
             .flat_map(|base| base.0.types.iter())
             .chain(self.types.iter())
+            .chain(self.derived_types())
             .enumerate()
             .map(|(index, ty)| (TypeId(index as u32), ty))
     }
@@ -461,17 +561,20 @@ impl TypeStore {
         changed
     }
 
+    /// Contiguous checked body types. During analysis, `iter` also includes
+    /// newly derived structural types, committed here when analysis finishes.
     pub fn local_types(&self) -> &[Type] {
         &self.types
     }
 
     pub fn into_local_parts(
-        self,
+        mut self,
     ) -> (
         Vec<Type>,
         BTreeMap<TypeId, etas_code::DefinitionKey>,
         BTreeMap<TypeId, CanonicalTypeParameterIdentity>,
     ) {
+        self.finish_specializations();
         (
             self.types,
             self.nominal_identities,
@@ -510,6 +613,7 @@ impl TypeStore {
             }
         }
         Ok(Self {
+            specializations: None,
             base: Some(base),
             types: types.into_iter().map(canonical_type).collect(),
             nominal_identities,
@@ -582,6 +686,7 @@ impl<'de> Deserialize<'de> for TypeStore {
             }
         }
         Ok(Self {
+            specializations: None,
             base: None,
             types: flat.types.into_iter().map(canonical_type).collect(),
             nominal_identities: flat.nominal_identities,
@@ -626,7 +731,8 @@ impl TypeInterner {
         Self::default()
     }
 
-    pub fn from_store(store: TypeStore) -> Self {
+    pub fn from_store(mut store: TypeStore) -> Self {
+        store.finish_specializations();
         let mut types = HashMap::with_capacity(store.types.len());
         for (index, ty) in store.types.iter().enumerate() {
             let id = TypeId((store.base_len() + index) as u32);

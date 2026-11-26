@@ -1,5 +1,6 @@
 //! Input dependencies of a symbolic callback application. Returned payloads
 //! must be substituted with these values before they leave the callee scope.
+use crate::infer::analysis::dependencies::InputFact;
 use super::{
     engine::EffectSemantics,
     specialize::EffectSpecializationError as Error,
@@ -196,6 +197,7 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn native_call_inputs(&self, id: u32) -> Option<Arc<NativeCallInputs>> {
+        self.dependencies.read(InputFact::CallInput(id));
         self.parameter_projection_index
             .borrow()
             .call_inputs
@@ -209,6 +211,7 @@ impl EffectSemantics<'_> {
         let key = CodeFingerprint::of_bytes("etas.effects.call-inputs.v1", &bytes);
         let mut index = self.parameter_projection_index.borrow_mut();
         if let Some(id) = index.input_ids.get(&key) {
+            self.dependencies.read(InputFact::CallInput(*id));
             return Ok(*id);
         }
         let nodes = inputs.nodes();
@@ -226,6 +229,7 @@ impl EffectSemantics<'_> {
         index.insert(nodes);
         index.input_ids.insert(key, id);
         index.call_inputs.insert(id, Arc::new(inputs));
+        self.dependencies.read(InputFact::CallInput(id));
         Ok(id)
     }
 
@@ -313,6 +317,7 @@ impl EffectSemantics<'_> {
         index.insert(nodes);
         index.joined_inputs.insert(key, id);
         index.call_inputs.insert(id, Arc::new(inputs));
+        self.dependencies.read(InputFact::CallInput(id));
         Ok(id)
     }
 

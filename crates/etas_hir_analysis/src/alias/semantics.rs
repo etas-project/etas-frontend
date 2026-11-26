@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
 use etas_hir::{
@@ -40,6 +40,7 @@ where
     semantic_captures: BTreeMap<HirSemanticUnit, BTreeMap<SymbolId, AliasValueExpr>>,
     facts: AliasFacts,
     diagnostics: Vec<Diagnostic>,
+    reported: HashSet<(Span, &'static str)>,
 }
 
 impl<'a, O> AliasSemantics<'a, O>
@@ -78,6 +79,7 @@ where
             semantic_captures: BTreeMap::new(),
             facts: AliasFacts::default(),
             diagnostics: Vec::new(),
+            reported: HashSet::new(),
         }
     }
 
@@ -91,11 +93,13 @@ where
         (self.facts, self.diagnostics, self.captures)
     }
 
-    fn push_diagnostic(&mut self, span: Span, message: impl Into<String>) {
-        let diagnostic =
-            Diagnostic::analysis(AnalysisDiagnosticCode::MissingCheckedFact, span, message);
-        if !self.diagnostics.contains(&diagnostic) {
-            self.diagnostics.push(diagnostic);
+    fn push_diagnostic(&mut self, span: Span, message: &'static str) {
+        if self.reported.insert((span, message)) {
+            self.diagnostics.push(Diagnostic::analysis(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                message,
+            ));
         }
     }
 
@@ -134,7 +138,7 @@ where
         &mut self,
         mut state: AliasDomain,
         expr: HirExprId,
-        message: impl Into<String>,
+        message: &'static str,
     ) -> AliasDomain {
         self.push_diagnostic(self.span_of_expr(expr), message);
         state.mark_incomplete();

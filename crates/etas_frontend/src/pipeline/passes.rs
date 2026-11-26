@@ -32,7 +32,15 @@ use crate::{
     project::ANALYZED_BODY_UNIT_FILTER,
 };
 
+#[cfg(test)]
 pub fn project_pipeline(plan: &crate::optimization::OptimizationPlan) -> Pipeline<ProjectContext> {
+    project_pipeline_for_source_build(plan, false)
+}
+
+pub(super) fn project_pipeline_for_source_build(
+    plan: &crate::optimization::OptimizationPlan,
+    source_build: bool,
+) -> Pipeline<ProjectContext> {
     Pipeline::new("frontend.check_project")
         .group(
             Pipeline::new("frontend.project_sources")
@@ -49,7 +57,7 @@ pub fn project_pipeline(plan: &crate::optimization::OptimizationPlan) -> Pipelin
                     Pipeline::new("frontend.standard_library_source").pass(ParseSourceFilePass),
                 ),
         )
-        .group(semantic_pipeline(false, plan))
+        .group(semantic_pipeline(false, source_build, plan))
         .pass(BuildCheckedProjectPass)
 }
 
@@ -59,7 +67,7 @@ pub(crate) fn candidate_body_pipeline(
     Pipeline::new("frontend.check_candidate_body")
         .pass(crate::code::pipeline::passes::FreezeDefinitionEnvironmentPass)
         .pass(crate::code::pipeline::passes::ParseCandidateDependencySourcesPass)
-        .group(semantic_pipeline(true, plan))
+        .group(semantic_pipeline(true, false, plan))
         .pass(BuildCheckedProjectPass)
         .pass(crate::code::pipeline::passes::MaterializeCandidateInvocationTypesPass)
         .pass(crate::code::pipeline::passes::BuildDefinitionDescriptorsPass)
@@ -69,6 +77,7 @@ pub(crate) fn candidate_body_pipeline(
 
 fn semantic_pipeline(
     candidate: bool,
+    source_build: bool,
     plan: &crate::optimization::OptimizationPlan,
 ) -> Pipeline<ProjectContext> {
     let mut pipeline = Pipeline::new("frontend.project_semantics")
@@ -116,17 +125,22 @@ fn semantic_pipeline(
     if candidate {
         pipeline.push_pass(crate::code::pipeline::passes::PrepareCandidateApplicationPass);
     }
-    pipeline = pipeline
-        .pass(ReuseTypeBodyFactsPass)
-        .for_each(
-            UnitSelector::AffectedArtifact {
-                kind: BODY_UNIT_KIND,
-                artifact: TYPE_OUTPUT,
-                filter: Some(ANALYZED_BODY_UNIT_FILTER),
-            },
+    let bodies = UnitSelector::AffectedArtifact {
+        kind: BODY_UNIT_KIND,
+        artifact: TYPE_OUTPUT,
+        filter: Some(ANALYZED_BODY_UNIT_FILTER),
+    };
+    pipeline = pipeline.pass(ReuseTypeBodyFactsPass);
+    pipeline = if source_build {
+        pipeline.pass(crate::passes::CheckLibraryBodiesPass(bodies))
+    } else {
+        pipeline.for_each(
+            bodies,
             UnitOrder::Stable,
             Pipeline::new("frontend.type_body").pass(TypeCheckBodyPass),
         )
+    };
+    pipeline = pipeline
         .pass(FinalizeTypeFactsPass)
         .pass(CompleteTypedAnalysisReachabilityPass)
         .pass(CompleteTypedRuntimeReachabilityPass)

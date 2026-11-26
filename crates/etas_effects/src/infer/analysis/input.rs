@@ -111,7 +111,8 @@ pub struct EffectAnalysisInput<'a> {
     pub(crate) source_snapshots: std::sync::Arc<EffectSourceSnapshots<'a>>,
     pub types: &'a etas_types::TypeOutput,
     pub std_registry: &'a etas_std::StdRegistry,
-    pub(crate) memory_provenance: std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>,
+    pub(crate) memory_provenance:
+        std::sync::Arc<crate::infer::memory_provenance::MemoryProvenanceQuery<'a>>,
     pub registry: &'a EffectRegistry,
     pub tool_bindings: &'a [ToolProviderBindingMetadata],
     pub external_summaries: &'a [AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],

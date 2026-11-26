@@ -13,6 +13,7 @@ use super::engine::EffectSemantics;
 #[derive(Default)]
 pub(crate) struct EffectTypeQueries {
     pub(super) index: OnceCell<TypeLookupIndex>,
+    pub(super) active_agent_methods: OnceCell<BTreeSet<HirItemId>>,
     pub(super) capture_sites: OnceCell<super::capture_environment::CaptureSites>,
     representations: RefCell<HashMap<TypeId, Option<TypeId>>>,
     projections: RefCell<HashMap<TypeId, ValueProjections>>,

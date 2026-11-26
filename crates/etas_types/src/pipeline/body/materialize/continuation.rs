@@ -72,88 +72,60 @@ pub(super) fn validate_uses(ctx: &mut TypePipelineContext<'_>, state: &BodyPipel
 }
 
 pub(super) fn record_task_owners(ctx: &mut TypePipelineContext<'_>, state: &mut BodyPipelineState) {
-    let view = ctx
-        .hir_view
-        .clone()
-        .unwrap_or_else(|| etas_hir::HirTreeView::new(ctx.hir));
-    let run_callbacks = state
-        .solver_report
-        .std_intrinsic_calls
-        .iter()
-        .filter(|(_, fact)| fact.intrinsic == etas_std::intrinsic::task::RUN)
-        .filter_map(|(call, _)| first_argument(ctx.hir, *call))
-        .chain(
-            state
-                .solver_report
-                .checked_method_calls
-                .iter()
-                .filter_map(|(call, fact)| {
-                    (crate::method::execution_role(
-                        ctx.hir,
-                        ctx.signature_base
-                            .map_or(&ctx.signature_facts, |base| &base.facts),
-                        &fact.target,
-                    ) == Some(etas_std::StdExecutionRole::ScopeEnter))
-                    .then(|| crate::method::argument_expression(ctx.hir, *call, fact, 1))
-                    .flatten()
-                }),
-        )
-        .chain(ctx.hir.exprs.iter().flat_map(|(call, _)| {
-            crate::task_scope::arguments(
-                ctx.hir,
-                ctx.signature_base
-                    .map_or(&ctx.signature_facts, |base| &base.facts),
-                call,
-                state.solver_report.checked_method_calls.get(&call),
-            )
-        }))
-        .collect::<HashSet<_>>();
+    use etas_std::intrinsic::task::{RUN, START};
 
-    let mut calls = state
-        .solver_report
-        .std_intrinsic_calls
-        .iter()
-        .map(|(expr, fact)| (*expr, fact.intrinsic))
-        .chain(
-            state
-                .solver_report
-                .checked_method_calls
-                .iter()
-                .filter_map(|(call, fact)| {
-                    (crate::method::execution_role(
-                        ctx.hir,
-                        ctx.signature_base
-                            .map_or(&ctx.signature_facts, |base| &base.facts),
-                        &fact.target,
-                    ) == Some(etas_std::StdExecutionRole::ScopeEnter))
-                    .then_some((*call, etas_std::intrinsic::task::RUN))
-                }),
-        )
-        .chain(ctx.hir.exprs.iter().filter_map(|(call, _)| {
-            (expression_type(state, call).is_some()
-                && crate::source_execution::call_target(
-                    ctx.hir,
-                    ctx.signature_base
-                        .map_or(&ctx.signature_facts, |base| &base.facts),
-                    call,
-                ) == Some(etas_std::StdExecutionRole::TaskStart))
-            .then_some((call, etas_std::intrinsic::task::START))
-        }))
-        .chain(ctx.hir.exprs.iter().filter_map(|(call, _)| {
-            (expression_type(state, call).is_some()
-                && !crate::task_scope::arguments(
-                    ctx.hir,
-                    ctx.signature_base
-                        .map_or(&ctx.signature_facts, |base| &base.facts),
-                    call,
-                    state.solver_report.checked_method_calls.get(&call),
-                )
-                .is_empty())
-            .then_some((call, etas_std::intrinsic::task::RUN))
-        }))
-        .collect::<Vec<_>>();
+    let hir = ctx.hir;
+    let facts = ctx
+        .signature_base
+        .map_or(&ctx.signature_facts, |base| &base.facts);
+    let report = &state.solver_report;
+    let mut run_callbacks = HashSet::new();
+    let mut calls = Vec::new();
+    for (&call, fact) in &report.std_intrinsic_calls {
+        if matches!(fact.intrinsic, RUN | START) {
+            calls.push((call, fact.intrinsic));
+            if fact.intrinsic == RUN {
+                run_callbacks.extend(first_argument(hir, call));
+            }
+        }
+    }
+    for (&call, method) in &report.checked_method_calls {
+        if crate::method::execution_role(hir, facts, &method.target)
+            == Some(etas_std::StdExecutionRole::ScopeEnter)
+        {
+            calls.push((call, RUN));
+            run_callbacks.extend(crate::method::argument_expression(hir, call, method, 1));
+        }
+    }
+
+    let provisional = &state.provisional.expr_types;
+    let typed = provisional.keys().chain(
+        report
+            .inferred_expr_types
+            .keys()
+            .filter(|id| !provisional.contains_key(id)),
+    );
+    for &call in typed {
+        if crate::source_execution::call_target(hir, facts, call)
+            == Some(etas_std::StdExecutionRole::TaskStart)
+        {
+            calls.push((call, START));
+        }
+        if !crate::task_scope::arguments(hir, facts, call, report.checked_method_calls.get(&call))
+            .is_empty()
+        {
+            calls.push((call, RUN));
+        }
+    }
     calls.sort_unstable();
     calls.dedup();
+    // A start can be inside a callback whose enclosing scope call belongs to
+    // another body. Retain those source scopes when looking up its owner.
+    if calls.iter().any(|(_, intrinsic)| *intrinsic == START) {
+        run_callbacks.extend(hir.exprs.iter().flat_map(|(call, _)| {
+            crate::task_scope::arguments(hir, facts, call, report.checked_method_calls.get(&call))
+        }));
+    }
     for (expr, intrinsic) in calls {
         if intrinsic == etas_std::intrinsic::task::RUN {
             if let Some(ty) = expression_type(state, expr)
@@ -173,10 +145,10 @@ pub(super) fn record_task_owners(ctx: &mut TypePipelineContext<'_>, state: &mut 
             }
             continue;
         }
-        if intrinsic != etas_std::intrinsic::task::START {
-            continue;
-        }
-        let Some(owner_scope) = task_owner_scope(view.index(), ctx.hir, expr, &run_callbacks)
+        let view = ctx
+            .hir_view
+            .get_or_insert_with(|| etas_hir::HirTreeView::new(hir));
+        let Some(owner_scope) = task_owner_scope(view.index(), hir, expr, &run_callbacks)
             .or_else(|| ctx.hir.native_binding_owner(expr).map(|flow| flow.scope))
         else {
             ctx.diagnostics.push(Diagnostic::type_check(

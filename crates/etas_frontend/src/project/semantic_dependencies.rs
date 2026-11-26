@@ -44,12 +44,8 @@ impl CheckedSemanticDependencies {
                 .or_default()
                 .extend(etas_types::type_dependencies(value).into_iter().map(Type));
         }
-        let effect_output = etas_effects::EffectOutput {
-            facts: checked.effects.as_ref().clone(),
-            diagnostics: Vec::new(),
-        };
-        let body_effects = etas_effects::BodyEffectOutput::project(
-            &effect_output,
+        let body_effects = etas_effects::BodyEffectOutput::project_facts(
+            &checked.effects,
             &checked.hir,
             checked.types.item_signatures.keys().copied(),
         )?;

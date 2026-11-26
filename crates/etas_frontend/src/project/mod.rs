@@ -2,12 +2,12 @@ mod callable_application;
 mod callable_graph;
 mod method_requirements;
 mod storage_layout;
-pub use storage_layout::{StorageLayoutDescription, StorageLayoutDescriptionError};
 pub use callable_application::{
     AppliedCallableBehavior, CallableApplicationError, CallableBehaviorError,
     CheckedCallableApplication,
 };
 pub(crate) use method_requirements::lower as lower_method_requirements;
+pub use storage_layout::{StorageLayoutDescription, StorageLayoutDescriptionError};
 mod checked_reachability;
 pub(crate) use callable_graph::{
     lower_callable_graph, lower_callable_graph_in_scope, lower_callable_objects,

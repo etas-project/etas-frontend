@@ -1,16 +1,40 @@
 //! Recursive functions denote finite systems of ordered trace equations.
 //! Their least fixed points are interpreted in each spec's finite relation
 //! domain, rather than expanded into an ever-growing sequence tree.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use etas_code::CodeFingerprint;
 
 use crate::{ActionTraceDomain as Trace, EffectSummary, EffectUnit};
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TraceFact {
+    Expr(etas_hir::HirExprId),
+    Stmt(etas_hir::HirStmtId),
+    Parameter(etas_hir::SymbolId),
+}
+
+impl TraceFact {
+    pub(crate) fn summary_mut(
+        self,
+        inputs: &mut crate::EffectMaterializationInputs,
+    ) -> &mut EffectSummary {
+        match self {
+            Self::Expr(id) => inputs.expr_effects.get_mut(&id),
+            Self::Stmt(id) => inputs.stmt_effects.get_mut(&id),
+            Self::Parameter(id) => inputs.inferred_parameter_effects.get_mut(&id),
+        }
+        .expect("recorded trace fact")
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct TraceEquations {
     active: BTreeSet<EffectUnit>,
+    equation_owners: BTreeMap<CodeFingerprint, EffectUnit>,
     bodies: BTreeMap<CodeFingerprint, Trace>,
+    pending_facts: HashSet<TraceFact>,
+    waiting_facts: HashMap<CodeFingerprint, HashSet<TraceFact>>,
 }
 
 pub(crate) fn identity(value: &impl serde::Serialize) -> CodeFingerprint {
@@ -29,7 +53,7 @@ pub(crate) fn defer_context(summary: &mut EffectSummary, call: etas_hir::HirExpr
                 id: identity(&(id, "application", call)),
                 body: None,
             },
-            Trace::Recursive { body: Some(_), .. } => trace.clone(),
+            Trace::Recursive { body: Some(_), .. } | Trace::Shared(_) => trace.clone(),
             _ => trace.map_children(|child| map(child, call)),
         }
     }
@@ -45,6 +69,13 @@ pub(crate) fn defer_context(summary: &mut EffectSummary, call: etas_hir::HirExpr
 }
 
 impl TraceEquations {
+    pub(crate) fn reuse_closed_equations(&mut self, mut old: Self, dirty: &HashSet<etas_hir::HirItemId>) {
+        old.equation_owners.retain(|_, unit| unit.owner().is_some_and(|i| !dirty.contains(&i)));
+        old.bodies.retain(|key, _| old.equation_owners.contains_key(key));
+        self.bodies = old.bodies;
+        self.equation_owners = old.equation_owners;
+    }
+
     pub(crate) fn has_active_component(&self) -> bool {
         !self.active.is_empty()
     }
@@ -59,7 +90,15 @@ impl TraceEquations {
         }
     }
 
+    pub(crate) fn record_fact(&mut self, fact: TraceFact) {
+        self.pending_facts.insert(fact);
+    }
+
     pub(crate) fn record(&mut self, id: CodeFingerprint, trace: &mut Trace) {
+        if let Some(waiting) = self.waiting_facts.remove(&id) {
+            self.pending_facts.extend(waiting);
+        }
+        if let Some(unit) = self.active.first() { self.equation_owners.insert(id, *unit); }
         self.bodies.insert(id, std::mem::take(trace));
         *trace = Trace::Recursive { id, body: None };
     }
@@ -103,26 +142,53 @@ impl TraceEquations {
         }
     }
 
-    pub(crate) fn close_summary(&self, summary: &mut EffectSummary) {
-        self.close_trace(&mut summary.action_trace);
-        if let Some(exits) = &mut summary.exits {
-            for exit in &mut exits.exits {
-                self.close_trace(&mut exit.trace);
-            }
-            for exit in &mut exits.parameter_exits {
-                self.close_trace(&mut exit.prefix);
+    pub(crate) fn close_facts(&mut self, inputs: &mut crate::EffectMaterializationInputs) {
+        let mut pending = std::mem::take(&mut self.pending_facts);
+        let mut missing = HashSet::new();
+        for fact in pending.drain() {
+            self.close_summary_with(fact.summary_mut(inputs), |id| {
+                missing.insert(id);
+            });
+            for id in missing.drain() {
+                self.waiting_facts.entry(id).or_default().insert(fact);
             }
         }
+        self.pending_facts = pending;
     }
 
-    fn close_trace(&self, trace: &mut Trace) {
-        if !self.bodies.is_empty()
-            && trace
-                .free_references()
-                .iter()
-                .any(|id| self.bodies.contains_key(id))
-        {
-            *trace = self.close(trace).shared();
+    pub(crate) fn close_summary(&self, summary: &mut EffectSummary) {
+        self.close_summary_with(summary, |_| {});
+    }
+
+    fn close_summary_with(
+        &self,
+        summary: &mut EffectSummary,
+        mut missing: impl FnMut(CodeFingerprint),
+    ) {
+        let mut close_trace = |trace: &mut Trace| {
+            if trace.has_free_reference(|id| {
+                if self.bodies.contains_key(id) {
+                    return true;
+                }
+                missing(*id);
+                false
+            }) {
+                *trace = self.close(trace).shared();
+                // Expanding this equation may expose a different forward reference.
+                trace.has_free_reference(|id| {
+                    missing(*id);
+                    false
+                });
+            }
+        };
+        close_trace(&mut summary.action_trace);
+        if let Some(exits) = &mut summary.exits {
+            for exit in &mut exits.exits {
+                close_trace(&mut exit.trace);
+            }
+            for exit in &mut exits.parameter_exits {
+                close_trace(&mut exit.prefix);
+            }
         }
     }
 
@@ -190,5 +256,38 @@ impl Trace {
             },
             leaf => leaf.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fact_follows_a_second_equation_exposed_by_the_first() {
+        let mut equations = TraceEquations::default();
+        let mut inputs = crate::EffectMaterializationInputs::default();
+        let expr = etas_hir::HirExprId(1);
+        let caller = identity(&"caller");
+        let callee = identity(&"callee");
+        let reference = |id| Trace::Recursive { id, body: None };
+        inputs.expr_effects.entry(expr).or_default().action_trace = reference(caller);
+        equations.record_fact(TraceFact::Expr(expr));
+        equations.close_facts(&mut inputs);
+
+        equations.record(caller, &mut reference(callee));
+        equations.close_facts(&mut inputs);
+        let action = Trace::TaskAwait { task_site: expr };
+        equations.record(callee, &mut action.clone());
+        equations.close_facts(&mut inputs);
+
+        let equation = |id, body| Trace::Recursive {
+            id,
+            body: Some(Box::new(body)),
+        };
+        assert_eq!(
+            inputs.expr_effects[&expr].action_trace.structure(),
+            &equation(caller, equation(callee, action)),
+        );
     }
 }

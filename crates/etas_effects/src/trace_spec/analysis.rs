@@ -647,6 +647,7 @@ fn analyze_with_control(
     effects: &mut EffectOutput,
     control: Option<&dyn etas_utils::PipelineExecutionControl>,
 ) -> Result<TraceSpecAnalysisOutput, EffectPipelineError> {
+    let _fingerprints = crate::infer::domain::TraceFingerprintScope::enter();
     let TraceSpecAnalysisInput {
         source_snapshots,
         external_trace_specs,

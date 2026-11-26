@@ -64,17 +64,49 @@ impl SummarySolver {
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
     {
+        self.solve_incremental(units, semantics, None, |_| true, checkpoint)
+    }
+
+    /// Reuse complete components outside the invalidated dependency closure.
+    /// Invalidated units start at bottom because refining a provisional input can
+    /// remove outcomes. Joining their old summaries would keep those outcomes.
+    pub fn solve_incremental<S, E>(
+        &self,
+        units: impl IntoIterator<Item = S::Unit>,
+        semantics: &mut S,
+        previous: Option<SummarySolverResult<S::Unit, S::Summary>>,
+        dirty: impl Fn(S::Unit) -> bool,
+        checkpoint: &impl Fn() -> Result<(), E>,
+    ) -> Result<SummarySolverResult<S::Unit, S::Summary>, E>
+    where
+        S: InterproceduralSemantics
+            + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
+    {
         checkpoint()?;
         let mut units = units.into_iter().collect::<Vec<_>>();
         units.sort();
         units.dedup();
 
+        let rebuild_all = previous.as_ref().is_none_or(|p| !p.diagnostics.is_empty());
+        let dirty = |unit| rebuild_all || dirty(unit);
         let mut diagnostics = Vec::new();
-        let call_graph = self.build_call_graph(&units, semantics, checkpoint)?;
-        let mut summaries = SummaryStore::new();
-        for unit in &units {
+        let (mut call_graph, mut summaries, mut retained) = match previous {
+            Some(previous) => (
+                previous.call_graph,
+                previous.summaries,
+                previous
+                    .convergence
+                    .into_iter()
+                    .filter(|component| component.units.iter().all(|unit| !dirty(*unit)))
+                    .map(|component| (component.units[0], component))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+            None => (CallGraph::new(), SummaryStore::new(), BTreeMap::new()),
+        };
+        self.update_call_graph(&units, &mut call_graph, semantics, &dirty, checkpoint)?;
+        for unit in units.into_iter().filter(|unit| dirty(*unit)) {
             checkpoint()?;
-            summaries.ensure_bottom(*unit);
+            summaries.insert(unit, etas_utils::JoinSemiLattice::bottom());
         }
 
         let components = match ordered_components(&call_graph) {
@@ -93,6 +125,17 @@ impl SummarySolver {
         let mut convergence = Vec::new();
         for component in components {
             checkpoint()?;
+            if let Some(cached) = retained.remove(&component[0])
+                && cached.units == component
+            {
+                convergence.push(cached);
+                continue;
+            }
+            // An updated edge can merge or split SCCs. Restart every member
+            // of a changed component so stale outcomes can disappear.
+            for unit in component.iter().copied().filter(|unit| !dirty(*unit)) {
+                summaries.insert(unit, etas_utils::JoinSemiLattice::bottom());
+            }
             let component_set = component.iter().copied().collect::<BTreeSet<_>>();
             let cyclic = component.len() > 1
                 || component
@@ -149,24 +192,27 @@ impl SummarySolver {
         })
     }
 
-    fn build_call_graph<S, E>(
+    fn update_call_graph<S, E>(
         &self,
         units: &[S::Unit],
+        graph: &mut CallGraph<S::Unit>,
         semantics: &mut S,
+        dirty: &impl Fn(S::Unit) -> bool,
         checkpoint: &impl Fn() -> Result<(), E>,
-    ) -> Result<CallGraph<S::Unit>, E>
+    ) -> Result<(), E>
     where
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
     {
-        let mut graph = CallGraph::new();
         for unit in units {
             checkpoint()?;
             graph.add_unit(*unit);
         }
 
-        for unit in units {
+        for unit in units.iter().filter(|unit| dirty(**unit)) {
             checkpoint()?;
+            semantics.select_unit(*unit);
+            graph.clear_dependencies(*unit);
             for dependency in semantics.unit_dependencies(*unit) {
                 graph.add_call(*unit, dependency);
             }
@@ -175,13 +221,13 @@ impl SummarySolver {
                 continue;
             }
 
-            let adapter = CallGraphCollectionAdapter::new(semantics, *unit, &mut graph);
+            let adapter = CallGraphCollectionAdapter::new(semantics, *unit, graph);
             let mut interpreter = HirAbstractInterpreter::new(adapter);
             traverse_body(&mut interpreter, body, CallGraphDiscoveryState, checkpoint)?;
             checkpoint()?;
         }
 
-        Ok(graph)
+        Ok(())
     }
 
     fn transfer_unit<S, E>(
@@ -196,6 +242,7 @@ impl SummarySolver {
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
     {
+        semantics.select_unit(unit);
         let context = UnitContext::new(unit, AnalysisPhase::SolveSummaries);
         let body = semantics.body_of(unit);
 

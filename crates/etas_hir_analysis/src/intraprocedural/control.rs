@@ -79,6 +79,10 @@ where
         self.normal.as_deref()
     }
 
+    pub fn normal_state_mut(&mut self) -> Option<&mut D> {
+        self.normal.as_deref_mut()
+    }
+
     pub fn take_normal_state(&mut self) -> Option<D> {
         self.normal.take().map(|state| *state)
     }
@@ -225,29 +229,24 @@ where
     }
 
     pub fn into_joined_domain(self) -> D {
-        let mut joined = D::bottom();
-        if let Some(state) = self.normal {
+        let mut states = [
+            self.normal,
+            self.returned,
+            self.broken,
+            self.continued,
+            self.resumed,
+            self.finished,
+            self.errored,
+        ]
+        .into_iter()
+        .flatten();
+        let Some(mut joined) = states.next() else {
+            return D::bottom();
+        };
+        for state in states {
             joined.join_assign(&state);
         }
-        if let Some(state) = self.returned {
-            joined.join_assign(&state);
-        }
-        if let Some(state) = self.broken {
-            joined.join_assign(&state);
-        }
-        if let Some(state) = self.continued {
-            joined.join_assign(&state);
-        }
-        if let Some(state) = self.resumed {
-            joined.join_assign(&state);
-        }
-        if let Some(state) = self.finished {
-            joined.join_assign(&state);
-        }
-        if let Some(state) = self.errored {
-            joined.join_assign(&state);
-        }
-        joined
+        *joined
     }
 }
 

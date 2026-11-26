@@ -209,17 +209,8 @@ impl LibraryHirImage {
         let revision = HirRevision::from_shared_program(self.program.clone())
             .map_err(|e| error(format!("{e:?}")))?;
         let tree = revision.index();
-        let mut common = self.execution_slice(&BTreeSet::new());
-        // Declaration coordinates and immutable HIR type/symbol tables are
-        // shared once. The object loader never parses the retained source text.
-        common.body_slots = self.body_slots.clone();
-        common.reachability = self.reachability.clone();
-        common.semantic_dependencies = Arc::default();
-        common.declarations.clear();
-        common.methods.clear();
-        common.types = self.types.clone();
-        common.effects = self.effects.clone();
-        let mut program = common.program.as_ref().clone();
+        let mut common = self.declaration_image(&revision);
+        let mut program = Arc::unwrap_or_clone(common.program);
         let definitions = self
             .program
             .items

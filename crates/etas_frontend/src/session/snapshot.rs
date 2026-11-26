@@ -551,6 +551,11 @@ impl FrontendArtifactManifest {
             .signature_types
             .as_ref()
             .ok_or("body facts require checked signature input")?;
+        let referenced_items = expression_signature_dependencies(output);
+        let item_signatures = dependency_inputs
+            .item_signatures
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
         units.sort_by_key(|unit| unit.0);
         Ok(units
             .into_iter()
@@ -560,7 +565,7 @@ impl FrontendArtifactManifest {
                     etas_utils::UnitKey::new(BODY_UNIT_KIND, unit.0 as u64),
                 );
                 let body_signature_dependencies =
-                    body_signature_dependencies(output, unit, dependency_inputs.item_signatures);
+                    body_signature_dependencies(output, unit, &referenced_items, &item_signatures);
                 let dependencies = dependency_inputs
                     .common
                     .iter()
@@ -852,10 +857,35 @@ fn effect_pipeline_fingerprint_parts(output: &ArtifactManifestInput<'_>) -> Vec<
     parts
 }
 
+fn expression_signature_dependencies(
+    output: &ArtifactManifestInput<'_>,
+) -> HashMap<crate::AstBodyRef, Vec<HirItemId>> {
+    let mut references = HashMap::new();
+    if let (Some(paths), Some(bodies), Some(items), Some(hir)) = (
+        output.resolved_paths,
+        output.hir_body_bindings,
+        output.hir_item_bindings,
+        output.hir,
+    ) {
+        for path in &paths.expr_paths {
+            if let Some(body) = bodies.expr_to_ast.get(&path.expr)
+                && let Some(item) = source_item_for_expr_path(path, output, &hir.hir, items)
+            {
+                references
+                    .entry(body.clone())
+                    .or_insert_with(Vec::new)
+                    .push(item);
+            }
+        }
+    }
+    references
+}
+
 fn body_signature_dependencies(
     output: &ArtifactManifestInput<'_>,
     unit: UnitId,
-    item_signatures: &[FrontendArtifactKey],
+    references: &HashMap<crate::AstBodyRef, Vec<HirItemId>>,
+    item_signatures: &std::collections::HashSet<&FrontendArtifactKey>,
 ) -> Vec<FrontendArtifactKey> {
     let Some(units) = output.units.as_ref() else {
         return Vec::new();
@@ -866,12 +896,9 @@ fn body_signature_dependencies(
     let UnitTarget::AstBody(body) = &node.target else {
         return Vec::new();
     };
-    let Some(resolved_paths) = output.resolved_paths.as_ref() else {
+    if output.resolved_paths.is_none() || output.hir_body_bindings.is_none() {
         return Vec::new();
-    };
-    let Some(body_bindings) = output.hir_body_bindings.as_ref() else {
-        return Vec::new();
-    };
+    }
     let Some(item_bindings) = output.hir_item_bindings.as_ref() else {
         return Vec::new();
     };
@@ -879,12 +906,7 @@ fn body_signature_dependencies(
         return Vec::new();
     };
 
-    let mut items = resolved_paths
-        .expr_paths
-        .iter()
-        .filter(|path| body_bindings.expr_to_ast.get(&path.expr) == Some(body))
-        .filter_map(|path| source_item_for_expr_path(path, output, hir, item_bindings))
-        .collect::<Vec<_>>();
+    let mut items = references.get(body).cloned().unwrap_or_default();
     items.extend(body_type_referenced_items(output, body, hir, item_bindings));
     items.sort_by_key(|item| item.0);
     items.dedup();

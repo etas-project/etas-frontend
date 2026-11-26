@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use etas_utils::{ConvergenceStatus, FixpointEngine, GraphView, IterationLimit};
 
 use super::*;
@@ -235,7 +237,8 @@ impl EffectSemantics<'_> {
                         if let Some(origins) = plan.bindings.get(&parameter.target) {
                             let mut captured =
                                 joined_origins(origins, parameter.span, summaries, mode)?
-                                    .handler_requests;
+                                    .handler_requests
+                                    .clone();
                             captured.subtract_handled(
                                 &crate::EffectCoverage {
                                     registry: self.registry,
@@ -274,7 +277,9 @@ impl EffectSemantics<'_> {
                 };
                 let captured = joined_origins(origins, span, summaries, mode)?;
                 summary.merge_request_footprint_without_escaping_or_trace(&captured);
-                Ok(ParameterCallSubstitution::Trace(captured.action_trace))
+                Ok(ParameterCallSubstitution::Trace(
+                    captured.action_trace.clone(),
+                ))
             })?;
         if let Some(exits) = &mut summary.exits {
             for exit in &mut exits.exits {
@@ -283,7 +288,9 @@ impl EffectSemantics<'_> {
                         return Ok(ParameterCallSubstitution::Symbolic);
                     };
                     let captured = joined_origins(origins, span, summaries, mode)?;
-                    Ok(ParameterCallSubstitution::Trace(captured.action_trace))
+                    Ok(ParameterCallSubstitution::Trace(
+                        captured.action_trace.clone(),
+                    ))
                 })?;
             }
             for exit in &mut exits.parameter_exits {
@@ -292,14 +299,16 @@ impl EffectSemantics<'_> {
                         return Ok(ParameterCallSubstitution::Symbolic);
                     };
                     let captured = joined_origins(origins, span, summaries, mode)?;
-                    Ok(ParameterCallSubstitution::Trace(captured.action_trace))
+                    Ok(ParameterCallSubstitution::Trace(
+                        captured.action_trace.clone(),
+                    ))
                 })?;
             }
         }
         self.solve_callback_completion_with(&mut summary, &plan.type_bindings, |target, span| {
             plan.bindings
                 .get(&target)
-                .map(|origins| joined_origins(origins, span, summaries, mode))
+                .map(|origins| joined_origins(origins, span, summaries, mode).map(Cow::into_owned))
                 .transpose()
         })?;
         Ok(summary)
@@ -336,29 +345,29 @@ impl GraphView for CallableSummaryGraph<'_> {
     }
 }
 
-fn joined_origins(
+fn joined_origins<'a>(
     origins: &BTreeSet<LatentSource>,
     span: Span,
-    summaries: &BTreeMap<CallableSummaryKey, EffectSummary>,
+    summaries: &'a BTreeMap<CallableSummaryKey, EffectSummary>,
     mode: CallableSummaryMode,
-) -> Result<EffectSummary, EffectSpecializationError> {
+) -> Result<Cow<'a, EffectSummary>, EffectSpecializationError> {
     if origins.is_empty() {
         // A checked empty structural payload (None, or an empty sequence) has
         // no callable to execute. Use an epsilon over-approximation for that
         // unreachable callback branch. Missing bindings and empty direct flow
         // arguments are still rejected when building the dependency graph.
-        return Ok(EffectSummary::local());
+        return Ok(Cow::Owned(EffectSummary::local()));
     }
-    let mut combined = None::<EffectSummary>;
+    let mut combined = None::<Cow<'a, EffectSummary>>;
     for origin in origins {
         let summary = summaries
             .get(&CallableSummaryKey::in_mode(*origin, span, mode))
             .ok_or_else(|| invalid("captured callable dependency has no solution slot"))?;
         match &mut combined {
             Some(combined) => {
-                combined.join_summary(summary);
+                combined.to_mut().join_summary(summary);
             }
-            None => combined = Some(summary.clone()),
+            None => combined = Some(Cow::Borrowed(summary)),
         }
     }
     combined.ok_or_else(|| invalid("captured callable has an empty source set"))

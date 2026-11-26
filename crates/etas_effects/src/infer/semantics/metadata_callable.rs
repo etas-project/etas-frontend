@@ -102,6 +102,7 @@ impl EffectSemantics<'_> {
         &[crate::ExternalExistentialValueMetadata],
         Span,
     )> {
+        self.dependencies.read(crate::infer::analysis::dependencies::InputFact::MethodEvidence);
         if let Some(default) = self
             .external_defaults
             .iter()
@@ -549,10 +550,7 @@ impl EffectSemantics<'_> {
             if projection.sources.is_some() {
                 self.discovered_call_results
                     .borrow_mut()
-                    .value_projections
-                    .entry(key)
-                    .or_default()
-                    .extend(found);
+                    .extend_projection(key, found);
             }
         }
         Ok(())

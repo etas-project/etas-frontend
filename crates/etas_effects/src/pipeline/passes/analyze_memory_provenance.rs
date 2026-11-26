@@ -22,7 +22,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for AnalyzeMemoryProvenancePass {
             ));
         };
         context.memory_provenance = Some(std::sync::Arc::new(
-            crate::infer::memory_provenance::MemoryProvenance::analyze(
+            crate::infer::memory_provenance::MemoryProvenanceQuery::new(
                 context.input.types,
                 context.input.std_registry,
                 units,

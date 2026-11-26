@@ -17,6 +17,7 @@ impl Shape {
 
 pub(crate) struct LatentTypeShapes {
     shapes: Vec<Shape>,
+    derived: std::sync::Mutex<Vec<Shape>>,
     opaque_parameters: BTreeSet<TypeId>,
 }
 
@@ -24,6 +25,7 @@ impl LatentTypeShapes {
     pub(crate) fn build(types: &TypeOutput) -> Self {
         let specs = etas_types::SpecFacts::from(types.facts.as_ref());
         let mut result = Self {
+            derived: Default::default(),
             shapes: vec![Shape::default(); types.store.len()],
             opaque_parameters: types
                 .store
@@ -68,10 +70,7 @@ impl LatentTypeShapes {
         // applications, whose concrete arguments may grow without a fixed depth.
         while let Some(ty) = pending.pop_front() {
             queued[ty.0 as usize] = false;
-            let descriptor = matches!(types.store.get(ty), Some(Type::Applied { constructor, args })
-                if args.len() == 1 && [types.facts.known_std_types.code.callable_definition,
-                    types.facts.known_std_types.code.agent_definition].contains(&Some(TypeId(constructor.0))));
-            let shape = result.transfer(types, ty, descriptor);
+            let shape = result.transfer(types, ty, &[]);
             if result.shapes[ty.0 as usize] == shape {
                 continue;
             }
@@ -86,21 +85,47 @@ impl LatentTypeShapes {
         result
     }
 
-    pub(crate) fn contains(&self, ty: TypeId) -> bool {
-        let shape = &self.shapes[ty.0 as usize];
-        shape.callable
-            || shape
-                .parameters
-                .iter()
-                .any(|ty| self.opaque_parameters.contains(ty))
+    fn with_shape<R>(&self, types: &TypeOutput, ty: TypeId, read: impl FnOnce(&Shape) -> R) -> R {
+        let index = ty.0 as usize;
+        if let Some(shape) = self.shapes.get(index) {
+            return read(shape);
+        }
+        // Structural substitutions only refer to declarations and previously interned children.
+        let mut derived = self.derived.lock().unwrap();
+        let offset = index - self.shapes.len();
+        while derived.len() <= offset {
+            let next = TypeId((self.shapes.len() + derived.len()) as u32);
+            let shape = self.transfer(types, next, &derived);
+            derived.push(shape);
+        }
+        read(&derived[offset])
     }
 
-    pub(crate) fn has_parameters(&self, ty: TypeId) -> bool {
-        !self.shapes[ty.0 as usize].parameters.is_empty()
+    pub(crate) fn contains(&self, types: &TypeOutput, ty: TypeId) -> bool {
+        self.with_shape(types, ty, |shape| {
+            shape.callable
+                || shape
+                    .parameters
+                    .iter()
+                    .any(|ty| self.opaque_parameters.contains(ty))
+        })
     }
 
-    fn transfer(&self, types: &TypeOutput, ty: TypeId, descriptor: bool) -> Shape {
+    pub(crate) fn has_parameters(&self, types: &TypeOutput, ty: TypeId) -> bool {
+        self.with_shape(types, ty, |shape| !shape.parameters.is_empty())
+    }
+
+    fn transfer(&self, types: &TypeOutput, ty: TypeId, derived: &[Shape]) -> Shape {
         let value = types.store.get(ty).expect("indexed checked type shape");
+        let descriptor = matches!(value, Type::Applied { constructor, args }
+                if args.len() == 1 && [types.facts.known_std_types.code.callable_definition,
+                    types.facts.known_std_types.code.agent_definition].contains(&Some(TypeId(constructor.0))));
+        let child_shape = |id: TypeId| {
+            let index = id.0 as usize;
+            self.shapes
+                .get(index)
+                .unwrap_or_else(|| &derived[index - self.shapes.len()])
+        };
         let mut shape = Shape::default();
         if etas_types::source_execution::is_scoped_handle(
             &types.store,
@@ -128,14 +153,14 @@ impl LatentTypeShapes {
                 shape.callable = true;
                 return shape;
             }
-            let template = &self.shapes[owner.0 as usize];
+            let template = child_shape(owner);
             shape.callable = template.callable;
             for parameter in &template.parameters {
                 if let Some(position) = parameters
                     .iter()
                     .position(|binding| binding.subject == *parameter)
                 {
-                    shape.union(&self.shapes[args[position].0 as usize]);
+                    shape.union(child_shape(args[position]));
                 } else {
                     shape.parameters.insert(*parameter);
                 }
@@ -144,7 +169,7 @@ impl LatentTypeShapes {
             shape.callable = true;
         } else {
             for child in children(types, ty, value) {
-                shape.union(&self.shapes[child.0 as usize]);
+                shape.union(child_shape(child));
             }
         }
         shape

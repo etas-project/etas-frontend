@@ -39,6 +39,14 @@ where
         self.summaries.get(&unit)
     }
 
+    pub fn get_mut(&mut self, unit: U) -> Option<&mut S> {
+        self.summaries.get_mut(&unit)
+    }
+
+    pub fn into_summaries(self) -> BTreeMap<U, S> {
+        self.summaries
+    }
+
     pub fn contains(&self, unit: U) -> bool {
         self.summaries.contains_key(&unit)
     }

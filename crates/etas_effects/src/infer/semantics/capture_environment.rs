@@ -124,6 +124,7 @@ impl EffectSemantics<'_> {
         &self,
         id: CallableEnvironmentId,
     ) -> Result<CallableEnvironment, EffectSpecializationError> {
+        self.dependencies.read_frame(id);
         if self.callable_environment_nodes.get() > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
             return Err(invalid(
                 "callable environment graph exceeds the analysis node budget",
@@ -207,6 +208,7 @@ impl EffectSemantics<'_> {
         }
         snapshot.invocation_inputs = contributions;
         if previous.as_ref() == Some(&snapshot) {
+            self.dependencies.read_frame(id);
             return Ok(());
         }
         let nodes = self
@@ -219,6 +221,7 @@ impl EffectSemantics<'_> {
                 "callable environment graph exceeds the analysis node budget",
             ));
         }
+        self.dependencies.wrote_frame(id);
         Arc::make_mut(&mut self.callable_environments.borrow_mut()).insert(id, snapshot);
         self.callable_environment_nodes.set(nodes);
         self.callable_summaries.borrow_mut().invalidate();
@@ -297,9 +300,12 @@ impl EffectSemantics<'_> {
             ));
         }
         if existing != Some(&joined) {
+            self.dependencies.wrote_frame(id);
             Arc::make_mut(&mut environments).insert(id, joined);
             self.callable_environment_nodes.set(nodes);
             self.callable_summaries.borrow_mut().invalidate();
+        } else {
+            self.dependencies.read_frame(id);
         }
         Ok(())
     }

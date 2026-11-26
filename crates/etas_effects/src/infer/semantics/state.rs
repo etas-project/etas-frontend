@@ -7,6 +7,15 @@ use crate::{EffectSummary, EffectUnit, FrontendRejectionReason, InterpreterSuppo
 
 pub(crate) use crate::facts::CallableValueOrigin as LatentSource;
 
+impl LatentSource {
+    pub(crate) fn captured_call_target(&self) -> Option<EffectUnit> {
+        match self {
+            Self::FrozenContract { unit, .. } | Self::Unit(unit) | Self::Reference { unit, .. } => Some(*unit),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LatentEnv {
     pub(crate) values: BTreeMap<HirExprId, BTreeSet<LatentSource>>,
@@ -19,6 +28,59 @@ pub(crate) struct LatentEnv {
         (SymbolId, Vec<etas_code::descriptor::ValueProjectionStep>),
         BTreeSet<LatentSource>,
     >,
+}
+
+/// Size the discovered origin graph as entries change during a solver sweep.
+#[derive(Default)]
+pub(crate) struct DiscoveredCallResults {
+    pub(crate) origins: LatentEnv,
+    pub(crate) value_nodes: usize,
+    pub(crate) projection_nodes: usize,
+}
+
+impl DiscoveredCallResults {
+    pub(super) fn retain_values(&mut self, clean: impl Fn(&HirExprId) -> bool) {
+        self.origins.values.retain(|key, _| clean(key));
+        self.origins.value_projections.retain(|(key, _), _| clean(key));
+        self.value_nodes = self.origins.values.values().map(|sources| 1 + sources.len()).sum();
+        self.projection_nodes = self.origins.value_projections.iter().map(|((_, path), sources)| 1 + path.len() + sources.len()).sum();
+    }
+    pub(super) fn update_value(
+        &mut self,
+        expr: HirExprId,
+        update: impl FnOnce(&mut BTreeSet<LatentSource>),
+    ) {
+        let values = self.origins.values.entry(expr).or_insert_with(|| {
+            self.value_nodes += 1;
+            BTreeSet::new()
+        });
+        let before = values.len();
+        update(values);
+        self.value_nodes = self.value_nodes - before + values.len();
+    }
+    pub(super) fn remove_value(&mut self, expr: HirExprId) {
+        if let Some(sources) = self.origins.values.remove(&expr) {
+            self.value_nodes -= 1 + sources.len();
+        }
+    }
+    pub(super) fn extend_projection(
+        &mut self,
+        key: (HirExprId, Vec<etas_code::descriptor::ValueProjectionStep>),
+        sources: impl IntoIterator<Item = LatentSource>,
+    ) {
+        let nodes = 1 + key.1.len();
+        let values = self
+            .origins
+            .value_projections
+            .entry(key)
+            .or_insert_with(|| {
+                self.projection_nodes += nodes;
+                BTreeSet::new()
+            });
+        let before = values.len();
+        values.extend(sources);
+        self.projection_nodes += values.len() - before;
+    }
 }
 
 impl LatentEnv {

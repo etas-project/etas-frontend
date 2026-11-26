@@ -6,7 +6,7 @@ use crate::{ParsedSource, ProjectContext, ProjectInput, ProjectOutput};
 use std::{collections::HashMap, sync::Arc};
 
 use super::adapters::project_output_from_context;
-use super::passes::project_pipeline;
+use super::passes::project_pipeline_for_source_build;
 
 pub(crate) struct FrontendPipelineRun {
     pub(crate) output: ProjectOutput,
@@ -95,9 +95,11 @@ pub(crate) fn run_controlled_check_pipeline(
             None => {}
         }
     }
+    let source_build =
+        context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap;
     run_controlled_context_pipeline(
         context,
-        project_pipeline(&optimization_plan),
+        project_pipeline_for_source_build(&optimization_plan, source_build),
         collect_timing,
         memory_probe,
         control,

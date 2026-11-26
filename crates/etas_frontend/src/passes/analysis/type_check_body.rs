@@ -102,23 +102,15 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
                 ArtifactSet::from_iter([ArtifactRef::unit_kind(TYPE_OUTPUT, BODY_UNIT_KIND)]),
             );
         }
-        let output = match manager.execution_control() {
-            Some(control) => match etas_types::check_body_delta_revision_controlled(
-                &hir.hir,
-                base,
-                item,
-                context.std_registry.clone(),
-                control,
-            ) {
-                Ok(output) => output,
-                Err(interruption) => return PassResult::interrupted(interruption),
-            },
-            None => etas_types::check_body_delta_revision(
-                &hir.hir,
-                base,
-                item,
-                context.std_registry.clone(),
-            ),
+        let output = match check_body(
+            &hir.hir,
+            base,
+            item,
+            &context.std_registry,
+            manager.execution_control(),
+        ) {
+            Ok(output) => output,
+            Err(interruption) => return PassResult::interrupted(interruption),
         };
         context
             .diagnostics
@@ -130,5 +122,117 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
             PreservedArtifacts::All,
             ArtifactSet::from_iter([ArtifactRef::unit_kind(TYPE_OUTPUT, BODY_UNIT_KIND)]),
         )
+    }
+}
+
+fn check_body(
+    hir: &etas_hir::HirRevision,
+    base: &etas_types::SignatureEnvironment,
+    item: etas_hir::HirItemId,
+    registry: &std::sync::Arc<etas_std::StdRegistry>,
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+) -> Result<etas_types::BodyTypeOutput, etas_utils::PipelineInterruption> {
+    match control {
+        Some(control) => etas_types::check_body_delta_revision_controlled(
+            hir,
+            base,
+            item,
+            registry.clone(),
+            control,
+        ),
+        None => Ok(etas_types::check_body_delta_revision(
+            hir,
+            base,
+            item,
+            registry.clone(),
+        )),
+    }
+}
+
+/// Source installation checks independent body deltas against one frozen
+/// signature environment. Publish in unit order for stable IDs and diagnostics.
+pub struct CheckLibraryBodiesPass(pub etas_utils::UnitSelector);
+
+impl Pass<ProjectContext> for CheckLibraryBodiesPass {
+    fn descriptor(&self) -> PassDescriptor {
+        PassDescriptor::new("CheckLibraryBodiesPass", PassKind::Transform).requires(
+            ArtifactSet::from([HIR_OUTPUT, TYPE_ENVIRONMENT, BOUND_METHOD_ORIGINS]),
+        )
+    }
+
+    fn run(
+        &mut self,
+        context: &mut ProjectContext,
+        _: &PassContext<ProjectContext>,
+        manager: &mut PassManager<ProjectContext>,
+    ) -> PassResult {
+        use etas_utils::{UnitOrder, UnitProvider};
+        let mut produced = ArtifactSet::new();
+        let mut work = Vec::new();
+        for key in context.units(&self.0, UnitOrder::Stable) {
+            produced.insert_ref(ArtifactRef::unit(TYPE_OUTPUT, key));
+            produced.insert_ref(ArtifactRef::unit(
+                crate::passes::artifacts::DIAGNOSTICS,
+                key,
+            ));
+            let unit = crate::UnitId(key.id as u32);
+            if !context.type_body_outputs.contains_key(&unit) {
+                let item = match hir_item_for_body_unit(context, &PassContext::new(Some(key))) {
+                    Ok(item) => item,
+                    Err(failure) => return PassResult::failed(failure.message),
+                };
+                work.push((unit, item));
+            }
+        }
+        if work.is_empty() {
+            return PassResult {
+                produced,
+                ..PassResult::unchanged()
+            };
+        }
+        let hir = &context.hir.as_ref().expect("prepared library HIR").hir;
+        let base = context
+            .type_environment
+            .as_ref()
+            .expect("prepared signature environment");
+        let registry = &context.std_registry;
+        let control = manager.execution_control();
+        // Each worker keeps its own type interner and body-local constraints.
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8);
+        let results = std::thread::scope(|scope| {
+            let workers = work
+                .chunks(work.len().div_ceil(workers))
+                .map(|chunk| {
+                    std::thread::Builder::new()
+                        .stack_size(8 << 20)
+                        .spawn_scoped(scope, move || {
+                            chunk
+                                .iter()
+                                .map(|(_, item)| check_body(hir, base, *item, registry, control))
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, std::io::Error>(
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("body type checker panicked"))
+                    .collect::<Result<Vec<_>, _>>(),
+            )
+        });
+        let batches = match results {
+            Ok(Ok(batches)) => batches,
+            Ok(Err(interruption)) => return PassResult::interrupted(interruption),
+            Err(error) => return PassResult::failed(error.to_string()),
+        };
+        for ((unit, _), body) in work.into_iter().zip(batches.into_iter().flatten()) {
+            context.diagnostics.extend(body.diagnostics.iter().cloned());
+            context
+                .type_body_outputs
+                .insert(unit, std::sync::Arc::new(body));
+        }
+        PassResult::changed(PreservedArtifacts::All, produced)
     }
 }

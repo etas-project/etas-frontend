@@ -21,6 +21,7 @@ impl EffectSemantics<'_> {
         handler: HirExprId,
         owner: Option<HirItemId>,
     ) -> Result<Option<Vec<CheckedHandlerArm<'_>>>, EffectSpecializationError> {
+        self.read_expr_owner(handler);
         let (Some(HirExpr::Handler { handlers, .. }), Some(fact), Some(owner)) = (
             self.hir.exprs.get(handler),
             self.inputs.handler_values.get(&handler),
@@ -143,10 +144,7 @@ impl EffectSemantics<'_> {
                 if !coverage.covers(arm.action, effect) {
                     continue;
                 }
-                let Some(exits) = self
-                    .inputs
-                    .unit_effects
-                    .get(&arm.fact.unit)
+                let Some(exits) = self.unit_summary(&arm.fact.unit)
                     .and_then(|summary| summary.exits.as_ref())
                 else {
                     return Ok(());
@@ -301,6 +299,7 @@ impl EffectSemantics<'_> {
                 }
             }
         }
+        self.read_expr_owner(*body);
         match arms {
             Some(arms) => {
                 for arm in arms {
@@ -318,10 +317,7 @@ impl EffectSemantics<'_> {
                     {
                         continue;
                     }
-                    let finished = self
-                        .inputs
-                        .unit_effects
-                        .get(&arm.fact.unit)
+                    let finished = self.unit_summary(&arm.fact.unit)
                         .and_then(|summary| summary.exits.as_ref())
                         .and_then(crate::CallableExitSummary::handler_finish_sources);
                     match finished {

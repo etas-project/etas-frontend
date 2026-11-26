@@ -1,5 +1,8 @@
 //! Hash-consed ordered traces, including scoped recursive equations.
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use etas_code::CodeFingerprint;
 
@@ -7,7 +10,7 @@ use crate::{ActionTraceDomain as Trace, EffectSet};
 
 pub(super) type NodeId = usize;
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum Node {
     Leaf(Trace),
     Seq(Vec<NodeId>),
@@ -35,7 +38,8 @@ pub(super) struct StoredNode {
 #[derive(Default)]
 pub(super) struct TraceGraph {
     pub nodes: Vec<StoredNode>,
-    interned: BTreeMap<CodeFingerprint, NodeId>,
+    interned: HashMap<Node, NodeId>,
+    equations: BTreeMap<(CodeFingerprint, Arc<BTreeMap<CodeFingerprint, NodeId>>), NodeId>,
     // Retain the Arc alongside its process-local address until this cache dies.
     shared: BTreeMap<usize, (Trace, NodeId)>,
 }
@@ -78,14 +82,8 @@ impl TraceGraph {
                     } => {
                         // Include the surrounding lexical equations: equally
                         // named variables in different instances never alias.
-                        let bytes = serde_json::to_vec(&(
-                            trace.structural_identity(),
-                            bindings.iter().collect::<Vec<_>>(),
-                        ))
-                        .expect("checked recursive trace serializes");
-                        let key =
-                            CodeFingerprint::of_bytes("etas.effects.trace-equation.v1", &bytes);
-                        if let Some(node) = self.interned.get(&key) {
+                        let key = (trace.structural_identity(), bindings.clone());
+                        if let Some(node) = self.equations.get(&key) {
                             values.push(*node);
                             continue;
                         }
@@ -96,7 +94,7 @@ impl TraceGraph {
                             parameter_calls: false,
                             preserve: false,
                         });
-                        self.interned.insert(key, node);
+                        self.equations.insert(key, node);
                         let mut nested = (*bindings).clone();
                         nested.insert(*id, node);
                         work.push(Work::Equation(node));
@@ -159,9 +157,7 @@ impl TraceGraph {
     }
 
     fn intern(&mut self, node: Node) -> NodeId {
-        let bytes = serde_json::to_vec(&node).expect("checked trace node serializes");
-        let key = CodeFingerprint::of_bytes("etas.effects.ordered-trace-node.v1", &bytes);
-        if let Some(id) = self.interned.get(&key) {
+        if let Some(id) = self.interned.get(&node) {
             return *id;
         }
         let (actions, parameter_calls) = match &node {
@@ -179,13 +175,13 @@ impl TraceGraph {
                 | Node::TaskStart { .. }
                 | Node::Parallel(_)
         ) || matches!(&node, Node::Choice(parts) if parts.is_empty());
+        self.interned.insert(node.clone(), id);
         self.nodes.push(StoredNode {
             node,
             actions,
             parameter_calls,
             preserve,
         });
-        self.interned.insert(key, id);
         id
     }
 

@@ -697,7 +697,7 @@ impl EffectSemantics<'_> {
             if !indirect {
                 return Err("memory operation requires a checked memory place fact".into());
             }
-            return self.memory_provenance.arguments(self.hir, self.types, expr);
+            return self.memory_provenance.arguments(expr);
         };
         let Some(etas_types::Type::MemoryPlace(place)) = self.types.store.get(*ty) else {
             return Err("checked memory place fact has the wrong type".into());
@@ -1465,6 +1465,7 @@ impl EffectSemantics<'_> {
         let Some(open) = row.open else {
             return row;
         };
+        self.read_expr_owner(call);
         let rows = self.generic_effect_rows.borrow();
         let Some((_, binding)) = rows
             .get(&call)

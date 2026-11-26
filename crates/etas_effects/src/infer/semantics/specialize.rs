@@ -732,7 +732,7 @@ impl EffectSemantics<'_> {
         if matches!(kind, crate::EffectActionArgKind::MemoryPlace) {
             let arguments = self
                 .memory_provenance
-                .arguments(self.hir, self.types, *expr)
+                .arguments(*expr)
                 .map_err(EffectSpecializationError::MemoryProvenance)?;
             let [EffectArgRef::Path(origin)] = arguments.as_slice() else {
                 return Err(EffectSpecializationError::MemoryProvenance(

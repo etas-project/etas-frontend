@@ -69,6 +69,15 @@ pub fn supports(store: &TypeStore, facts: &SpecFacts, ty: TypeId) -> bool {
 }
 
 pub fn supports_family(store: &TypeStore, facts: &SpecFacts, ty: TypeId, target: Family) -> bool {
+    supports_family_with(store, ty, target, || facts)
+}
+
+pub(crate) fn supports_family_with<F: std::borrow::Borrow<SpecFacts>>(
+    store: &TypeStore,
+    ty: TypeId,
+    target: Family,
+    facts: impl FnOnce() -> F,
+) -> bool {
     if let Some(Type::Primitive(kind)) = store.get(ty) {
         return primitive(*kind)
             && match target {
@@ -83,6 +92,8 @@ pub fn supports_family(store: &TypeStore, facts: &SpecFacts, ty: TypeId, target:
     let Some(parameter) = name.source_parameter else {
         return false;
     };
+    let facts = facts();
+    let facts = facts.borrow();
     let mut pending: Vec<_> = facts
         .type_param_bounds
         .get(&parameter)

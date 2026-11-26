@@ -1,3 +1,4 @@
+use crate::infer::analysis::dependencies::InputFact;
 use std::collections::{BTreeMap, HashMap};
 
 use etas_code::CodeFingerprint;
@@ -33,6 +34,7 @@ impl EffectSemantics<'_> {
         generics: &[(String, CallableGenericParamKind)],
         span: Span,
     ) -> Result<ParameterCallTarget, EffectSpecializationError> {
+        self.dependencies.read(InputFact::MethodEvidence);
         let declaration = self
             .types
             .facts
@@ -99,6 +101,7 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         generics: GenericArguments<'_>,
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
+        self.dependencies.read(InputFact::MethodEvidence);
         let types = generics.types;
         let rows = generics.rows;
         if let Some(environment) = environment {
@@ -412,6 +415,7 @@ impl EffectSemantics<'_> {
         invocation: CodeFingerprint,
         environment: CallableEnvironmentId,
     ) -> Result<super::MethodEvidence, EffectSpecializationError> {
+        self.dependencies.read(InputFact::MethodEvidence);
         let definition = self
             .method_evidence
             .borrow()

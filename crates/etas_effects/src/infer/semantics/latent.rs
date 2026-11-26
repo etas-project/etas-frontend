@@ -78,7 +78,7 @@ impl EffectSemantics<'_> {
         }
         // These are previous-round origins for this lexical call site, not a
         // substitute for checking the invoked callable's complete behavior.
-        let known_call_result = (self.context.view().index().expr_item.get(&expr).copied()
+        let known_call_result = || (self.context.view().index().expr_item.get(&expr).copied()
             == state.owner
             && !matches!(
                 self.hir.exprs.get(expr),
@@ -88,12 +88,12 @@ impl EffectSemantics<'_> {
         .flatten();
         if let Some(sources) = state.local_latent_values.value_sources(expr) {
             if sources.iter().all(|source| matches!(source, LatentSource::Unavailable { expr: missing } if *missing == expr))
-                && let Some(known) = known_call_result {
+                && let Some(known) = known_call_result() {
                 return Some(known.iter().copied().collect());
             }
             return Some(sources.iter().copied().collect());
         }
-        if let Some(known) = known_call_result {
+        if let Some(known) = known_call_result() {
             return Some(known.iter().copied().collect());
         }
         match self.hir.exprs.get(expr)? {
@@ -716,7 +716,7 @@ impl EffectSemantics<'_> {
     pub(crate) fn type_contains_flow(&self, ty: etas_types::TypeId) -> bool {
         self.latent_type_shapes
             .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))
-            .contains(ty)
+            .contains(self.types, ty)
     }
 
     pub(super) fn expr_type_has_parameters(&self, expr: HirExprId) -> bool {
@@ -730,7 +730,7 @@ impl EffectSemantics<'_> {
     pub(super) fn type_has_parameters(&self, ty: TypeId) -> bool {
         self.latent_type_shapes
             .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))
-            .has_parameters(ty)
+            .has_parameters(self.types, ty)
     }
 
     pub(crate) fn is_deferred_first_class_param(&self, expr: HirExprId) -> bool {

@@ -493,6 +493,45 @@ fn solves_known_call_by_applying_callee_summary() {
 }
 
 #[test]
+fn incremental_solve_replaces_a_call_edge_and_reuses_the_other_bodies() {
+    let mut hir = HirBuilder::default();
+    let call = hir.call();
+    let caller = hir.block(vec![], Some(call));
+    let old_event = hir.literal();
+    let old_body = hir.block(vec![], Some(old_event));
+    let new_event = hir.literal();
+    let new_body = hir.block(vec![], Some(new_event));
+    let mut semantics =
+        TraceInterproceduralSemantics::new(hir.finish_with_roots([caller, old_body, new_body]))
+            .body(Unit(0), caller)
+            .body(Unit(1), old_body)
+            .body(Unit(2), new_body)
+            .event(old_event, "old target")
+            .event(new_event, "new target")
+            .call_target(call, CallTarget::Direct(Unit(1)));
+    let solver = super::SummarySolver::default();
+    let units = [Unit(0), Unit(1), Unit(2)];
+    let previous = solver.solve(units, &mut semantics);
+    semantics
+        .call_targets
+        .insert(call, CallTarget::Direct(Unit(2)));
+    semantics.observed_exprs.clear();
+    let incremental = solver
+        .solve_incremental(
+            units,
+            &mut semantics,
+            Some(previous),
+            |unit| unit == Unit(0),
+            &|| Ok::<(), ()>(()),
+        )
+        .unwrap();
+    assert!(!semantics.observed_exprs.contains(&old_event));
+    assert!(!semantics.observed_exprs.contains(&new_event));
+    let reference = solver.solve(units, &mut semantics);
+    assert_eq!(incremental, reference);
+}
+
+#[test]
 fn summary_application_forwards_the_handled_body_entry_hook() {
     let mut builder = HirBuilder::default();
     let body = builder.literal();

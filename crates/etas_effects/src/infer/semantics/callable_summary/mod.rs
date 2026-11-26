@@ -97,7 +97,11 @@ impl CallableSummaryPlan {
         }
         while let Some(trace) = pending.pop() {
             match trace {
-                ActionTraceDomain::Shared(body) => pending.push(&body.body),
+                ActionTraceDomain::Shared(body) => calls.extend(
+                    body.parameter_calls
+                        .iter()
+                        .map(|call| (call.target, call.span)),
+                ),
                 ActionTraceDomain::ParameterCall { target, span, .. } => {
                     calls.push((*target, *span))
                 }

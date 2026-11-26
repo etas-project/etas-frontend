@@ -1,5 +1,6 @@
 //! Select values through checked constructors before their origins are joined.
 //! In particular, an iterator's yielded element is not its returned next call.
+use crate::infer::analysis::dependencies::InputFact;
 use std::collections::BTreeSet;
 
 use etas_code::descriptor::ValueProjectionStep as Step;
@@ -253,12 +254,15 @@ impl EffectSemantics<'_> {
     ) -> Option<BTreeSet<super::state::LatentSource>> {
         let key = (expr, path.to_vec());
         if let Some(found) = state.local_latent_values.value_projections.get(&key) {
-            if found.iter().all(|source| matches!(source, super::state::LatentSource::Unavailable { expr: missing } if *missing == expr))
-                && let Some(known) = self.call_results.value_projections.get(&key) {
-                return Some(known.clone());
+            if found.iter().all(|source| matches!(source, super::state::LatentSource::Unavailable { expr: missing } if *missing == expr)) {
+                self.dependencies.read(InputFact::ValueProjections(expr));
+                if let Some(known) = self.call_results.value_projections.get(&key) {
+                    return Some(known.clone());
+                }
             }
             return Some(found.clone());
         }
+        self.dependencies.read(InputFact::ValueProjections(expr));
         if let Some(found) = self.call_results.value_projections.get(&key) {
             return Some(found.clone());
         }
@@ -280,9 +284,10 @@ impl EffectSemantics<'_> {
             &self.call_results.value_projections,
         ] {
             if let Some(found) = self.regular_projection_sources(
-                values.iter().filter_map(|((value, position), sources)| {
-                    (*value == expr).then_some((position.as_slice(), sources))
-                }),
+                values
+                    .range((expr, Vec::new())..)
+                    .take_while(|((value, _), _)| *value == expr)
+                    .map(|((_, position), sources)| (position.as_slice(), sources)),
                 path,
                 state,
                 expr,
@@ -308,6 +313,7 @@ impl EffectSemantics<'_> {
         {
             return Some(origins.clone());
         }
+        self.dependencies.read(InputFact::GlobalProjections(symbol));
         let key = (symbol, selected);
         state
             .local_latent_values
@@ -336,9 +342,10 @@ impl EffectSemantics<'_> {
                     &self.discovered_global_values.symbol_projections,
                 ] {
                     if let Some(found) = self.regular_projection_sources(
-                        values.iter().filter_map(|((value, position), sources)| {
-                            (*value == symbol).then_some((position.as_slice(), sources))
-                        }),
+                        values
+                            .range((symbol, Vec::new())..)
+                            .take_while(|((value, _), _)| *value == symbol)
+                            .map(|((_, position), sources)| (position.as_slice(), sources)),
                         &key.1,
                         state,
                         expr,

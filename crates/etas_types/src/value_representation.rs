@@ -214,16 +214,25 @@ pub fn checked_value_projection(
     receiver: TypeId,
     field: &str,
 ) -> Option<ValueProjection> {
-    if let Some(projection) = value_projection(store, receiver, field) {
-        return Some(projection);
-    }
-    if crate::numeric_family::supports(store, facts, receiver) {
-        return match field {
-            "bits" => Some(ValueProjection::NumericFamilyBits),
-            _ => None,
-        };
-    }
-    None
+    checked_value_projection_with(store, receiver, field, || facts)
+}
+
+pub(crate) fn checked_value_projection_with<F: std::borrow::Borrow<crate::SpecFacts>>(
+    store: &TypeStore,
+    receiver: TypeId,
+    field: &str,
+    facts: impl FnOnce() -> F,
+) -> Option<ValueProjection> {
+    value_projection(store, receiver, field).or_else(|| {
+        (field == "bits"
+            && crate::numeric_family::supports_family_with(
+                store,
+                receiver,
+                crate::numeric_family::Family::Number,
+                facts,
+            ))
+        .then_some(ValueProjection::NumericFamilyBits)
+    })
 }
 
 pub fn range_fields(store: &TypeStore, receiver: TypeId) -> Option<crate::RecordType> {
@@ -331,9 +340,25 @@ pub fn checked_primitive_input(
     facts: &crate::SpecFacts,
     target: TypeId,
 ) -> Option<PrimitiveInput> {
+    checked_primitive_input_with(store, target, || facts)
+}
+
+pub(crate) fn checked_primitive_input_with<F: std::borrow::Borrow<crate::SpecFacts>>(
+    store: &TypeStore,
+    target: TypeId,
+    facts: impl FnOnce() -> F,
+) -> Option<PrimitiveInput> {
     match store.get(target) {
         Some(Type::Primitive(kind)) => primitive_input(*kind),
-        _ if crate::numeric_family::supports(store, facts, target) => Some(PrimitiveInput::Bits),
+        _ if crate::numeric_family::supports_family_with(
+            store,
+            target,
+            crate::numeric_family::Family::Number,
+            facts,
+        ) =>
+        {
+            Some(PrimitiveInput::Bits)
+        }
         _ => None,
     }
 }

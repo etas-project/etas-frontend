@@ -28,11 +28,11 @@ pub(super) fn validate(
                         return;
                     }
                 };
-                if crate::value_representation::checked_value_projection(
+                if crate::value_representation::checked_value_projection_with(
                     ctx.interner.store(),
-                    &ctx.spec_facts(),
                     receiver,
                     &projection.field,
+                    || ctx.spec_facts(),
                 )
                 .is_some()
                     || ctx

@@ -1,4 +1,5 @@
 //! Resolve portable application dependencies after their lexical inputs are bound.
+use crate::infer::analysis::dependencies::InputFact;
 use super::{
     engine::EffectSemantics,
     specialize::{EffectSpecializationError as Error, TraceArgumentBinding},
@@ -153,6 +154,7 @@ impl EffectSemantics<'_> {
                     Some(id) => id,
                     None => self.join_call_inputs(provisional.clone())?,
                 };
+                self.dependencies.read(InputFact::CallInput(native_id));
                 let prefix = original_path
                     .iter()
                     .take_while(|step| !Step::call_inputs(std::slice::from_ref(step)).contains(&id))

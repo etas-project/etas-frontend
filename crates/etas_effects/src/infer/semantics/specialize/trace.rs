@@ -108,19 +108,19 @@ pub(crate) fn substitute_parameter_calls(
                     .checked_sub(count)
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
                 let parts = values.split_off(start);
-                if matches!(work, Work::Parallel(_)) {
-                    values.push(ActionTraceDomain::Parallel(parts));
-                    continue;
-                }
-                let mut parts = parts.into_iter();
-                let mut trace = parts.next().unwrap_or_default();
-                for part in parts {
-                    if matches!(work, Work::Seq(_)) {
-                        trace.seq_assign(part);
-                    } else {
-                        trace.choice_assign(part);
+                let trace = match work {
+                    Work::Parallel(_) => ActionTraceDomain::Parallel(parts),
+                    Work::Choice(_) => ActionTraceDomain::from_alternatives(parts),
+                    Work::Seq(_) => {
+                        let mut parts = parts.into_iter();
+                        let mut trace = parts.next().unwrap_or_default();
+                        for part in parts {
+                            trace.seq_assign(part);
+                        }
+                        trace
                     }
-                }
+                    _ => unreachable!(),
+                };
                 values.push(trace);
             }
             Work::Shared(original) => {

@@ -92,10 +92,7 @@ impl EffectSemantics<'_> {
             if !seen_units.insert(unit) {
                 continue;
             }
-            let Some(exits) = self
-                .inputs
-                .unit_effects
-                .get(&unit)
+            let Some(exits) = self.unit_summary(&unit)
                 .and_then(|summary| summary.exits.as_ref())
             else {
                 continue;

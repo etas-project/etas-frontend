@@ -6,6 +6,10 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
     type Domain = EffectState;
     type Summary = EffectSummary;
 
+    fn select_unit(&mut self, unit: EffectUnit) {
+        self.select_reader(unit.owner());
+    }
+
     fn begin_component(&mut self, units: &[EffectUnit], cyclic: bool) {
         self.trace_equations.begin(units, cyclic);
     }
@@ -16,11 +20,11 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         summaries: &mut etas_hir_analysis::interprocedural::SummaryStore<EffectUnit, EffectSummary>,
     ) {
         for unit in units {
-            if let Some(mut summary) = summaries.get(*unit).cloned() {
-                self.trace_equations.close_summary(&mut summary);
+            if let Some(summary) = summaries.get_mut(*unit) {
+                self.trace_equations.close_summary(summary);
                 // Publish each solved component as immutable subgraphs. Direct
                 // calls must share them just as first-class callable queries do.
-                summary.action_trace = summary.action_trace.shared();
+                summary.action_trace = std::mem::take(&mut summary.action_trace).shared();
                 if let Some(exits) = &mut summary.exits {
                     for exit in &mut exits.exits {
                         exit.trace = std::mem::take(&mut exit.trace).shared();
@@ -30,21 +34,12 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                     }
                 }
                 self.inputs.unit_effects.insert(*unit, summary.clone());
-                summaries.insert(*unit, summary);
             }
         }
         if !self.trace_equations.has_active_component() {
             return;
         }
-        for summary in self
-            .inputs
-            .expr_effects
-            .values_mut()
-            .chain(self.inputs.stmt_effects.values_mut())
-            .chain(self.inputs.inferred_parameter_effects.values_mut())
-        {
-            self.trace_equations.close_summary(summary);
-        }
+        self.trace_equations.close_facts(&mut self.inputs);
         for fact in self.inputs.latent_effects.values_mut() {
             self.trace_equations.close_summary(&mut fact.summary);
         }
@@ -73,18 +68,28 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         if let Some(previous) = self.checked_read_expressions.remove(&context.unit) {
             let reads = self.discovered_call_results.get_mut();
             for expr in previous {
-                reads.values.remove(&expr);
+                reads.remove_value(expr);
             }
         }
         let mut state = EffectState::for_unit(context.unit);
         if let EffectUnit::Item(item) = context.unit
-            && self.types.facts.type_impl_methods.values().any(|method| {
-                method.body == item
-                    && self
-                        .types
+            && self
+                .type_queries
+                .active_agent_methods
+                .get_or_init(|| {
+                    self.types
                         .facts
-                        .is_active_agent(&self.types.store, method.self_type)
-            })
+                        .type_impl_methods
+                        .values()
+                        .filter(|method| {
+                            self.types
+                                .facts
+                                .is_active_agent(&self.types.store, method.self_type)
+                        })
+                        .map(|method| method.body)
+                        .collect()
+                })
+                .contains(&item)
         {
             state
                 .summary
@@ -143,9 +148,6 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             ));
             summary.support = InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
         }
-        self.inputs
-            .unit_effects
-            .insert(context.unit, summary.clone());
         self.callable_summaries.get_mut().invalidate();
         summary
     }
@@ -591,9 +593,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 _ => captures.values.values().flatten().copied().collect(),
             };
             for source in sources {
-                if let LatentSource::FrozenContract { unit, .. }
-                | LatentSource::Unit(unit)
-                | LatentSource::Reference { unit, .. } = source
+                if let Some(unit) = source.captured_call_target()
                     && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
                 {
                     dependencies.insert(unit);

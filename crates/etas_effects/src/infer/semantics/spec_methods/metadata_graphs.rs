@@ -206,6 +206,7 @@ impl EffectSemantics<'_> {
         &self,
         source: crate::MetadataCallableSource,
     ) -> Option<Vec<(String, CallableGenericParamKind)>> {
+        self.dependencies.read(crate::infer::analysis::dependencies::InputFact::MethodEvidence);
         let (graph, node, _) = self.metadata_callable(source)?;
         let implementation = self
             .implementation_graphs

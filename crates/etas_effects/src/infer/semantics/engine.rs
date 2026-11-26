@@ -18,6 +18,7 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(crate) dependencies: crate::infer::analysis::dependencies::RoundDependencies,
     pub(super) external_defaults:
         &'a [crate::AnchoredExternalMetadata<crate::ExternalParameterDefaultMetadata>],
     pub(super) loop_traces: crate::infer::ordered_trace::LoopTraces,
@@ -108,7 +109,7 @@ pub(crate) struct EffectSemantics<'a> {
         std::collections::BTreeMap<crate::CallableReturnReference, super::state::LatentSource>,
     pub(crate) global_values: std::sync::Arc<super::state::LatentEnv>,
     pub(crate) call_results: std::sync::Arc<super::state::LatentEnv>,
-    pub(crate) discovered_call_results: std::cell::RefCell<super::state::LatentEnv>,
+    pub(crate) discovered_call_results: std::cell::RefCell<super::state::DiscoveredCallResults>,
     pub(crate) checked_read_expressions:
         std::collections::BTreeMap<EffectUnit, std::collections::BTreeSet<HirExprId>>,
     pub(crate) discovered_global_values: super::state::LatentEnv,
@@ -136,12 +137,15 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) context: HirAnalysisContext,
     pub(crate) types: &'a TypeOutput,
     pub(crate) std_registry: &'a etas_std::StdRegistry,
-    pub(crate) memory_provenance: std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>,
+    pub(crate) memory_provenance:
+        std::sync::Arc<crate::infer::memory_provenance::MemoryProvenanceQuery<'a>>,
     pub(crate) type_symbols: TypeSymbolIndex,
     pub(crate) registry: &'a EffectRegistry,
     pub(crate) inputs: EffectMaterializationInputs,
+    pub(super) pure_exprs: std::collections::HashSet<HirExprId>,
+    pub(super) pure_stmts: std::collections::HashSet<etas_hir::HirStmtId>,
     pub(crate) diagnostics: Vec<Diagnostic>,
-    diagnostic_materialization_errors: Vec<crate::EffectPipelineError>,
+    pub(super) diagnostic_materialization_errors: Vec<crate::EffectPipelineError>,
     pub(super) requested_types: std::cell::RefCell<Vec<etas_types::Type>>,
     pub(crate) tool_bindings: &'a [ToolProviderBindingMetadata],
     pub(crate) external_summaries:
@@ -149,6 +153,13 @@ pub(crate) struct EffectSemantics<'a> {
 }
 
 impl<'a> EffectSemantics<'a> {
+    pub(super) fn record_trace_fact(&mut self, fact: crate::infer::recursive_trace::TraceFact) {
+        self.trace_equations.record_fact(fact);
+        if let Some(facts) = self.loop_traces.facts_mut() {
+            facts.insert(fact);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         hir: &'a etas_hir::HirRevision,
@@ -162,7 +173,7 @@ impl<'a> EffectSemantics<'a> {
         let units =
             crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&context);
         let memory_provenance =
-            std::sync::Arc::new(crate::infer::memory_provenance::MemoryProvenance::analyze(
+            std::sync::Arc::new(crate::infer::memory_provenance::MemoryProvenanceQuery::new(
                 types,
                 std_registry,
                 &units,
@@ -236,6 +247,7 @@ impl<'a> EffectSemantics<'a> {
             memory_provenance,
         } = input;
         let mut semantics = Self {
+            dependencies: Default::default(),
             external_defaults,
             spec_unit_targets,
             discovered_spec_unit_targets: Default::default(),
@@ -321,6 +333,8 @@ impl<'a> EffectSemantics<'a> {
             type_symbols: TypeSymbolIndex::build(hir),
             registry,
             inputs: EffectMaterializationInputs::default(),
+            pure_exprs: Default::default(),
+            pure_stmts: Default::default(),
             diagnostics: Vec::new(),
             diagnostic_materialization_errors: Vec::new(),
             requested_types: Default::default(),
@@ -357,16 +371,28 @@ impl<'a> EffectSemantics<'a> {
     pub(crate) fn type_lookup(&self) -> &etas_types::ty::TypeLookupIndex {
         self.type_queries
             .index
-            .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&self.types.store))
+            .get_or_init(|| etas_types::ty::TypeLookupIndex::for_substitutions(&self.types.store))
     }
 
     pub(crate) fn into_parts(
         mut self,
-    ) -> (
-        EffectMaterializationInputs,
-        Vec<Diagnostic>,
-        Vec<crate::EffectPipelineError>,
-    ) {
+    ) -> Result<(EffectMaterializationInputs, Vec<Diagnostic>), crate::EffectPipelineError> {
+        if let Some(error) = self.diagnostic_materialization_errors.into_iter().next() {
+            return Err(error);
+        }
+        let requested = self.requested_types.into_inner();
+        if !requested.is_empty() {
+            return Err(crate::EffectPipelineError::TypeMaterializationRequired(
+                requested,
+            ));
+        }
+        // Pure sites need full records only when publishing the converged facts.
+        for expr in self.pure_exprs {
+            self.inputs.expr_effects.entry(expr).or_default();
+        }
+        for stmt in self.pure_stmts {
+            self.inputs.stmt_effects.entry(stmt).or_default();
+        }
         self.inputs.generic_effect_rows = self.generic_effect_rows.into_inner();
         self.inputs.method_evidence =
             std::sync::Arc::unwrap_or_clone(self.method_evidence.into_inner());
@@ -388,17 +414,7 @@ impl<'a> EffectSemantics<'a> {
             std::sync::Arc::unwrap_or_clone(self.external_parameter_projections.into_inner());
         self.inputs.parameter_projections =
             std::sync::Arc::unwrap_or_clone(self.parameter_projections.into_inner());
-        let requested_types = self.requested_types.into_inner();
-        if !requested_types.is_empty() {
-            self.diagnostic_materialization_errors.push(
-                crate::EffectPipelineError::TypeMaterializationRequired(requested_types),
-            );
-        }
-        (
-            self.inputs,
-            self.diagnostics,
-            self.diagnostic_materialization_errors,
-        )
+        Ok((self.inputs, self.diagnostics))
     }
 
     pub(crate) fn incomplete_at(
@@ -694,7 +710,7 @@ impl<'a> EffectSemantics<'a> {
         let method = signature.default_entry.as_ref()?.method?;
         let body = self.types.facts.agent_methods.get(&method)?.body;
         let mut summary = self.summary_for_item_public_effects(body, span)?;
-        if let Some(declaration_summary) = self.inputs.unit_effects.get(&EffectUnit::Item(body)) {
+        if let Some(declaration_summary) = self.unit_summary(&EffectUnit::Item(body)) {
             summary.seq_assign(declaration_summary);
         }
         self.apply_agent_annotation_requirements(item, &mut summary);

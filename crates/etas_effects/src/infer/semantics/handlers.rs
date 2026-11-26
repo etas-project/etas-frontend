@@ -38,11 +38,12 @@ impl EffectSemantics<'_> {
         }
         let mut expected = entry.summary.clone();
         if matches!(self.hir.exprs.get(expr), Some(HirExpr::Handler { .. })) {
+            self.read_expr_owner(expr);
             let Some(fact) = self.inputs.handler_values.get(&expr) else {
                 return false;
             };
             for arm in &fact.arms {
-                let Some(summary) = self.inputs.unit_effects.get(&arm.unit) else {
+                let Some(summary) = self.unit_summary(&arm.unit) else {
                     return false;
                 };
                 expected.merge_request_footprint_without_escaping_or_trace(summary);
@@ -234,7 +235,7 @@ impl EffectSemantics<'_> {
                             let mut trace = result.summary.action_trace.clone();
                             let mut arm_actions = false;
                             for arm in &fact.arms {
-                                let Some(summary) = self.inputs.unit_effects.get(&arm.unit) else {
+                                let Some(summary) = self.unit_summary(&arm.unit) else {
                                     control.join_normal(self.incomplete_at(
                                         span,
                                         "handler trace requires solved arm summaries",
@@ -374,10 +375,7 @@ impl EffectSemantics<'_> {
                     "duplicate handler arm for the same Inject dependency type",
                 ));
             }
-            let arm_summary = self
-                .inputs
-                .unit_effects
-                .get(&crate::EffectUnit::HandlerArm { owner, arm: *arm })
+            let arm_summary = self.unit_summary(&crate::EffectUnit::HandlerArm { owner, arm: *arm })
                 .cloned();
             let Some(arm_summary) = arm_summary else {
                 state = self.incomplete_at(
@@ -526,6 +524,7 @@ impl EffectSemantics<'_> {
         expr: HirExprId,
         span: Span,
     ) -> Result<Option<(EffectRow, EffectRow)>, etas_utils::PipelineInterruption> {
+        self.read_expr_owner(expr);
         if let Some(fact) = self.inputs.handler_values.get(&expr) {
             return Ok(Some((fact.handled.clone(), fact.produced.clone())));
         }
@@ -559,6 +558,7 @@ impl EffectSemantics<'_> {
             if let Some(control) = self.query_control {
                 control.checkpoint()?;
             }
+            self.read_expr_owner(expr);
             if let Some(fact) = self.inputs.handler_values.get(&expr) {
                 return Ok(Some((expr, fact)));
             }
@@ -613,6 +613,7 @@ impl EffectSemantics<'_> {
             if arm_fact.unit != (EffectUnit::HandlerArm { owner, arm: *arm }) {
                 return Ok(EffectRow::empty());
             }
+            self.read_arm_owner(*arm);
             let (Some(data), Some(effect)) = (
                 self.hir.handler_arms.get(*arm),
                 self.inputs.handler_action_effects.get(arm),
@@ -645,9 +646,7 @@ impl EffectSemantics<'_> {
         ) {
             return None;
         }
-        self.inputs
-            .unit_effects
-            .get(&EffectUnit::Item(item))
+        self.unit_summary(&EffectUnit::Item(item))
             .cloned()
     }
 

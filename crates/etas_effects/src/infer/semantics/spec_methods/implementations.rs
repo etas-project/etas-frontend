@@ -245,6 +245,7 @@ impl EffectSemantics<'_> {
             value,
             environment,
         };
+        self.dependencies.revisit_current();
         self.discovered_external_method_sources
             .borrow_mut()
             .insert(source);

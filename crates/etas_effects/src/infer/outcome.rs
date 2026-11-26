@@ -607,35 +607,6 @@ impl CallableExitSummary {
                 .iter()
                 .all(|exit| matches!(exit.outcome, CallableOutcome::Returned { .. }))
     }
-
-    pub(crate) fn stabilize(&mut self, previous: Option<&Self>) {
-        for exit in &mut self.exits {
-            let old = previous.and_then(|previous| {
-                previous
-                    .exits
-                    .iter()
-                    .find(|old| old.outcome == exit.outcome)
-            });
-            exit.trace = exit
-                .trace
-                .clone()
-                .stabilize_for_fixpoint(old.map(|old| &old.trace));
-        }
-        for exit in &mut self.parameter_exits {
-            let old = previous.and_then(|previous| {
-                previous.parameter_exits.iter().find(|old| {
-                    old.target == exit.target
-                        && old.output == exit.output
-                        && old.source == exit.source
-                        && old.arguments == exit.arguments
-                })
-            });
-            exit.prefix = exit
-                .prefix
-                .clone()
-                .stabilize_for_fixpoint(old.map(|old| &old.prefix));
-        }
-    }
 }
 
 #[cfg(test)]

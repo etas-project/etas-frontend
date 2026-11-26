@@ -37,10 +37,10 @@ pub fn collect_record<E>(
             }
         });
     let primitive = constructor_target.and_then(|ty| {
-        crate::value_representation::checked_primitive_input(
+        crate::value_representation::checked_primitive_input_with(
             ctx.ctx.interner.store(),
-            &ctx.ctx.spec_facts(),
             ty,
+            || ctx.ctx.spec_facts(),
         )
     });
     let primitive_field =

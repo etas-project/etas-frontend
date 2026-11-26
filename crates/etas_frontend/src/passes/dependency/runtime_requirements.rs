@@ -644,6 +644,10 @@ enum ReachabilityPurpose {
 
 impl ReachableExprCollector<'_> {
     fn collect(&mut self) -> Result<(), String> {
+        let mut paths = std::collections::HashMap::with_capacity(self.resolved_paths.expr_paths.len());
+        for path in &self.resolved_paths.expr_paths {
+            paths.entry(path.expr).or_insert(&path.result);
+        }
         while let Some(item) = self.pending_items.pop() {
             if !self.visited_items.insert(item) {
                 continue;
@@ -658,7 +662,7 @@ impl ReachableExprCollector<'_> {
             let mut missing_method = false;
             let mut visitor = ReachableItemVisitor {
                 hir: self.hir,
-                resolved_paths: self.resolved_paths,
+                resolved_paths: &paths,
                 item_bindings: self.item_bindings,
                 types: self.types,
                 purpose: self.purpose,
@@ -723,7 +727,7 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ToolAnnotationReachabilityVisitor<
 
 struct ReachableItemVisitor<'a> {
     hir: &'a etas_hir::HirProgram,
-    resolved_paths: &'a crate::ResolvedPaths,
+    resolved_paths: &'a std::collections::HashMap<HirExprId, &'a HirPathResolution>,
     item_bindings: &'a HirItemBindings,
     types: Option<&'a etas_types::TypeFacts>,
     purpose: ReachabilityPurpose,
@@ -837,7 +841,7 @@ impl ReachableItemVisitor<'_> {
 
 fn local_item_for_expr_path(
     hir: &etas_hir::HirProgram,
-    resolved_paths: &crate::ResolvedPaths,
+    resolved_paths: &std::collections::HashMap<HirExprId, &HirPathResolution>,
     item_bindings: &HirItemBindings,
     mut expr: HirExprId,
 ) -> Option<HirItemId> {
@@ -846,11 +850,7 @@ fn local_item_for_expr_path(
         if !seen.insert(expr) || !matches!(hir.exprs.get(expr), Some(HirExpr::Path(_))) {
             return None;
         }
-        let resolution = resolved_paths
-            .expr_paths
-            .iter()
-            .find(|path| path.expr == expr)?;
-        match &resolution.result {
+        match *resolved_paths.get(&expr)? {
             HirPathResolution::PartialSymbol {
                 prefix, remaining, ..
             } => {

@@ -1,4 +1,5 @@
 use super::{engine::EffectSemantics, shared::*};
+use crate::infer::recursive_trace::TraceFact;
 use etas_utils::PartialOrder;
 
 impl EffectSemantics<'_> {
@@ -59,6 +60,7 @@ impl EffectSemantics<'_> {
                         );
                         continue;
                     }
+                    self.record_trace_fact(TraceFact::Parameter(symbol));
                     match self.inputs.inferred_parameter_effects.entry(symbol) {
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             entry.insert(summary);

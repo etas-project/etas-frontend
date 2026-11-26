@@ -218,14 +218,8 @@ impl EffectSummary {
         self
     }
 
-    pub fn stabilize_for_fixpoint(&mut self, current: Option<&Self>) {
-        if let Some(exits) = &mut self.exits {
-            exits.stabilize(current.and_then(|current| current.exits.as_ref()));
-        }
-        self.action_trace = self
-            .action_trace
-            .clone()
-            .stabilize_for_fixpoint(current.map(|summary| &summary.action_trace));
+    pub fn stabilize_for_fixpoint(&mut self, _current: Option<&Self>) {
+        // Loop and recursion equations already stabilize all traces, including exit prefixes.
     }
 
     pub fn join_summary(&mut self, other: &Self) -> bool {
@@ -299,6 +293,7 @@ pub(super) fn join_independent_determinism(
     Default,
     PartialEq,
     Eq,
+    Hash,
     serde::Serialize,
     serde::Deserialize,
     etas_core::RetainedSize,
@@ -347,7 +342,7 @@ pub enum ActionTraceDomain {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ParameterCallRef {
     pub target: ParameterCallTarget,
@@ -356,7 +351,7 @@ pub struct ParameterCallRef {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct SharedActionTrace {
     pub body: ActionTraceDomain,
@@ -364,6 +359,29 @@ pub struct SharedActionTrace {
     pub actions: EffectSet,
     pub parameter_calls: Vec<ParameterCallRef>,
     pub unordered: bool,
+}
+
+/// Only leaves and one-level nodes with fingerprint children enter this cache.
+type TraceFingerprints = std::collections::HashMap<ActionTraceDomain, etas_code::CodeFingerprint>;
+
+// Lattice joins and trace specialization both compute the same pure Merkle keys.
+// Give all of them one cache for the duration of this synchronous solver call.
+thread_local! {
+    static TRACE_FINGERPRINTS: std::cell::RefCell<Option<TraceFingerprints>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct TraceFingerprintScope(Option<TraceFingerprints>);
+
+impl TraceFingerprintScope {
+    pub(crate) fn enter() -> Self {
+        Self(TRACE_FINGERPRINTS.replace(Some(TraceFingerprints::new())))
+    }
+}
+
+impl Drop for TraceFingerprintScope {
+    fn drop(&mut self) {
+        TRACE_FINGERPRINTS.set(self.0.take());
+    }
 }
 
 type ParameterCallIndex = BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>;
@@ -403,14 +421,27 @@ pub enum ParameterCallTarget {
 }
 
 impl ActionTraceDomain {
-    pub(crate) fn free_references(&self) -> BTreeSet<etas_code::CodeFingerprint> {
+    pub(crate) fn has_free_reference(
+        &self,
+        mut matches: impl FnMut(&etas_code::CodeFingerprint) -> bool,
+    ) -> bool {
+        match self {
+            Self::Seq(_)
+            | Self::Choice(_)
+            | Self::Parallel(_)
+            | Self::Repeat(_)
+            | Self::DefaultHandler { .. }
+            | Self::TaskStart { .. }
+            | Self::Recursive { body: Some(_), .. } => {}
+            Self::Recursive { id, body: None } => return matches(id),
+            _ => return false,
+        }
         enum Work<'a> {
             Visit(&'a ActionTraceDomain),
             Leave(etas_code::CodeFingerprint, bool),
         }
         let mut work = vec![Work::Visit(self)];
         let mut bound = BTreeSet::new();
-        let mut free = BTreeSet::new();
         while let Some(next) = work.pop() {
             match next {
                 Work::Leave(id, fresh) => {
@@ -419,8 +450,8 @@ impl ActionTraceDomain {
                     }
                 }
                 Work::Visit(Self::Recursive { id, body: None }) => {
-                    if !bound.contains(id) {
-                        free.insert(*id);
+                    if !bound.contains(id) && matches(id) {
+                        return true;
                     }
                 }
                 Work::Visit(Self::Recursive {
@@ -442,10 +473,36 @@ impl ActionTraceDomain {
                 _ => {}
             }
         }
-        free
+        false
     }
 
     pub(crate) fn structural_identity(&self) -> etas_code::CodeFingerprint {
+        if let Self::Shared(shared) = self {
+            return shared.fingerprint;
+        }
+        TRACE_FINGERPRINTS.with_borrow_mut(|cache| self.structural_identity_with(cache.as_mut()))
+    }
+
+    fn structural_identity_with(
+        &self,
+        mut cache: Option<&mut TraceFingerprints>,
+    ) -> etas_code::CodeFingerprint {
+        use etas_code::CodeFingerprint;
+
+        let mut buffer = Vec::new();
+        let mut fingerprint = |node: &ActionTraceDomain| {
+            if let Some(id) = cache.as_deref().and_then(|cache| cache.get(node)) {
+                return *id;
+            }
+            buffer.clear();
+            serde_json::to_writer(&mut buffer, node).expect("checked trace node serializes");
+            let id = CodeFingerprint::of_bytes("etas.effects.trace-structure.v1", &buffer);
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.insert(node.clone(), id);
+            }
+            id
+        };
+
         enum Work<'a> {
             Visit(&'a ActionTraceDomain),
             Build(&'a ActionTraceDomain, usize),
@@ -455,34 +512,31 @@ impl ActionTraceDomain {
         while let Some(next) = work.pop() {
             match next {
                 Work::Visit(Self::Shared(shared)) => keys.push(shared.fingerprint),
-                Work::Visit(trace) => {
-                    let children: Vec<&Self> = match trace {
-                        Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
-                            parts.iter().collect()
-                        }
-                        Self::Repeat(body)
-                        | Self::Recursive {
-                            body: Some(body), ..
-                        }
-                        | Self::DefaultHandler { body, .. }
-                        | Self::TaskStart { body, .. } => vec![body],
-                        _ => Vec::new(),
-                    };
-                    work.push(Work::Build(trace, children.len()));
-                    work.extend(children.into_iter().rev().map(Work::Visit));
-                }
+                Work::Visit(trace) => match trace {
+                    Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                        work.push(Work::Build(trace, parts.len()));
+                        work.extend(parts.iter().rev().map(Work::Visit));
+                    }
+                    Self::Repeat(body)
+                    | Self::Recursive {
+                        body: Some(body), ..
+                    }
+                    | Self::DefaultHandler { body, .. }
+                    | Self::TaskStart { body, .. } => {
+                        work.push(Work::Build(trace, 1));
+                        work.push(Work::Visit(body));
+                    }
+                    leaf => keys.push(fingerprint(leaf)),
+                },
                 Work::Build(trace, count) => {
-                    let children = keys.split_off(keys.len() - count);
-                    let mut children = children.into_iter();
+                    let start = keys.len() - count;
+                    let mut children = keys.drain(start..);
                     let node = trace.map_children(|_| Self::Recursive {
                         id: children.next().unwrap(),
                         body: None,
                     });
-                    let bytes = serde_json::to_vec(&node).expect("checked trace node serializes");
-                    keys.push(etas_code::CodeFingerprint::of_bytes(
-                        "etas.effects.trace-structure.v1",
-                        &bytes,
-                    ));
+                    drop(children);
+                    keys.push(fingerprint(&node));
                 }
             }
         }
@@ -511,7 +565,7 @@ impl ActionTraceDomain {
         ) {
             return self;
         }
-        if !self.free_references().is_empty() {
+        if self.has_free_reference(|_| true) {
             return self;
         }
         Self::Shared(std::sync::Arc::new(SharedActionTrace {
@@ -586,13 +640,23 @@ impl ActionTraceDomain {
     }
 
     pub fn seq_assign(&mut self, other: Self) -> bool {
-        let joined = self.clone().seq(other);
-        let changed = joined != *self;
-        *self = joined;
-        changed
+        if other == Self::Empty
+            || matches!((&*self, &other), (Self::Seq(_), Self::Seq(parts)) if parts.is_empty())
+        {
+            return false;
+        }
+        *self = std::mem::take(self).seq(other);
+        true
     }
 
     pub fn choice_assign(&mut self, other: Self) -> bool {
+        if *self == other {
+            return false;
+        }
+        if !matches!(self, Self::Choice(_)) {
+            *self = std::mem::take(self).choice(other);
+            return true;
+        }
         let joined = self.clone().choice(other);
         let changed = joined != *self;
         *self = joined;
@@ -855,9 +919,30 @@ impl ActionTraceDomain {
         }
     }
 
+    pub(crate) fn from_alternatives(mut parts: Vec<Self>) -> Self {
+        let Some(first) = parts.first() else {
+            return Self::Empty;
+        };
+        if parts.iter().skip(1).all(|part| part == first) {
+            return parts.pop().unwrap();
+        }
+        // A substitution can introduce nested choices. Preserve the binary join's
+        // flattening and equality rules in that case.
+        if parts.iter().any(|part| matches!(part, Self::Choice(_))) {
+            let mut parts = parts.into_iter();
+            let mut result = parts.next().unwrap();
+            for part in parts {
+                result.choice_assign(part);
+            }
+            return result;
+        }
+        parts.sort_by_cached_key(Self::structural_identity);
+        parts.dedup();
+        Self::Choice(parts)
+    }
+
     fn choice(self, other: Self) -> Self {
         match (self, other) {
-            (left, right) if left == right => left,
             (Self::Choice(mut left), Self::Choice(right)) => {
                 left.extend(right);
                 left.sort_by_cached_key(Self::structural_identity);
@@ -888,7 +973,7 @@ impl ActionTraceDomain {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ActionEvent {
     pub action: Effect,
@@ -897,7 +982,7 @@ pub struct ActionEvent {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub enum ActionEventSource {
     Perform,

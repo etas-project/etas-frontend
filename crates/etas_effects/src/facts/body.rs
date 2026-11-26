@@ -18,6 +18,14 @@ impl BodyEffectOutput {
         hir: &HirRevision,
         items: impl IntoIterator<Item = HirItemId>,
     ) -> Result<HashMap<HirItemId, Self>, String> {
+        Self::project_facts(&output.facts, hir, items)
+    }
+
+    pub fn project_facts(
+        facts: &EffectFacts,
+        hir: &HirRevision,
+        items: impl IntoIterator<Item = HirItemId>,
+    ) -> Result<HashMap<HirItemId, Self>, String> {
         let index = hir.index();
         let mut bodies = HashMap::new();
         let mut symbols = HashMap::new();
@@ -49,7 +57,7 @@ impl BodyEffectOutput {
         // A cloned global map followed by retain would keep global capacity.
         macro_rules! expressions {
             ($($field:ident),+ $(,)?) => {$(
-                for (expr, fact) in &output.facts.$field {
+                for (expr, fact) in &facts.$field {
                     let owner = index.expr_item.get(expr).ok_or_else(|| {
                         format!("effect fact has no validated expression owner: {expr:?}")
                     })?;
@@ -78,14 +86,14 @@ impl BodyEffectOutput {
             task_calls,
             continuation_transfers
         );
-        for (key, projection) in &output.facts.parameter_projections {
+        for (key, projection) in &facts.parameter_projections {
             if let Some(body) = bodies.get_mut(&projection.owner) {
                 body.facts
                     .parameter_projections
                     .insert(*key, projection.clone());
             }
         }
-        for (stmt, fact) in &output.facts.stmt_effects {
+        for (stmt, fact) in &facts.stmt_effects {
             let owner = index
                 .stmt_item
                 .get(stmt)
@@ -94,7 +102,7 @@ impl BodyEffectOutput {
                 body.facts.stmt_effects.insert(*stmt, fact.clone());
             }
         }
-        for (symbol, summary) in &output.facts.inferred_parameter_effects {
+        for (symbol, summary) in &facts.inferred_parameter_effects {
             let Some(etas_hir::SymbolDef::Param { owner, .. }) =
                 hir.symbols.get(*symbol).map(|data| &data.def)
             else {
@@ -108,23 +116,22 @@ impl BodyEffectOutput {
                     .insert(*symbol, summary.clone());
             }
         }
-        for (id, snapshot) in &output.facts.callable_environments {
+        for (id, snapshot) in &facts.callable_environments {
             if let Some(body) = bodies.get_mut(&snapshot.owner) {
                 body.facts
                     .callable_environments
                     .insert(*id, snapshot.clone());
             }
         }
-        for (key, proof) in &output.facts.frozen_callable_graphs {
+        for (key, proof) in &facts.frozen_callable_graphs {
             if let Some(body) = bodies.get_mut(&proof.owner) {
                 body.facts
                     .frozen_callable_graphs
                     .insert(*key, proof.clone());
             }
         }
-        for (id, analysis) in &output.facts.captured_callables {
-            let owner = output
-                .facts
+        for (id, analysis) in &facts.captured_callables {
+            let owner = facts
                 .callable_environments
                 .get(&id.environment)
                 .ok_or_else(|| format!("captured callable has no checked environment: {id:?}"))?
@@ -133,12 +140,11 @@ impl BodyEffectOutput {
                 body.facts.captured_callables.insert(*id, analysis.clone());
             }
         }
-        for (source, analysis) in &output.facts.metadata_callables {
+        for (source, analysis) in &facts.metadata_callables {
             let Some(environment) = source.environment else {
                 continue;
             };
-            let owner = output
-                .facts
+            let owner = facts
                 .callable_environments
                 .get(&environment)
                 .ok_or_else(|| format!("metadata callable has no checked environment: {source:?}"))?
@@ -149,11 +155,10 @@ impl BodyEffectOutput {
                     .insert(*source, analysis.clone());
             }
         }
-        for (reference, analysis) in &output.facts.callable_references {
+        for (reference, analysis) in &facts.callable_references {
             let owner = match reference.environment {
                 Some(environment) => {
-                    output
-                        .facts
+                    facts
                         .callable_environments
                         .get(&environment)
                         .ok_or_else(|| {
@@ -169,7 +174,7 @@ impl BodyEffectOutput {
                     .insert(reference.clone(), analysis.clone());
             }
         }
-        for (unit, fact) in &output.facts.unit_effects {
+        for (unit, fact) in &facts.unit_effects {
             let owner = match unit {
                 EffectUnit::Item(item) => item,
                 EffectUnit::HandlerArm { owner, .. }
@@ -178,43 +183,42 @@ impl BodyEffectOutput {
             };
             if let Some(body) = bodies.get_mut(owner) {
                 body.facts.unit_effects.insert(*unit, fact.clone());
-                if let Some(summary) = output.facts.suspension.get(unit) {
+                if let Some(summary) = facts.suspension.get(unit) {
                     body.facts.suspension.insert(*unit, *summary);
                 }
             }
         }
-        for contract in &output.facts.public_contracts {
+        for contract in &facts.public_contracts {
             if let Some(body) = bodies.get_mut(&contract.item) {
                 body.facts.public_contracts.push(contract.clone());
             }
         }
         for (item, body) in &mut bodies {
-            if let Some(summary) = output.facts.item_effects.get(item) {
+            if let Some(summary) = facts.item_effects.get(item) {
                 body.facts.item_effects.insert(*item, summary.clone());
             }
-            if let Some(requirements) = output.facts.requirements.items.get(item) {
+            if let Some(requirements) = facts.requirements.items.get(item) {
                 body.facts
                     .requirements
                     .items
                     .insert(*item, requirements.clone());
             }
-            if let Some(specs) = output.facts.trace_specs.items.get(item) {
+            if let Some(specs) = facts.trace_specs.items.get(item) {
                 body.facts.trace_specs.items.insert(*item, specs.clone());
             }
-            if let Some(alternatives) = output.facts.trace_specs.declaration_alternatives.get(item)
-            {
+            if let Some(alternatives) = facts.trace_specs.declaration_alternatives.get(item) {
                 body.facts
                     .trace_specs
                     .declaration_alternatives
                     .insert(*item, alternatives.clone());
             }
-            if let Some(models) = output.facts.trace_specs.conformances.get(item) {
+            if let Some(models) = facts.trace_specs.conformances.get(item) {
                 body.facts
                     .trace_specs
                     .conformances
                     .insert(*item, models.clone());
             }
-            if let Some(support) = output.facts.interpreter_support.items.get(item) {
+            if let Some(support) = facts.interpreter_support.items.get(item) {
                 body.facts
                     .interpreter_support
                     .items
@@ -225,22 +229,22 @@ impl BodyEffectOutput {
             let body = bodies.get_mut(&item).ok_or_else(|| {
                 format!("effect symbol {symbol:?} has no projected body {item:?}")
             })?;
-            if let Some(summary) = output.facts.symbol_effects.get(&symbol) {
+            if let Some(summary) = facts.symbol_effects.get(&symbol) {
                 body.facts.symbol_effects.insert(symbol, summary.clone());
             }
-            if let Some(requirements) = output.facts.requirements.symbols.get(&symbol) {
+            if let Some(requirements) = facts.requirements.symbols.get(&symbol) {
                 body.facts
                     .requirements
                     .symbols
                     .insert(symbol, requirements.clone());
             }
-            if let Some(specs) = output.facts.trace_specs.symbols.get(&symbol) {
+            if let Some(specs) = facts.trace_specs.symbols.get(&symbol) {
                 body.facts.trace_specs.symbols.insert(symbol, specs.clone());
             }
         }
         for body in bodies.values_mut() {
             body.facts.external_parameter_projections =
-                output.facts.external_parameter_projections.clone();
+                facts.external_parameter_projections.clone();
         }
         Ok(bodies)
     }

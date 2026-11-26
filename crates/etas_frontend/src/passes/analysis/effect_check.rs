@@ -269,6 +269,9 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             analysis_mode,
             EffectAnalysisMode::Replay(_) | EffectAnalysisMode::ReplayPrepared(_)
         );
+        let source_specializations = !replaying
+            && context.input.options.standard_library_mode
+                == crate::StandardLibraryMode::SourceBootstrap;
         let diagnostics_before = context.diagnostics.len();
         for _ in 0..limit {
             let mut requested = None;
@@ -281,7 +284,28 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             } else {
                 analysis_mode
             };
-            let result = self.run_once(context, manager, &mut requested, mode);
+            let before = context.types.as_ref().map_or(0, |types| types.store.len());
+            let result = if source_specializations {
+                let Some(mut input_types) = context.types.clone() else {
+                    return PassResult::failed("effect checking requires finalized type output");
+                };
+                let result = input_types.with_specializations(limit, |types| {
+                    self.run_once(context, manager, &mut requested, mode, Some(types))
+                });
+                match result {
+                    Ok(result) => {
+                        context.types = Some(input_types);
+                        result
+                    }
+                    Err(error) => {
+                        return PassResult::failed(format!(
+                            "Effect type materialization failed: {error}"
+                        ));
+                    }
+                }
+            } else {
+                self.run_once(context, manager, &mut requested, mode, None)
+            };
             let Some(requested_types) = requested else {
                 if matches!(&result.control, etas_utils::PassControl::Continue) {
                     match task_rows::refine(context) {
@@ -327,7 +351,6 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             }
             let types = context.types.as_mut().expect("checked type phase");
             let mut interner = etas_types::TypeInterner::from_store(types.store.as_ref().clone());
-            let before = interner.store().len();
             let roots = requested_types
                 .into_iter()
                 .map(|ty| interner.intern(ty))
@@ -355,6 +378,7 @@ impl RunEffectPipelinePass {
         manager: &mut PassManager<ProjectContext>,
         requested: &mut Option<Vec<etas_types::Type>>,
         analysis_mode: EffectAnalysisMode<'_>,
+        specialized_types: Option<&etas_types::TypeOutput>,
     ) -> PassResult {
         context.residual_plans = None;
         context.residual_support = None;
@@ -365,7 +389,7 @@ impl RunEffectPipelinePass {
         let Some(hir) = context.hir.as_ref() else {
             return PassResult::failed("effect checking requires finalized HIR output");
         };
-        let Some(types) = context.types.as_ref() else {
+        let Some(types) = specialized_types.or(context.types.as_ref()) else {
             return PassResult::failed("effect checking requires finalized type output");
         };
         let Some(resolved_imports) = context.resolved_imports.as_ref() else {

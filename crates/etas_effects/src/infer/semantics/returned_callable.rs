@@ -1,3 +1,4 @@
+use crate::infer::analysis::dependencies::InputFact;
 use std::collections::BTreeSet;
 
 use super::specialize::{EffectSpecializationError, TraceArgumentBindings};
@@ -353,20 +354,10 @@ impl EffectSemantics<'_> {
             {
                 self.discovered_call_results
                     .borrow_mut()
-                    .value_projections
-                    .entry(key)
-                    .or_default()
-                    .extend(sources);
+                    .extend_projection(key, sources);
             }
         }
-        let projected_nodes = self
-            .discovered_call_results
-            .borrow()
-            .value_projections
-            .iter()
-            .map(|((_, path), sources)| 1 + path.len() + sources.len())
-            .sum::<usize>();
-        if projected_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
+        if self.discovered_call_results.borrow().projection_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
             return Err(EffectSpecializationError::InvalidCallableReturnSources);
         }
         if let Some(parameters) = parameters {
@@ -412,6 +403,7 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn checked_value_sources(&self, expr: HirExprId) -> Option<&BTreeSet<LatentSource>> {
+        self.dependencies.read(InputFact::Value(expr));
         self.call_results.value_sources(expr).filter(|sources| {
             !sources
                 .iter()
@@ -448,12 +440,14 @@ impl EffectSemantics<'_> {
                 .insert(expr);
         }
         let mut reads = self.discovered_call_results.borrow_mut();
-        let previous = reads.values.get(&expr).cloned().unwrap_or_default();
-        let current = reads.values.entry(expr).or_default();
-        current.extend(sources);
-        self.close_origin_set(&previous, current);
-        if reads.values.len() + reads.values.values().map(BTreeSet::len).sum::<usize>()
-            > etas_package_metadata::MAX_METADATA_GRAPH_NODES
+        reads.update_value(expr, |current| {
+            let previous = current.clone();
+            current.extend(sources);
+            if !previous.is_empty() && previous.len() != current.len() {
+                self.close_origin_set(&previous, current);
+            }
+        });
+        if reads.value_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES
         {
             return Err(EffectSpecializationError::InvalidCallableEnvironment {
                 reason: "checked read-source graph exceeds the analysis node budget".into(),
@@ -473,8 +467,8 @@ impl EffectSemantics<'_> {
             .any(|source| matches!(source, LatentSource::Unavailable { .. }));
         if complete {
             let mut results = self.discovered_call_results.borrow_mut();
-            results.record_value_sources(call, sources.iter().copied());
-            if results.values.len() + results.values.values().map(BTreeSet::len).sum::<usize>()
+            results.update_value(call, |values| values.extend(sources.iter().copied()));
+            if results.value_nodes
                 > etas_package_metadata::MAX_METADATA_GRAPH_NODES
             {
                 return Err(EffectSpecializationError::InvalidCallableEnvironment {

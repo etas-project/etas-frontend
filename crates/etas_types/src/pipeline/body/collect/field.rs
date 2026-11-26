@@ -72,11 +72,11 @@ pub(super) fn declared_field_hint<E>(
     field: &str,
     span: etas_core::Span,
 ) -> Option<TypeId> {
-    if let Some(projection) = crate::value_representation::checked_value_projection(
+    if let Some(projection) = crate::value_representation::checked_value_projection_with(
         ctx.ctx.interner.store(),
-        &ctx.ctx.spec_facts(),
         base,
         field,
+        || ctx.ctx.spec_facts(),
     ) {
         return projection.output_type(ctx.ctx.interner.store(), base);
     }

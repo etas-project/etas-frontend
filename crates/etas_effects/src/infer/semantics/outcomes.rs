@@ -119,6 +119,7 @@ impl EffectSemantics<'_> {
             );
             return;
         }
+        if let Some(value) = value { self.read_expr_owner(value); }
         if let Some(value) = value
             && let Some(ty) = self.types.facts.expr_types.get(&value)
             && let Some(exits) = self.inputs.expr_effects.get(&value).and_then(|summary| summary.exits.as_ref())
@@ -283,6 +284,7 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn record_terminal_expr(&self, expr: HirExprId, state: &mut EffectState) {
+        self.read_expr_owner(expr);
         let outcome = match self.inputs.performed_actions.get(&expr) {
             Some(fact) => {
                 let mut errors = fact.summary.escaping_effects.effects.iter().filter_map(

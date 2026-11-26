@@ -90,6 +90,9 @@ impl EffectSemantics<'_> {
                     pending.push(LatentSource::Parameter { owner, symbol })
                 }
                 SymbolDef::Local { .. } | SymbolDef::PatternBinding { .. } => {
+                    if let Some(owner) = unit.owner() {
+                        self.dependencies.read(crate::infer::analysis::dependencies::InputFact::BodyFacts(owner));
+                    }
                     let sources = self
                         .captured_values
                         .get(&unit)

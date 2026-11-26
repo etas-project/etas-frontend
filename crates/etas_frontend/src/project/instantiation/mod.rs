@@ -1,6 +1,6 @@
 mod handlers;
-mod value_equality;
 mod index;
+mod value_equality;
 pub(crate) use handlers::HandlerContexts;
 mod prepare;
 mod rows;
