@@ -76,17 +76,38 @@ impl DefinitionDescriptorProjector<'_> {
         owner: GenericOwner,
         parameters: &[GenericDeclaration],
     ) -> Result<usize, ProjectionError> {
-        if let Some(scope) = self.scopes.iter().position(|scope| scope.owner == owner) {
+        let existing = self
+            .scopes
+            .iter()
+            .position(|scope| {
+                scope.owner == owner
+                    && scope.parameters.len() == parameters.len()
+                    && scope
+                        .parameters
+                        .iter()
+                        .zip(parameters)
+                        .all(|(a, b)| a.name == b.name && a.effect == b.effect)
+            })
+            .or_else(|| self.scopes.iter().position(|scope| scope.owner == owner));
+        if let Some(mut scope) = existing {
             let previous = self.scopes[scope].parameters.clone();
             if previous.len() != parameters.len()
                 || previous
                     .iter()
                     .zip(parameters)
-                    .any(|(a, b)| a.name != b.name || a.effect != b.effect)
+                    .any(|(a, b)| a.effect != b.effect)
             {
-                return Err(ProjectionError::Invalid(
-                    "one definition identity has conflicting generic binders".into(),
-                ));
+                return Err(ProjectionError::Invalid(format!(
+                    "one definition identity has conflicting generic binders: {owner:?}; previous={:?}; incoming={:?}",
+                    previous
+                        .iter()
+                        .map(|p| (&p.name, p.effect))
+                        .collect::<Vec<_>>(),
+                    parameters
+                        .iter()
+                        .map(|p| (&p.name, p.effect))
+                        .collect::<Vec<_>>(),
+                )));
             }
             if previous
                 .iter()
@@ -98,6 +119,28 @@ impl DefinitionDescriptorProjector<'_> {
                 return Err(ProjectionError::Invalid(format!(
                     "one definition identity has conflicting generic bounds: {owner:?}"
                 )));
+            }
+            if previous
+                .iter()
+                .zip(parameters)
+                .any(|(a, b)| a.name != b.name)
+            {
+                // Alpha-renamed source headers share canonical owner/position
+                // binders, but retain separate lexical name environments.
+                let own_binders = self.scopes[scope].own_binders.clone();
+                let type_parameters = self.scopes[scope].type_parameters.clone();
+                scope = self.scopes.len();
+                self.scopes.push(Scope {
+                    owner: owner.clone(),
+                    binders: parameters
+                        .iter()
+                        .zip(&own_binders)
+                        .map(|(parameter, binder)| (parameter.name.clone(), *binder))
+                        .collect(),
+                    type_parameters,
+                    own_binders,
+                    parameters: parameters.to_vec(),
+                });
             }
             // A declaration can have both an imported signature and a linked
             // source signature. Their local parameter IDs share one portable

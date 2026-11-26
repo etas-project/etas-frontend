@@ -448,12 +448,14 @@ fn build_selected(
     // Inherent impls own the same canonical generic binders as spec impls.
     // Binding summaries can refer to them even when the method body is pure.
     let mut inherent_contracts = BTreeMap::new();
-    for method in checked
+    let mut inherent_methods = checked
         .types
         .type_impl_methods
         .values()
         .filter(|method| method.inherent)
-    {
+        .collect::<Vec<_>>();
+    inherent_methods.sort_by_key(|method| method.symbol);
+    for method in inherent_methods {
         let identity = identities
             .method(method.symbol)
             .ok_or(ProjectionError::MissingCallable(method.symbol))?;
