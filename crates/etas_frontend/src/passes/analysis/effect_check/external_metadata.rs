@@ -193,6 +193,7 @@ fn external_dependency_action(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(etas_effects::DependencyEffectAction {
+        selects_by_owner: action.selects_by_owner,
         path: action.path.clone(),
         effect_args: action
             .effect_args

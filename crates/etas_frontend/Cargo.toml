@@ -1,6 +1,6 @@
 [package]
 name = "etas_frontend"
-version = "0.21.6"
+version = "0.21.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

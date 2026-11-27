@@ -4527,6 +4527,7 @@ flow main() -> unit {
             runtime_requirement: Some(RuntimeRequirementReason::Network),
         }],
         actions: vec![etas_effects::DependencyEffectAction {
+            selects_by_owner: false,
             has_default_handler: false,
             path: vec!["EdkHttp".into(), "request".into()],
             effect_args: Vec::new(),

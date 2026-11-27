@@ -64,6 +64,27 @@ pub struct HirAgentMethod {
 }
 
 impl HirProgram {
+    /// An action without local selectors inherits its effect declaration's type selectors.
+    pub fn action_selects_by_owner(&self, symbol: crate::SymbolId) -> bool {
+        let Some(crate::SymbolDef::EffectAction {
+            declaring_item,
+            action_index,
+            ..
+        }) = self.symbols.get(symbol).map(|data| &data.def)
+        else {
+            return false;
+        };
+        let Some(crate::HirItem::Effect(effect)) = self.items.get(*declaring_item) else {
+            return false;
+        };
+        !effect.type_params.is_empty()
+            && effect
+                .body
+                .actions()
+                .get(*action_index as usize)
+                .is_some_and(|action| action.selector_params.is_empty())
+    }
+
     /// Whether an arm discards every payload and cannot resume the request.
     /// Such an arm does not depend on the payload or result type of an overload.
     pub fn handler_ignores_request_abi<E>(

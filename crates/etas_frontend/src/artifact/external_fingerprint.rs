@@ -302,6 +302,7 @@ impl Encoder {
                     if let Some(row) = &action.default_handler_effects {
                         tasks.push(Task::Row(row));
                     }
+                    self.byte(u8::from(action.selects_by_owner));
                     self.texts(&action.selector_param_names);
                     self.number(action.generic_params.len());
                     self.number(action.params.len());
@@ -716,6 +717,7 @@ pub(crate) fn external_dependency_effects(
                 Kind::StringPattern => encoder.byte(3),
             }
         }
+        encoder.byte(u8::from(action.selects_by_owner));
         encoder.texts(&action.selector_param_names);
         encoder.number(action.selector_defaults.len());
         for value in &action.selector_defaults {
@@ -1152,6 +1154,7 @@ mod tests {
         spec.callable.as_mut().unwrap().output = Type::Primitive("string".into());
         assert_ne!(before, external_spec(&spec));
         let mut action = Action {
+            selects_by_owner: false,
             param_names: vec![],
             parameter_defaults: vec![],
             default_handler_effects: None,
@@ -1215,6 +1218,7 @@ mod tests {
     fn dependency_effect_selector_metadata_and_source_bindings_are_fingerprinted() {
         let mut metadata = etas_effects::DependencyEffectMetadata {
             actions: vec![etas_effects::DependencyEffectAction {
+                selects_by_owner: false,
                 has_default_handler: false,
                 path: vec!["dep".into(), "E".into(), "act".into()],
                 effect_args: vec![etas_effects::EffectActionArgKind::Type],

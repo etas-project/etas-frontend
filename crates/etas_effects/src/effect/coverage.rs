@@ -56,6 +56,14 @@ impl EffectCoverage<'_> {
             (Effect::AppliedAction(allowed), Effect::AppliedAction(actual)) => {
                 self.applied_action_covers(allowed, actual)
             }
+            (Effect::Applied { tag, args }, Effect::AppliedAction(actual)) => {
+                *tag == actual.action.tag
+                    && self.registry.action_signature(&actual.action).is_some_and(|sig| sig.selects_by_owner)
+                    && args.len() == actual.args.len()
+                    && args.iter().zip(&actual.args).all(|(owner, selector)| {
+                        matches!(selector, EffectArgRef::Type(requested) if requested == owner)
+                    })
+            }
             (
                 Effect::Applied {
                     tag: allowed_tag,

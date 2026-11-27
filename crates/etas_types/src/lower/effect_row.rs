@@ -94,12 +94,10 @@ fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -
             && let Some(SymbolDef::ImportAlias { path, .. }) =
                 ctx.hir.symbols.get(alias).map(|symbol| &symbol.def)
         {
-            if let Some(member) = member
-                && let Some(etas_std::StdSymbol { decl: etas_std::StdDecl::Effect(owner), .. }) = ctx.std_registry.lookup_qualified(path)
-                && ctx.std_registry.symbols().any(|symbol| matches!(&symbol.decl,
-                    etas_std::StdDecl::EffectAction(action) if action.owner == owner.name && action.name == member))
+            if let Some(owner) = ctx.std_registry.lookup_qualified(path)
+                && let etas_std::StdDecl::Effect(effect) = &owner.decl
             {
-                return Some(format!("{}.{member}", owner.name));
+                return Some(standard_effect_name(owner, effect, member));
             }
             let mut path = path.clone();
             if let Some(member) = member {
@@ -107,7 +105,9 @@ fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -
             }
             if let Some(symbol) = ctx.std_registry.lookup_qualified(&path) {
                 match &symbol.decl {
-                    etas_std::StdDecl::Effect(effect) => return Some(effect.name.clone()),
+                    etas_std::StdDecl::Effect(effect) => {
+                        return Some(standard_effect_name(symbol, effect, None));
+                    }
                     etas_std::StdDecl::EffectAction(action) => {
                         return Some(format!("{}.{}", action.owner, action.name));
                     }
@@ -127,15 +127,10 @@ fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -
         );
     };
     if let Some(native) = ctx.source_type_role(owner)
-        && let Some(etas_std::StdSymbol {
-            decl: etas_std::StdDecl::Effect(declaration),
-            ..
-        }) = ctx.std_registry.symbol(native)
+        && let Some(symbol) = ctx.std_registry.symbol(native)
+        && let etas_std::StdDecl::Effect(declaration) = &symbol.decl
     {
-        return Some(match member {
-            None => declaration.name.clone(),
-            Some(member) => format!("{}.{member}", declaration.name),
-        });
+        return Some(standard_effect_name(symbol, declaration, member));
     }
     if member.is_none()
         && matches!(
@@ -181,6 +176,22 @@ fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -
             effect,
             "source effect import has no canonical declaration path",
         ),
+    }
+}
+
+fn standard_effect_name(
+    symbol: &etas_std::StdSymbol,
+    effect: &etas_std::EffectDecl,
+    member: Option<&str>,
+) -> String {
+    let owner = if effect.core || effect.stable_id.is_some() {
+        effect.name.clone()
+    } else {
+        symbol.qualified_path.join(".")
+    };
+    match member {
+        Some(member) => format!("{owner}.{member}"),
+        None => owner,
     }
 }
 

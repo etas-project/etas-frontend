@@ -83,6 +83,8 @@ pub struct DependencyEffectTag {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct DependencyEffectAction {
+    #[serde(default)]
+    pub selects_by_owner: bool,
     pub path: Vec<String>,
     pub effect_args: Vec<EffectActionArgKind>,
     #[serde(default)]
@@ -757,6 +759,7 @@ impl EffectRegistry {
         };
         let owner_name = owner_tag.name.clone();
         let sig = EffectActionSig {
+            selects_by_owner: false,
             has_default_handler,
             id,
             owner,
@@ -1015,6 +1018,7 @@ impl EffectRegistry {
             self.dependency_actions.insert(
                 id,
                 EffectActionSig {
+                    selects_by_owner: action.selects_by_owner,
                     has_default_handler: action.has_default_handler,
                     id,
                     owner,
@@ -1160,6 +1164,7 @@ impl EffectRegistry {
                     id
                 });
             let sig = EffectActionSig {
+                selects_by_owner: hir.action_selects_by_owner(*symbol),
                 has_default_handler: signature.default_handler_effects.is_some(),
                 id: action_id,
                 owner,
@@ -1184,9 +1189,11 @@ impl EffectRegistry {
                 && let Some(native) = self.standard_actions.get_mut(&action_id)
             {
                 native.has_default_handler = sig.has_default_handler;
+                native.selects_by_owner = sig.selects_by_owner;
             }
             if let Some(metadata) = self.dependency_actions.get(&action_id)
                 && (metadata.owner != owner
+                    || metadata.selects_by_owner != sig.selects_by_owner
                     || metadata.effect_args != sig.effect_args
                     || metadata.selector_param_names != sig.selector_param_names
                     || metadata.selector_defaults != sig.selector_defaults
@@ -1482,6 +1489,7 @@ mod tests {
                 runtime_requirement: None,
             }],
             actions: vec![DependencyEffectAction {
+                selects_by_owner: false,
                 has_default_handler: false,
                 path: vec!["errors".to_owned(), "Net".to_owned(), "request".to_owned()],
                 effect_args: vec![EffectActionArgKind::StringPattern],

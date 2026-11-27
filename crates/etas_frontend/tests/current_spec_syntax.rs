@@ -41,6 +41,20 @@ flow main() -> Paper<i32> ![] {
 }
 
 #[test]
+fn declared_effect_instance_covers_an_action_selected_by_its_owner() {
+    check(
+        r#"module app;
+effect Registered<T> { action put(value: T) -> unit; }
+flow publish<T>(value: T) -> unit ![Registered<T>] {
+    perform Registered<T>.put(value);
+}
+flow main() -> unit ![] {
+    publish<i32>(7) with { Registered<i32>.put(value) => (); };
+}"#,
+    );
+}
+
+#[test]
 fn named_dependency_providers_keep_names_separate_from_type_fallbacks() {
     check_injection(
         r#"module std.effects;

@@ -65,8 +65,11 @@ impl Parser<'_> {
         self.cursor.nth(index).kind == TokenKind::Punct(Punct::LParen)
     }
     pub(crate) fn postfix_expr(&mut self) -> Expr {
-        let suppress_handler_with = std::mem::take(&mut self.suppress_next_handler_with);
-        let mut expr = self.primary_expr();
+        let expr = self.primary_expr();
+        self.postfix_tail(expr)
+    }
+
+    pub(super) fn postfix_tail(&mut self, mut expr: Expr) -> Expr {
         let mut chain = 0;
         loop {
             if !self.body_chain_step(&mut chain) {
@@ -169,17 +172,6 @@ impl Parser<'_> {
                 let span = expr.span().cover(question.span);
                 expr = Expr::Try(TryExpr {
                     expr: Box::new(expr),
-                    span,
-                });
-            } else if self.handler_with_enabled
-                && !suppress_handler_with
-                && self.cursor.eat_keyword(Keyword::With).is_some()
-            {
-                let handler = self.handler_arg_expr();
-                let span = expr.span().cover(handler.span());
-                expr = Expr::Handle(HandleExpr {
-                    body: Box::new(expr),
-                    handler,
                     span,
                 });
             } else if !generic_args.is_empty() {

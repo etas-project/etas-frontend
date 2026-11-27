@@ -36,8 +36,6 @@ fn parse_source<T>(source: &SourceFile, parse: impl FnOnce(&mut Parser<'_>) -> T
         diagnostics,
         delimiters: Vec::new(),
         record_expr_enabled: true,
-        handler_with_enabled: true,
-        suppress_next_handler_with: false,
         body_budget: None,
     };
     let value = parse(&mut parser);
@@ -133,8 +131,6 @@ fn parse_source_bounded<T, E>(
         diagnostics,
         delimiters: Vec::new(),
         record_expr_enabled: true,
-        handler_with_enabled: true,
-        suppress_next_handler_with: false,
         body_budget: Some(BodyParseBudget {
             limits,
             depth: 0,
@@ -197,8 +193,6 @@ pub(crate) struct Parser<'a> {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) delimiters: Vec<Delimiter>,
     pub(crate) record_expr_enabled: bool,
-    pub(crate) handler_with_enabled: bool,
-    pub(crate) suppress_next_handler_with: bool,
     body_budget: Option<BodyParseBudget>,
 }
 
@@ -265,8 +259,6 @@ impl Parser<'_> {
             diagnostics: Vec::new(),
             delimiters: self.delimiters.clone(),
             record_expr_enabled: self.record_expr_enabled,
-            handler_with_enabled: self.handler_with_enabled,
-            suppress_next_handler_with: self.suppress_next_handler_with,
             body_budget: self.body_budget,
         };
         let ty = probe.type_expr();

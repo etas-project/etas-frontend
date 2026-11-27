@@ -1207,6 +1207,15 @@ impl EffectSemantics<'_> {
                 }
             }
         }
+        self.bind_spec_method_arguments(
+            &summary,
+            &mut bindings,
+            self.callable_environment_site(site.call)?,
+            state,
+            super::callable_generics::ScopedGenericArguments::named(&call_types, &call_rows),
+            &mut BTreeSet::new(),
+            false,
+        )?;
         let inferred = self.inferred_callback_parameters(&targets, &params)?;
         let template = summary.action_trace.clone();
         self.merge_parameter_call_summaries(&mut summary, &template, &bindings, state, &inferred)

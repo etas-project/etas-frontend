@@ -249,6 +249,7 @@ mod tests {
             }],
             actions: vec![
                 DependencyEffectAction {
+                    selects_by_owner: false,
                     has_default_handler: false,
                     path: vec!["dep".into(), "Gate".into(), "typed".into()],
                     effect_args: vec![EffectActionArgKind::Type],
@@ -258,6 +259,7 @@ mod tests {
                     runtime_requirement: None,
                 },
                 DependencyEffectAction {
+                    selects_by_owner: false,
                     has_default_handler: false,
                     path: vec!["dep".into(), "Gate".into(), "resource".into()],
                     effect_args: vec![EffectActionArgKind::StaticResourcePath {

@@ -9249,6 +9249,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            selects_by_owner: false,
             param_names: vec!["method".into(), "host".into()],
             parameter_defaults: Vec::new(),
             default_handler_effects: None,
@@ -9418,6 +9419,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            selects_by_owner: false,
             param_names: Vec::new(),
             parameter_defaults: Vec::new(),
             default_handler_effects: None,
@@ -9774,6 +9776,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            selects_by_owner: false,
             param_names: Vec::new(),
             parameter_defaults: Vec::new(),
             default_handler_effects: None,
@@ -12389,6 +12392,7 @@ fn frontend_check_project_rejects_malformed_external_action_selector_metadata() 
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            selects_by_owner: false,
             param_names: vec!["host".into()],
             parameter_defaults: Vec::new(),
             default_handler_effects: None,
@@ -12552,6 +12556,7 @@ fn frontend_external_selector_names_are_kind_checked() {
         environment.external_public_metadata[0]
             .actions
             .push(ProjectExternalActionSignatureInput {
+                selects_by_owner: false,
                 param_names: Vec::new(),
                 parameter_defaults: Vec::new(),
                 default_handler_effects: None,

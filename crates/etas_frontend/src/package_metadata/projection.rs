@@ -487,7 +487,10 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .get(*symbol)
                 .map(|symbol| visibility_name(symbol.visibility))
                 .unwrap_or(MetadataVisibility::Private);
-            actions.push((*symbol, self.action_signature(path, visibility, signature)?));
+            actions.push((
+                *symbol,
+                self.action_signature(*symbol, path, visibility, signature)?,
+            ));
         }
         actions.sort_by(|(left_symbol, left), (right_symbol, right)| {
             left.path
@@ -701,6 +704,7 @@ impl<'a> ProjectMetadataProjection<'a> {
 
     fn action_signature(
         &self,
+        symbol: etas_hir::SymbolId,
         path: Vec<String>,
         visibility: MetadataVisibility,
         signature: &EffectActionSignature,
@@ -711,6 +715,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .map(|param| param.name.clone())
             .collect::<BTreeSet<_>>();
         Ok(MetadataActionSignature {
+            selects_by_owner: self.checked.hir.action_selects_by_owner(symbol),
             default_handler_effects: signature
                 .default_handler_effects
                 .as_ref()

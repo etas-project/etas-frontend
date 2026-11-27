@@ -94,3 +94,23 @@ fn else_if_expression_keeps_a_value_in_its_else_branch() {
         Some(Expr::If(_))
     ));
 }
+
+#[test]
+fn consecutive_handlers_wrap_the_computation_from_left_to_right() {
+    use etas_syntax::ast::HandlerArg;
+
+    let parsed = body("run() with first + second with last");
+    let Some(Expr::Handle(outer)) = parsed.final_expr.as_deref() else {
+        panic!("outer handler")
+    };
+    let Expr::Handle(inner) = outer.body.as_ref() else {
+        panic!("inner handler")
+    };
+    assert!(matches!(inner.body.as_ref(), Expr::Call(_)));
+    assert!(
+        matches!(&inner.handler, HandlerArg::Expr(value) if matches!(value.as_ref(), Expr::Binary(_)))
+    );
+    assert!(
+        matches!(&outer.handler, HandlerArg::Expr(value) if matches!(value.as_ref(), Expr::Path(_)))
+    );
+}

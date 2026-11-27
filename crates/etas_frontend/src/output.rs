@@ -1058,6 +1058,8 @@ pub struct ProjectExternalToolSchemaInput {
 )]
 pub struct ProjectExternalActionSignatureInput {
     #[serde(default)]
+    pub selects_by_owner: bool,
+    #[serde(default)]
     pub param_names: Vec<String>,
     #[serde(default)]
     pub parameter_defaults: Vec<etas_package_metadata::ParameterDefault>,

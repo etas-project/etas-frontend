@@ -685,7 +685,37 @@ impl EffectSemantics<'_> {
                     .iter()
                     .filter(|request| coverage.covers(effect, &request.action))
                     .collect::<Vec<_>>();
-                if parameters.is_empty()
+                let provider_row = EffectRow::closed(EffectSet::one(effect.clone()));
+                let parameters_excluded = parameters.iter().all(|parameter| {
+                    if parameter
+                        .excluded
+                        .iter()
+                        .any(|excluded| coverage.covers(excluded, effect))
+                    {
+                        return true;
+                    }
+                    let crate::ParameterCallTarget::SpecMethod { call, .. } = parameter.target
+                    else {
+                        return false;
+                    };
+                    // The witness is still symbolic. Its declared effect bound
+                    // can already rule out any additional request to this provider.
+                    self.types
+                        .facts
+                        .checked_method_calls
+                        .get(&call)
+                        .and_then(|method| method.signature.effects.as_ref())
+                        .and_then(|row| {
+                            crate::validate::resolve_checked_type_row(
+                                &self.types.store,
+                                self.registry,
+                                row,
+                            )
+                            .ok()
+                        })
+                        .is_some_and(|bound| coverage.rows_disjoint(&bound, &provider_row))
+                });
+                if parameters_excluded
                     && !matching.is_empty()
                     && matching.iter().all(|request| {
                         request.injection_name.as_ref().is_some_and(|name| {

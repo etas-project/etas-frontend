@@ -41,6 +41,8 @@ pub struct ActionInstanceRef {
 )]
 pub struct EffectActionSig {
     #[serde(default)]
+    pub selects_by_owner: bool,
+    #[serde(default)]
     pub has_default_handler: bool,
     pub id: EffectActionId,
     pub owner: EffectTagId,

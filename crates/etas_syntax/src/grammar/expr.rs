@@ -6,7 +6,31 @@ mod postfix;
 
 impl Parser<'_> {
     pub(crate) fn expr(&mut self) -> Expr {
-        self.with_body_recursion(Expr::Error, Self::lambda_or_pipeline)
+        self.with_body_recursion(Expr::Error, |parser| {
+            let mut expr = parser.lambda_or_pipeline();
+            let mut chain = 0;
+            while parser.cursor.at_keyword(Keyword::With) && parser.body_chain_step(&mut chain) {
+                parser.cursor.bump();
+                let handler = parser.handler_arg_expr();
+                let block_handler = matches!(handler, HandlerArg::Block(_));
+                let span = expr.span().cover(handler.span());
+                expr = Expr::Handle(HandleExpr {
+                    body: Box::new(expr),
+                    handler,
+                    span,
+                });
+                if block_handler {
+                    // A braced handler delimits its operand. The following operators
+                    // continue the application expression (e.g. `e with { ... }.field`).
+                    expr = parser.postfix_tail(expr);
+                    expr = parser.binary_tail(expr, 0);
+                    expr = parser.stage_compose_tail(expr);
+                    expr = parser.list_cons_tail(expr);
+                    expr = parser.pipeline_tail(expr);
+                }
+            }
+            expr
+        })
     }
 
     pub(crate) fn expr_before_block(&mut self) -> Expr {
@@ -82,6 +106,10 @@ impl Parser<'_> {
 
     pub(crate) fn pipeline_expr(&mut self) -> Expr {
         let input = self.list_cons_expr();
+        self.pipeline_tail(input)
+    }
+
+    fn pipeline_tail(&mut self, input: Expr) -> Expr {
         let mut stages = Vec::new();
         while self.cursor.eat_punct(Punct::TildeArrow).is_some() {
             stages.push(self.pipeline_stage());
@@ -104,6 +132,10 @@ impl Parser<'_> {
 
     fn list_cons_expr_inner(&mut self) -> Expr {
         let head = self.stage_compose_expr();
+        self.list_cons_tail(head)
+    }
+
+    fn list_cons_tail(&mut self, head: Expr) -> Expr {
         if self.cursor.eat_punct(Punct::ColonColon).is_none() {
             return head;
         }
@@ -118,6 +150,10 @@ impl Parser<'_> {
 
     pub(crate) fn stage_compose_expr(&mut self) -> Expr {
         let first = self.binary_expr(0);
+        self.stage_compose_tail(first)
+    }
+
+    fn stage_compose_tail(&mut self, first: Expr) -> Expr {
         if !self.cursor.at_punct(Punct::Pipe) {
             return first;
         }
@@ -151,7 +187,11 @@ impl Parser<'_> {
     }
 
     fn binary_expr_inner(&mut self, min_prec: u8) -> Expr {
-        let mut lhs = self.unary_expr();
+        let lhs = self.unary_expr();
+        self.binary_tail(lhs, min_prec)
+    }
+
+    fn binary_tail(&mut self, mut lhs: Expr, min_prec: u8) -> Expr {
         let mut chain = 0;
         while let Some((op, prec)) = self.binary_op() {
             if prec < min_prec {
@@ -712,8 +752,7 @@ impl Parser<'_> {
 
     pub(crate) fn handle_expr(&mut self) -> Expr {
         let start = self.expect_keyword(Keyword::Handle, "expected `handle`");
-        self.suppress_next_handler_with = true;
-        let body = self.expr();
+        let body = self.with_body_recursion(Expr::Error, Self::lambda_or_pipeline);
         self.expect_keyword(Keyword::With, "expected `with` after handle body");
         let handler = self.handler_arg_expr();
         let span = start.cover(handler.span());
@@ -736,7 +775,9 @@ impl Parser<'_> {
                 "`with handler { ... }` is not valid handler application syntax; use `with { ... }`",
             ));
         }
-        HandlerArg::Expr(Box::new(self.expr()))
+        HandlerArg::Expr(Box::new(
+            self.with_body_recursion(Expr::Error, Self::lambda_or_pipeline),
+        ))
     }
 
     pub(crate) fn handler_expr(&mut self) -> Expr {
