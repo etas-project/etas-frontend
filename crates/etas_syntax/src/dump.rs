@@ -1879,6 +1879,7 @@ fn binary_op_text(op: BinaryOp) -> &'static str {
         BinaryOp::Mul => "*",
         BinaryOp::Div => "/",
         BinaryOp::Rem => "%",
+        BinaryOp::BitXor => "^",
         BinaryOp::AndAnd => "&&",
         BinaryOp::OrOr => "||",
     }

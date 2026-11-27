@@ -556,17 +556,37 @@ impl TypeSolver {
         )?;
         for operation in numeric_operations {
             checkpoint()?;
-            let TypeConstraint::NumericFamilyOperation { operand, origin } = operation else {
+            let TypeConstraint::NumericFamilyOperation {
+                operand,
+                origin,
+                family,
+            } = operation
+            else {
                 unreachable!();
             };
             let operand = resolve_known_substitutions(input.store, &report, *operand);
-            if matches!(input.store.get(operand), Some(Type::Named(name)) if name.source_parameter.is_some())
-                && !crate::numeric_family::supports(input.store, input.spec_facts, operand)
+            let requires_evidence = *family == crate::numeric_family::Family::Integer
+                || matches!(input.store.get(operand), Some(Type::Named(name)) if name.source_parameter.is_some());
+            if requires_evidence
+                && !crate::numeric_family::supports_family(
+                    input.store,
+                    input.spec_facts,
+                    operand,
+                    *family,
+                )
             {
+                let message = match family {
+                    crate::numeric_family::Family::Integer => {
+                        "bitwise XOR requires integer operands of the same type"
+                    }
+                    _ => {
+                        "generic arithmetic and ordering require the checked Number primitive-family bound"
+                    }
+                };
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
                     span: origin.span,
-                    message: "generic arithmetic and ordering require the checked Number primitive-family bound".into(),
+                    message: message.into(),
                 });
             }
         }

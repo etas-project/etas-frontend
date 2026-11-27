@@ -1363,6 +1363,7 @@ fn collect_binary<E>(
             | HirBinaryOp::GtEq
     ) {
         ctx.emit(TypeConstraint::NumericFamilyOperation {
+            family: crate::numeric_family::Family::Number,
             operand: lhs_ty,
             origin: ConstraintOrigin { span },
         });
@@ -1373,6 +1374,13 @@ fn collect_binary<E>(
         origin: ConstraintOrigin { span },
         reason: AssignabilityReason::Other,
     });
+    if op == HirBinaryOp::BitXor {
+        ctx.emit(TypeConstraint::NumericFamilyOperation {
+            family: crate::numeric_family::Family::Integer,
+            operand: lhs_ty,
+            origin: ConstraintOrigin { span },
+        });
+    }
     Ok(match op {
         HirBinaryOp::AndAnd
         | HirBinaryOp::OrOr

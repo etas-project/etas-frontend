@@ -91,9 +91,10 @@ pub enum TypeConstraint {
         output: TypeId,
         origin: ConstraintOrigin,
     },
-    /// A generic arithmetic or ordering operand needs checked Number evidence.
+    /// The primitive family required by this operator.
     /// Solved after substitutions, with the complete body generic bounds.
     NumericFamilyOperation {
+        family: crate::numeric_family::Family,
         operand: TypeId,
         origin: ConstraintOrigin,
     },

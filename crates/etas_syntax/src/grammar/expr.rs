@@ -884,11 +884,12 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::LtEq) => (BinaryOp::LtEq, 4),
             TokenKind::Punct(Punct::Gt) => (BinaryOp::Gt, 4),
             TokenKind::Punct(Punct::GtEq) => (BinaryOp::GtEq, 4),
-            TokenKind::Punct(Punct::Plus) => (BinaryOp::Add, 5),
-            TokenKind::Punct(Punct::Minus) => (BinaryOp::Sub, 5),
-            TokenKind::Punct(Punct::Star) => (BinaryOp::Mul, 6),
-            TokenKind::Punct(Punct::Slash) => (BinaryOp::Div, 6),
-            TokenKind::Punct(Punct::Percent) => (BinaryOp::Rem, 6),
+            TokenKind::Punct(Punct::Caret) => (BinaryOp::BitXor, 5),
+            TokenKind::Punct(Punct::Plus) => (BinaryOp::Add, 6),
+            TokenKind::Punct(Punct::Minus) => (BinaryOp::Sub, 6),
+            TokenKind::Punct(Punct::Star) => (BinaryOp::Mul, 7),
+            TokenKind::Punct(Punct::Slash) => (BinaryOp::Div, 7),
+            TokenKind::Punct(Punct::Percent) => (BinaryOp::Rem, 7),
             _ => return None,
         };
         Some(op)

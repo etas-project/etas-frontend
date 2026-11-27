@@ -392,6 +392,7 @@ pub enum BinaryOp {
     Rem,
     AndAnd,
     OrOr,
+    BitXor,
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

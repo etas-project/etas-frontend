@@ -160,6 +160,22 @@ impl Formatter {
                     self.newline()?;
                 }
             }
+            TokenKind::Punct(Punct::Caret)
+                if matches!(
+                    self.previous,
+                    Some(
+                        TokenKind::Ident
+                            | TokenKind::IntLit
+                            | TokenKind::Punct(
+                                Punct::RParen | Punct::RBracket | Punct::RBrace | Punct::Question
+                            )
+                    )
+                ) =>
+            {
+                self.space()?;
+                self.write(text)?;
+                self.space()?;
+            }
             TokenKind::Punct(Punct::Comma) => {
                 self.trim_spaces();
                 self.write(text)?;
