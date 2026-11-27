@@ -21,32 +21,27 @@ pub(super) fn select<'a>(
     arguments: &[TypeId],
 ) -> Result<Vec<Import<'a>>, String> {
     let mut selected = Vec::new();
-    let target_specs = target
-        .checked_program()
-        .types
-        .spec_signatures
-        .keys()
-        .map(|symbol| {
-            target
-                .native_spec_identity(&CheckedSpecRef::Source(*symbol))
-                .map(|identity| (identity.clone(), *symbol))
-                .map_err(|e| e.to_string())
-        })
-        .collect::<Result<HashMap<_, _>, _>>()?;
+    let target_specs = crate::code::definition::declared_spec_symbols(target)
+        .map_err(|error| error.to_string())?;
+    let subjects =
+        crate::code::definition::ImplementationSubjects::new(&program.type_store, arguments);
     for declaration in program.types.methods.entries() {
         let MethodTarget::Source { callable, .. } = declaration.target else {
             continue;
         };
         if !matches!(declaration.evidence, MethodEvidence::Implementation { .. })
-            || !arguments.iter().any(|argument| {
-                etas_types::solver::spec_solver::match_implementation_subject(
-                    &program.type_store,
-                    &declaration.owner_params,
-                    declaration.receiver_type,
-                    *argument,
-                )
-                .is_some()
-            })
+            || !subjects
+                .candidates(declaration.receiver_type, &declaration.owner_params)
+                .iter()
+                .any(|argument| {
+                    etas_types::solver::spec_solver::match_implementation_subject(
+                        &program.type_store,
+                        &declaration.owner_params,
+                        declaration.receiver_type,
+                        *argument,
+                    )
+                    .is_some()
+                })
         {
             continue;
         }
@@ -208,7 +203,12 @@ pub(super) fn relocate(
                 .methods
                 .iter()
                 .find(|method| method.name == declaration.name)
-                .ok_or("SDK spec has no matching checked member")?
+                .ok_or_else(|| {
+                    format!(
+                        "SDK spec {} has no checked member {}",
+                        requirement.name, declaration.name
+                    )
+                })?
                 .identity
                 .clone(),
         );

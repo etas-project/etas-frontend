@@ -422,6 +422,27 @@ fn checked_external_spec_parameters(
     Ok((kinds, bounds, binders))
 }
 
+/// Import aliases may share the declaration's native identity while carrying
+/// only its public signature. Use the defining spec for checked member IDs.
+pub(crate) fn declared_spec_symbols(
+    catalog: &super::DefinitionCatalog,
+) -> Result<HashMap<etas_code::DefinitionKey, etas_hir::SymbolId>, ProjectionError> {
+    let checked = catalog.checked_program();
+    let mut symbols = HashMap::new();
+    for &symbol in checked.types.spec_signatures.keys() {
+        let spec = CheckedSpecRef::Source(symbol);
+        let identity = catalog.native_spec_identity(&spec)?.clone();
+        if matches!(checked.symbols.get(symbol).map(|symbol| &symbol.def),
+            Some(etas_hir::SymbolDef::Item { item }) if matches!(checked.items.get(*item), Some(etas_hir::HirItem::Spec(_))))
+        {
+            symbols.insert(identity, symbol);
+        } else {
+            symbols.entry(identity).or_insert(symbol);
+        }
+    }
+    Ok(symbols)
+}
+
 pub(crate) fn checked_spec_plan(
     input: CheckedTypeAndSpecPlanInput<'_>,
     reachable: &[TypeId],
@@ -440,10 +461,9 @@ pub(crate) fn checked_spec_plan(
     let mut mapping = HashMap::new();
     let mut source_specs = HashMap::new();
     if let Some(catalog) = target_definitions {
-        for symbol in catalog.checked_program().types.spec_signatures.keys() {
+        for (identity, symbol) in declared_spec_symbols(catalog)? {
             checkpoint(control)?;
-            let spec = CheckedSpecRef::Source(*symbol);
-            source_specs.insert(catalog.native_spec_identity(&spec)?.clone(), spec);
+            source_specs.insert(identity, CheckedSpecRef::Source(symbol));
         }
     }
     if let Some(catalog) = target_definitions {
@@ -466,13 +486,14 @@ pub(crate) fn checked_spec_plan(
             pending.push_back(bound.spec.clone());
         }
     }
+    let subjects = super::ImplementationSubjects::new(&source.type_store, reachable);
     let mut add_impl = |self_type: TypeId,
                         spec: CheckedSpecRef,
                         args: &[TypeId],
                         generic_params: &[etas_types::CallableGenericParam]|
      -> Result<(), ProjectionError> {
         let mut relevant = false;
-        for ty in reachable {
+        for ty in subjects.candidates(self_type, generic_params) {
             charge_edges(budget, 1)?;
             if etas_types::solver::spec_solver::match_implementation_subject(
                 &source.type_store,

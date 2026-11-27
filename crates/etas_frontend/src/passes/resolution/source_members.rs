@@ -212,12 +212,8 @@ pub(super) fn bind_members(hir: &mut HirProgram, alias: SymbolId, item: HirItemI
     }
 }
 
-fn resolve_value_path(
-    path: &mut ResolvedPath,
-    symbols: &etas_hir::SymbolTable,
-    scopes: &etas_hir::ScopeTree,
-    source_map: &etas_hir::SourceMap,
-) -> bool {
+fn resolve_value_path(path: &mut ResolvedPath, hir: &HirProgram) -> bool {
+    let symbols = &hir.symbols;
     // A child module and a value re-export may have the same public path.
     // Select the export from that checked module's canonical parent namespace.
     if let ResolveResult::Resolved(symbol) = path.resolution
@@ -236,7 +232,22 @@ fn resolve_value_path(
         path.resolution = ResolveResult::Resolved(member);
         return true;
     }
-    resolve_path(path, symbols, scopes, source_map)
+    let changed = resolve_path(path, symbols, &hir.scopes, &hir.source_map);
+    if let ResolveResult::PartiallyResolved(partial) = &mut path.resolution
+        && let Some(prefix) = partial.resolved_prefix
+        && let Some(target) = hir.canonical_source_symbol(prefix)
+        && (target != prefix
+            || partial.reason != etas_hir::PartialResolutionReason::MemberRequiresTypeChecking)
+        && matches!(
+            symbols.get(target).map(|s| &s.def),
+            Some(etas_hir::SymbolDef::TopLevelLet { .. })
+        )
+    {
+        partial.resolved_prefix = Some(target);
+        partial.reason = etas_hir::PartialResolutionReason::MemberRequiresTypeChecking;
+        return true;
+    }
+    changed
 }
 
 fn resolve_path(
@@ -328,14 +339,14 @@ pub(super) fn resolve_members(hir: &mut HirProgram) -> ResolvedMembers {
             HirExpr::Reflect(reflection) => {
                 for index in 0..2 {
                     if let Some(path) = reflection.target.path_mut(index)
-                        && resolve_value_path(path, &hir.symbols, &hir.scopes, &hir.source_map)
+                        && resolve_value_path(path, hir)
                     {
                         resolved.push(path.span);
                     }
                 }
             }
             HirExpr::Path(path) => {
-                let changed = resolve_value_path(path, &hir.symbols, &hir.scopes, &hir.source_map);
+                let changed = resolve_value_path(path, hir);
                 let resolution = resolve_flow_overload(hir, path.resolution.clone());
                 if changed || resolution != path.resolution {
                     resolved.push(path.span);

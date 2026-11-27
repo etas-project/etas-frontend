@@ -388,6 +388,8 @@ impl StandardLibrary {
         request_outputs.dedup();
         roots.extend(&request_types);
         roots.extend(&request_outputs);
+        roots.sort_unstable();
+        roots.dedup();
         let imported_methods = methods::select(source.checked_program(), &source, &target, &roots)
             .map_err(|error| format!("select consumer methods: {error}"))?;
         let mut additional_specs = Vec::new();

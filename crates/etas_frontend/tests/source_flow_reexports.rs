@@ -290,3 +290,44 @@ fn source_import_effect_analysis_rejects_missing_cyclic_and_dangling_identity_fa
         );
     }
 }
+
+#[test]
+fn imported_record_fields_keep_their_defining_value_as_the_path_prefix() {
+    let mut input = project(
+        "public import lib.leaf.Data;",
+        "import lib.api.Data;",
+        "return Data.count;",
+    );
+    input.sources[1].text =
+        "module lib.leaf; public type Row = { count: i32 }; public let Data = Row { count = 7 };"
+            .into();
+    let result = Frontend.check_project(input);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let checked = result.checked.unwrap();
+    let partial = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(_, expr)| match expr {
+            HirExpr::Path(path) if path.segments.last()?.name == "count" => {
+                match &path.resolution {
+                    ResolveResult::PartiallyResolved(partial) => Some(partial),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("field projection");
+    assert_eq!(
+        partial.reason,
+        etas_hir::PartialResolutionReason::MemberRequiresTypeChecking
+    );
+    let prefix = checked
+        .symbols
+        .get(partial.resolved_prefix.unwrap())
+        .unwrap();
+    assert!(matches!(
+        prefix.def,
+        etas_hir::SymbolDef::TopLevelLet { .. }
+    ));
+}

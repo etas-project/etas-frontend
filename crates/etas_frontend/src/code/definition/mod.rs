@@ -21,12 +21,15 @@ mod method_snapshots;
 pub(crate) use type_methods::{implementation_identity, type_method_identities};
 mod objects;
 pub(crate) use objects::ExternalRestorationReceipt;
+mod implementation_subjects;
 mod relocation;
 mod retention;
 mod snapshots;
+pub(crate) use implementation_subjects::ImplementationSubjects;
 mod spec_correspondence;
 pub(crate) use spec_correspondence::{
     CheckedTypeAndSpecPlanInput, SpecMaterializationInput, checked_type_and_spec_plan,
+    declared_spec_symbols,
 };
 mod sources;
 mod store;
