@@ -158,11 +158,18 @@ impl CheckedSemanticDependencies {
         for (ty, parameters) in &checked.types.type_generics {
             graph.record(Type(*ty), checked, parameters);
         }
+        let mut witnesses = BTreeMap::<_, BTreeSet<_>>::new();
         for method in checked.types.methods.entries() {
             if let etas_types::method::MethodTarget::Source { callable, .. }
             | etas_types::method::MethodTarget::Agent { callable, .. } = method.target
             {
                 graph.record(Definition(callable), checked, method);
+                if let Some(member) = &method.spec_member {
+                    witnesses
+                        .entry(member)
+                        .or_default()
+                        .insert(Definition(callable));
+                }
             }
         }
         for (method, _) in checked.types.value_equality_methods() {
@@ -179,6 +186,26 @@ impl CheckedSemanticDependencies {
             }
         }
         let index = checked.hir.index();
+        // A consumer may instantiate a generic SDK call after installation.
+        // Keep the implementations of its exact checked spec member in the slice.
+        for (expression, method) in checked.types.checked_method_calls.iter().chain(
+            checked
+                .types
+                .bound_method_values
+                .iter()
+                .map(|(expr, value)| (expr, &value.method)),
+        ) {
+            if let etas_types::method::MethodTarget::BoundSpec { member, .. } = &method.target
+                && let Some(targets) = witnesses.get(member)
+                && let Some(owner) = index.expr_item.get(expression)
+            {
+                graph
+                    .edges
+                    .entry(Definition(*owner))
+                    .or_default()
+                    .extend(targets);
+            }
+        }
         for (expression, action) in &checked.types.action_calls {
             if let Some(owner) = index.expr_item.get(expression) {
                 graph.symbol_reference(*owner, action.action_symbol, checked);

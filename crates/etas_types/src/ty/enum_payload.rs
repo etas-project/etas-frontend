@@ -103,9 +103,10 @@ impl<'a> AcyclicEnumPayloads<'a> {
         if args.len() != layout.type_params.len() {
             return Err(TypeSubstitutionError::InvalidApplication(owner));
         }
-        // Recursive declarations retain their checked templates. Expanding an
-        // application here would enumerate Growing<T>, Growing<List<T>>, ... .
-        if self.recursive.contains(&owner) {
+        // A monomorphic recursive enum returns to the same visited type. Its
+        // fields can still require specialized layouts (e.g. a JSON object).
+        // A recursive generic template can instead grow on each application.
+        if !layout.type_params.is_empty() && self.recursive.contains(&owner) {
             return Ok(EnumPayloadExpansion::RecursiveTemplate);
         }
         let bindings = layout
