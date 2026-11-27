@@ -51,7 +51,7 @@ flow main() -> unit ![Console.stdout_write] { invoke(Packet { id = 7 }); }
     assert_eq!(summary.escaping_effects.effects.iter().count(), 1);
     assert!(summary.escaping_effects.open.is_none());
     assert_eq!(summary.requested_actions.effects.iter().count(), 1);
-    let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
+    let etas_effects::ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
         panic!("inferred callback trace lost invocation positions: {summary:?}");
     };
     assert_eq!(events.len(), 2);
@@ -93,7 +93,7 @@ fn generic_spec_method_unifies_callback_rows_not_their_requested_actions() {
     let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
     assert!(summary.escaping_effects.is_empty());
     assert_eq!(summary.requested_actions.effects.iter().count(), 1);
-    let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
+    let etas_effects::ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
         panic!("handled callback trace disappeared: {summary:?}");
     };
     assert_eq!(events.len(), 2);
@@ -105,7 +105,7 @@ fn generic_spec_method_unifies_callback_rows_not_their_requested_actions() {
 }
 
 #[test]
-fn generic_spec_method_rejects_callbacks_with_different_escaping_rows() {
+fn generic_spec_method_preserves_an_unhandled_callback_effect() {
     let source = paired_callback_source(
         "() => { perform Console.stdout_write(\"escaping\"); return; }, () => { return; }",
     );
@@ -115,9 +115,9 @@ fn generic_spec_method_rejects_callbacks_with_different_escaping_rows() {
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code
                 == etas_core::DiagnosticCode::Effect(
-                    etas_core::EffectDiagnosticCode::IncompleteEffectFacts,
+                    etas_core::EffectDiagnosticCode::EffectOutsideDeclaredRow,
                 )
-                && diagnostic.message.contains("do not agree on the row")
+                && diagnostic.message.contains("Console.stdout_write")
         }),
         "{:?}",
         output.diagnostics
@@ -149,7 +149,7 @@ flow main() -> unit {
     let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
     assert!(summary.escaping_effects.is_empty());
     assert!(!summary.requested_actions.is_empty());
-    let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
+    let etas_effects::ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
         panic!("callback invocation positions disappeared: {summary:?}");
     };
     assert_eq!(events.len(), 2);
