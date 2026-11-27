@@ -120,8 +120,9 @@ where
         &mut self,
         request: CheckRequest,
         memory_probe: Option<super::FrontendMemoryProbe>,
+        retain: &dyn Fn(&ProjectOutput) -> bool,
     ) -> Result<CheckResponse, FrontendSessionError> {
-        self.check_with_pipeline(request, memory_probe, run_check_pipeline)
+        self.check_with_pipeline(request, memory_probe, retain, run_check_pipeline)
     }
 
     pub(super) fn check_controlled_with_memory_probe(
@@ -130,7 +131,7 @@ where
         memory_probe: Option<super::FrontendMemoryProbe>,
         control: Arc<dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<CheckResponse, FrontendSessionError> {
-        self.check_with_pipeline(request, memory_probe, |request| {
+        self.check_with_pipeline(request, memory_probe, &|_| true, |request| {
             run_controlled_check_pipeline(request, Some(control))
         })
     }
@@ -139,6 +140,7 @@ where
         &mut self,
         request: CheckRequest,
         memory_probe: Option<super::FrontendMemoryProbe>,
+        retain: &dyn Fn(&ProjectOutput) -> bool,
         run_pipeline: impl FnOnce(FrontendPipelineRequest) -> FrontendPipelineRun,
     ) -> Result<CheckResponse, FrontendSessionError> {
         let memory_before = memory_probe.map(|probe| probe.sample());
@@ -215,7 +217,7 @@ where
         };
         let changed_sources = std::mem::take(&mut self.pending_changed_sources);
         let invalidation = std::mem::take(&mut self.pending_invalidation);
-        let retain = request.retention == crate::CheckRetention::Incremental;
+        let retain = request.retention == crate::CheckRetention::Incremental && retain(&output);
         let snapshot = (retain || request.snapshot_detail.includes_snapshot())
             .then(|| ProjectSemanticSnapshot::from_output(self.revision, &output))
             .flatten();
@@ -1274,6 +1276,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
+                &|_| true,
                 |FrontendPipelineRequest {
                      input,
                      incremental,
@@ -1335,7 +1338,7 @@ mod tests {
             "source declaration has the wrong type",
         );
         let response = state
-            .check_with_pipeline(Default::default(), None, |request| {
+            .check_with_pipeline(Default::default(), None, &|_| true, |request| {
                 let mut output = crate::ProjectContext::new(request.input).into_project_output();
                 output.diagnostics.push(diagnostic.clone());
                 FrontendPipelineRun {

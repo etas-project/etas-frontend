@@ -77,6 +77,9 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
     fn request_type(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
         // Captured callable sources retain their own row environment. A request
         // ABI applies the invocation's row arguments before crossing a handler.
+        if self.rows.is_empty() {
+            return self.ty(ty);
+        }
         let rows = self.semantics.type_row_arguments(self.rows, self.owner)?;
         let names = self.type_bindings.iter().cloned().collect();
         self.semantics
@@ -92,9 +95,13 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
             })
     }
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error> {
-        let mut effect = self
-            .semantics
-            .specialize_effect(effect, self.bindings, &[])?;
+        let mut effect = match effect {
+            Effect::AppliedAction(_) => {
+                self.semantics
+                    .specialize_effect(effect, self.bindings, &[])?
+            }
+            other => other,
+        };
         match &mut effect {
             Effect::AppliedAction(action) => {
                 if let Some(place) = self.source_memory_place

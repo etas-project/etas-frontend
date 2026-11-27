@@ -189,12 +189,13 @@ fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_
             source: ActionEventSource::Perform,
         }),
         callback.clone().repeat(),
-    ]);
+    ])
+    .shared();
     let mut source = EffectSummary {
         requested_actions: row.clone(),
         default_actions: row.clone(),
         handled_actions: row.clone(),
-        action_trace: trace,
+        action_trace: trace.clone(),
         handler_requests: RequestInstantiationSummary::action(
             source_action.clone(),
             vec![("R".into(), parameter)],
@@ -233,7 +234,7 @@ fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_
                     source: span().into(),
                     value: None,
                 }]),
-                prefix: callback.clone(),
+                prefix: trace.clone(),
             }],
             exits: vec![ExitTraceFact {
                 outcome: CallableOutcome::Returned {
@@ -319,7 +320,12 @@ fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_
             crate::ParameterHandlerScopeRef::Native(etas_hir::HirExprId(23))
         ])
     );
-    assert_eq!(symbolic_exit.prefix, callback);
+    let (ActionTraceDomain::Shared(action), ActionTraceDomain::Shared(prefix)) =
+        (&result.action_trace, &symbolic_exit.prefix)
+    else {
+        panic!("expected a shared specialized trace");
+    };
+    assert!(std::sync::Arc::ptr_eq(action, prefix));
     assert_eq!(
         symbolic_exit.target,
         ParameterCallTarget::Native(SymbolId(17))

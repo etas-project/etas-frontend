@@ -5,6 +5,16 @@ pub(crate) fn map_trace<M: SummaryMapper>(
     mapper: &mut M,
     root: &ActionTraceDomain,
 ) -> Result<ActionTraceDomain, M::Error> {
+    map_trace_with_shared(mapper, root, &mut Default::default())
+}
+
+// Keys identify live nodes in the source summary. Share this table only
+// between roots of that summary under the same substitution.
+pub(super) fn map_trace_with_shared<M: SummaryMapper>(
+    mapper: &mut M,
+    root: &ActionTraceDomain,
+    mapped_shared: &mut std::collections::HashMap<usize, ActionTraceDomain>,
+) -> Result<ActionTraceDomain, M::Error> {
     enum Work<'a> {
         Visit(&'a ActionTraceDomain),
         Shared(&'a ActionTraceDomain),
@@ -18,7 +28,6 @@ pub(crate) fn map_trace<M: SummaryMapper>(
     }
     let mut work = vec![Work::Visit(root)];
     let mut values = Vec::new();
-    let mut mapped_shared = std::collections::HashMap::<usize, ActionTraceDomain>::new();
     while let Some(next) = work.pop() {
         mapper.checkpoint()?;
         match next {

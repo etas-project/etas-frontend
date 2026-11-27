@@ -507,7 +507,13 @@ impl Drop for SharedActionTrace {
 
 /// Cache fixed-width node identities, without retaining every growing sequence
 /// and branch prefix for the entire analysis.
-type TraceFingerprints = std::collections::HashMap<ActionTraceDomain, etas_code::CodeFingerprint>;
+#[derive(Default)]
+struct TraceFingerprints {
+    leaves: std::collections::HashMap<ActionTraceDomain, etas_code::CodeFingerprint>,
+    shared:
+        std::collections::HashMap<etas_code::CodeFingerprint, std::sync::Weak<SharedActionTrace>>,
+    sweep_at: usize,
+}
 
 // Lattice joins and trace specialization both compute the same pure Merkle keys.
 // Give all of them one cache for the duration of this synchronous solver call.
@@ -519,7 +525,7 @@ pub(crate) struct TraceFingerprintScope(Option<TraceFingerprints>);
 
 impl TraceFingerprintScope {
     pub(crate) fn enter() -> Self {
-        Self(TRACE_FINGERPRINTS.replace(Some(TraceFingerprints::new())))
+        Self(TRACE_FINGERPRINTS.replace(Some(TraceFingerprints::default())))
     }
 }
 
@@ -639,12 +645,16 @@ impl ActionTraceDomain {
         if let Self::Shared(shared) = self {
             return shared.fingerprint;
         }
-        TRACE_FINGERPRINTS.with_borrow_mut(|cache| self.structural_identity_with(cache.as_mut()))
+        TRACE_FINGERPRINTS.with_borrow_mut(|cache| {
+            self.structural_identity_with(cache.as_mut().map(|cache| &mut cache.leaves))
+        })
     }
 
     fn structural_identity_with(
         &self,
-        mut cache: Option<&mut TraceFingerprints>,
+        mut cache: Option<
+            &mut std::collections::HashMap<ActionTraceDomain, etas_code::CodeFingerprint>,
+        >,
     ) -> etas_code::CodeFingerprint {
         use etas_code::CodeFingerprint;
 
@@ -726,14 +736,36 @@ impl ActionTraceDomain {
         ) {
             return self;
         }
-        Self::Shared(std::sync::Arc::new(SharedActionTrace {
-            fingerprint: self.structural_identity(),
-            free_references: self.free_references(),
-            actions: self.action_set(),
-            parameter_calls: self.parameter_calls(),
-            unordered: self.has_unordered_approximation(),
-            body: self,
-        }))
+        let fingerprint = self.structural_identity();
+        TRACE_FINGERPRINTS.with_borrow_mut(|cache| {
+            if let Some(existing) = cache
+                .as_ref()
+                .and_then(|cache| cache.shared.get(&fingerprint))
+                .and_then(std::sync::Weak::upgrade)
+                && existing.body == self
+            {
+                return Self::Shared(existing);
+            }
+            let node = std::sync::Arc::new(SharedActionTrace {
+                fingerprint,
+                free_references: self.free_references(),
+                actions: self.action_set(),
+                parameter_calls: self.parameter_calls(),
+                unordered: self.has_unordered_approximation(),
+                body: self,
+            });
+            if let Some(cache) = cache {
+                // Reclaim expired prefixes after enough insertions to amortize the scan.
+                if cache.shared.len() >= cache.sweep_at {
+                    cache.shared.retain(|_, entry| entry.strong_count() > 0);
+                    cache.sweep_at = 2 * (cache.shared.len() + 1);
+                }
+                cache
+                    .shared
+                    .insert(fingerprint, std::sync::Arc::downgrade(&node));
+            }
+            Self::Shared(node)
+        })
     }
 
     pub(crate) fn has_unordered_approximation(&self) -> bool {

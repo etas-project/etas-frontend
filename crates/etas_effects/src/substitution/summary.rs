@@ -1,4 +1,4 @@
-use super::{SummaryMapper, requests::map_requests, trace::map_trace};
+use super::{SummaryMapper, requests::map_requests, trace::map_trace_with_shared};
 use crate::{
     CallableOutcome, EffectSummary, OutcomeAnalysisGap, RequirementFact, RequirementSet,
     TraceSpecClauseFact,
@@ -10,6 +10,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
 ) -> Result<EffectSummary, M::Error> {
     mapper.checkpoint()?;
     // Do not clone the recursive trace before mapping it through the worklist.
+    let mut mapped_shared = Default::default();
     let mut result = EffectSummary {
         default_behavior: None,
         handler_requests: map_requests(mapper, &source.handler_requests)?,
@@ -19,7 +20,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
         requested_actions: mapper.row(&source.requested_actions)?,
         default_actions: mapper.row(&source.default_actions)?,
         handled_actions: mapper.row(&source.handled_actions)?,
-        action_trace: map_trace(mapper, &source.action_trace)?,
+        action_trace: map_trace_with_shared(mapper, &source.action_trace, &mut mapped_shared)?,
         residual_checks: mapper.residual_checks(&source.residual_checks)?,
         trace_spec_obligations: requirements(mapper, &source.trace_spec_obligations)?,
         requirements: requirements(mapper, &source.requirements)?,
@@ -86,7 +87,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
             }
             mapped.exits.push(crate::ExitTraceFact {
                 outcome,
-                trace: map_trace(mapper, &exit.trace)?,
+                trace: map_trace_with_shared(mapper, &exit.trace, &mut mapped_shared)?,
             });
         }
         for gap in &exits.gaps {
@@ -138,7 +139,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
                             .collect()
                     })
                     .transpose()?,
-                prefix: map_trace(mapper, &exit.prefix)?,
+                prefix: map_trace_with_shared(mapper, &exit.prefix, &mut mapped_shared)?,
             });
         }
         result.exits = Some(mapped);

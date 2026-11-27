@@ -271,9 +271,20 @@ where
         project: ProjectSessionId,
         request: CheckRequest,
     ) -> Result<CheckResponse, FrontendSessionError> {
+        self.check_retaining_if(project, request, |_| true)
+    }
+
+    /// Decide whether to retain incremental artifacts after the checked output
+    /// reveals whether the caller needs another revision.
+    pub fn check_retaining_if(
+        &mut self,
+        project: ProjectSessionId,
+        request: CheckRequest,
+        retain: impl Fn(&crate::ProjectOutput) -> bool,
+    ) -> Result<CheckResponse, FrontendSessionError> {
         let probe = self.memory_probe;
         self.project_mut(project)?
-            .check_with_memory_probe(request, probe)
+            .check_with_memory_probe(request, probe, &retain)
     }
 
     pub fn check_controlled(
