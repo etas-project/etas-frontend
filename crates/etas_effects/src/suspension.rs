@@ -215,6 +215,8 @@ pub fn analyze(
                         | etas_std::StdExecutionRole::StorageSchema
                         | etas_std::StdExecutionRole::StorageContext
                         | etas_std::StdExecutionRole::StorageNonce
+                        | etas_std::StdExecutionRole::CachedSchemaFingerprint
+                        | etas_std::StdExecutionRole::RememberSchemaFingerprint
                         | etas_std::StdExecutionRole::StreamClock
                         | etas_std::StdExecutionRole::ReadScopeEnter
                         | etas_std::StdExecutionRole::CurrentSession

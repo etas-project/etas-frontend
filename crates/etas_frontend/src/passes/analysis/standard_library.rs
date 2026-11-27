@@ -623,7 +623,7 @@ pub(super) fn execution_role_diagnostics(
             if !execution::context_signature_matches(*role, types, item) {
                 diagnostics.push(etas_core::Diagnostic::type_check(
                     etas_core::TypeDiagnosticCode::TypeMismatch, *span,
-                    format!("execution role `{}` differs from its checked source owner, snapshot/result layout or closed zero-argument ABI", role.role()),
+                    format!("execution role `{}` differs from its checked source owner, parameter/result layout or closed Effect row", role.role()),
                 ));
             }
             continue;

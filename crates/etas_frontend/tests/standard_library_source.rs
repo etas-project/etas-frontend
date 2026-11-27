@@ -542,6 +542,8 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
     for role in [
         etas_std::StdExecutionRole::StorageContext,
         etas_std::StdExecutionRole::StorageNonce,
+        etas_std::StdExecutionRole::CachedSchemaFingerprint,
+        etas_std::StdExecutionRole::RememberSchemaFingerprint,
         etas_std::StdExecutionRole::StreamClock,
     ] {
         let item = linked
@@ -600,6 +602,8 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
                     | etas_std::StdExecutionRole::StorageSchema
                     | etas_std::StdExecutionRole::StorageContext
                     | etas_std::StdExecutionRole::StorageNonce
+                    | etas_std::StdExecutionRole::CachedSchemaFingerprint
+                    | etas_std::StdExecutionRole::RememberSchemaFingerprint
                     | etas_std::StdExecutionRole::StreamClock
                     | etas_std::StdExecutionRole::TaskStart
                     | etas_std::StdExecutionRole::TaskCancel

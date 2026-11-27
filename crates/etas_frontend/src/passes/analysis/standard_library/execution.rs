@@ -706,7 +706,6 @@ pub(super) fn context_signature_matches(
         || !owner.params.is_empty()
         || role.associated_owner() != Some(owner.name.as_str())
         || !signature.generic_params.is_empty()
-        || !signature.params.is_empty()
         || !signature
             .effects
             .as_ref()
@@ -717,6 +716,25 @@ pub(super) fn context_signature_matches(
             .is_some_and(|row| !row.effects.is_empty() || row.tail.is_some())
     {
         return false;
+    }
+    let primitive =
+        |ty, kind| matches!(store.get(ty), Some(Type::Primitive(actual)) if *actual == kind);
+    match role {
+        R::CachedSchemaFingerprint => {
+            return matches!(signature.params.as_slice(), [key] if primitive(*key, P::Bytes))
+                && etas_types::value_representation::option_parameter(
+                    store,
+                    &types.facts.known_std_types,
+                    signature.output,
+                )
+                .is_some_and(|inner| primitive(inner, P::String));
+        }
+        R::RememberSchemaFingerprint => {
+            return matches!(signature.params.as_slice(), [key, digest] if primitive(*key, P::Bytes) && primitive(*digest, P::String))
+                && primitive(signature.output, P::Unit);
+        }
+        _ if !signature.params.is_empty() => return false,
+        _ => {}
     }
     if role == R::StreamClock {
         return etas_types::record_fields_with_applied_params(store, method.self_type)

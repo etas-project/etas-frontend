@@ -142,6 +142,8 @@ fn canonical_execution_owner(
                         etas_hir::HirTypeDeclBody::Representation(body),
                         StdExecutionRole::StorageContext
                         | StdExecutionRole::StorageNonce
+                        | StdExecutionRole::CachedSchemaFingerprint
+                        | StdExecutionRole::RememberSchemaFingerprint
                         | StdExecutionRole::Requeue
                         | StdExecutionRole::Park
                         | StdExecutionRole::TaskNextCompletion
