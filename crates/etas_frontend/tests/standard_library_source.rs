@@ -93,6 +93,58 @@ impl Drop for SourcePackage {
 }
 
 #[test]
+fn iterator_callbacks_survive_standard_library_metadata_export() {
+    let package = SourcePackage::new();
+    package.copy_maintained_library();
+    let owner = etas_code::PackageKey::from_name_and_version("std", "0.9.0").unwrap();
+    let mut loaded = package.load();
+    loaded.input.environment.local_source_package = Some(owner);
+    let output = Frontend.check_standard_library_source(loaded.input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(owner),
+            package_id: "std".into(),
+            package_version: "0.9.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: "blake3:source".into(),
+            manifest_hash: "blake3:manifest".into(),
+            dependency_lock_hash: "blake3:lock".into(),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked,
+    )
+    .unwrap();
+    let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("std.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    for path in [
+        vec!["std", "text", "lines"],
+        vec!["std", "text", "split_iter"],
+        vec!["std", "text", "split_whitespace"],
+        vec!["std", "text", "unicode", "graphemes"],
+        vec!["std", "text", "unicode", "grapheme_indices"],
+    ] {
+        let summary = metadata
+            .public_metadata
+            .effect_summaries
+            .iter()
+            .find(|summary| summary.item == path)
+            .unwrap();
+        assert!(
+            summary.returned_callables.is_some(),
+            "missing returned callbacks: {path:?}"
+        );
+    }
+}
+
+#[test]
 fn adding_a_source_part_adds_public_std_flows_without_rust_registration_or_main() {
     let package = SourcePackage::new();
     assert_eq!(package.load().input.sources.len(), 4);
@@ -803,7 +855,10 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
         ),
     )
     .unwrap();
-    let output = Frontend.check_standard_library_source(package.load().input);
+    let mut loaded = package.load();
+    loaded.input.environment.local_source_package =
+        Some(etas_code::PackageKey::from_name_and_version("std", "0.9.0").unwrap());
+    let output = Frontend.check_standard_library_source(loaded.input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let checked = output.checked.unwrap();
     let path = checked

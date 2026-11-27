@@ -434,10 +434,14 @@ impl EffectSemantics<'_> {
         expr: HirExprId,
         state: &EffectState,
     ) -> Result<(), EffectSpecializationError> {
+        // A record used as a captured receiver can carry a pending origin too.
+        // Track its complete sources across all control-flow states before
+        // refining an earlier capture, as for ordinary reads.
         if !matches!(
             self.hir.exprs.get(expr),
             Some(
                 etas_hir::HirExpr::Path(_)
+                    | etas_hir::HirExpr::Record(_)
                     | etas_hir::HirExpr::Field { .. }
                     | etas_hir::HirExpr::Index { .. }
             )

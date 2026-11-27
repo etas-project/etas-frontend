@@ -443,17 +443,6 @@ impl EffectSemantics<'_> {
         if let Some(found) = self.known_projection_sources(state, expr, path) {
             return Some(found);
         }
-        // A checked aggregate field can be available before a longer query
-        // through its callable result. Consume that field once, then evaluate
-        // the remaining path with the same origin projection machinery.
-        for prefix in (1..path.len()).rev() {
-            if let Some(sources) = self.known_projection_sources(state, expr, &path[..prefix])
-                && let Some(found) =
-                    self.project_value_origins(&sources, &path[prefix..], state, expr)
-            {
-                return Some(found);
-            }
-        }
         if let Some(ty) = self.types.facts.expr_types.get(&expr)
             && let Ok(Some(selected)) = self.project_value(*ty, path)
         {
@@ -506,6 +495,17 @@ impl EffectSemantics<'_> {
             }
             if let Some(found) = self.known_projection_sources(state, expr, &path) {
                 result.extend(found);
+                continue;
+            }
+            // Field selection can expose a local value with checked payload
+            // positions. Resolve its longest known prefix before continuing
+            // through a callback result, just as for the original expression.
+            let selected = (1..path.len()).rev().find_map(|prefix| {
+                let sources = self.known_projection_sources(state, expr, &path[..prefix])?;
+                self.project_value_origins(&sources, &path[prefix..], state, expr)
+            });
+            if let Some(selected) = selected {
+                result.extend(selected);
                 continue;
             }
             let (step, rest) = path.split_first()?;

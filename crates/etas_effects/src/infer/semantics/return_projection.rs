@@ -220,7 +220,26 @@ impl EffectSemantics<'_> {
                 CallableReturnSource::Parameter(symbol) => {
                     crate::ParameterCallTarget::Native(*symbol)
                 }
-                _ => return None,
+                _ => {
+                    // A known returned closure can itself be invoked by the
+                    // remaining path; it is not limited to parameter origins.
+                    let origins = self
+                        .returned_callable_bindings(
+                            &BTreeSet::from([source.clone()]),
+                            bindings,
+                            state,
+                            application,
+                            environment,
+                        )
+                        .ok()?;
+                    result.extend(self.project_value_origins(
+                        &origins.into_iter().collect(),
+                        suffix,
+                        state,
+                        application,
+                    )?);
+                    continue;
+                }
             };
             let selected = match self
                 .trace_argument(target, "returned payload", bindings, state)

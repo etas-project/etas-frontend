@@ -319,11 +319,27 @@ impl EffectSemantics<'_> {
             true,
         )?;
         if mode == CallableSummaryMode::Descriptor {
-            let remap = |sources: &mut BTreeSet<crate::CallableReturnSource>| -> Result<(), EffectSpecializationError> {
+            let type_arguments = types.iter().cloned().collect();
+            let mut substitution = self
+                .type_substitution(&type_arguments)
+                .with_type_parameters(&type_parameters);
+            let mut remap = |sources: &mut BTreeSet<crate::CallableReturnSource>| -> Result<(), EffectSpecializationError> {
                 let mapped = sources.iter().map(|source| {
                     use crate::CallableReturnSource as S;
                     if let S::Projection(id) = source {
                         let projection = self.parameter_projection(*id).ok_or_else(|| invalid("returned callback projection is missing"))?;
+                        // Generic adapters may return data after instantiation.
+                        // Its checked type proves an empty callable payload,
+                        // without trying to invoke a data-producing callback.
+                        let ty = substitution.substitute(projection.ty).map_err(|error| {
+                            if let etas_types::TypeSubstitutionError::UnmaterializedType(ty) = &error {
+                                self.requested_types.borrow_mut().push(ty.clone());
+                            }
+                            EffectSpecializationError::from(error)
+                        })?;
+                        if !self.type_contains_flow(ty) && !self.type_has_parameters(ty) {
+                            return Ok(BTreeSet::new());
+                        }
                         let target = ParameterCallTarget::Projection(*id);
                         let actual_application = !projection.call_inputs.is_empty();
                         if bindings.contains_key(&target) || bindings.contains_key(&ParameterCallTarget::Native(projection.parameter)) {
