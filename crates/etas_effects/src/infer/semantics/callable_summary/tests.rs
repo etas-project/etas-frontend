@@ -124,6 +124,50 @@ fn captured(unit: EffectUnit, position: usize) -> LatentSource {
 }
 
 #[test]
+fn request_footprint_dependencies_are_solved_without_a_parameter_trace() {
+    with_semantics(None, |semantics, unit, base, parameter, span| {
+        let template = semantics.inputs.unit_effects.get_mut(&unit).unwrap();
+        // A scoped handler can erase a call's trace while its typed request
+        // footprint still needs the captured callback's instantiation.
+        template.action_trace = ActionTraceDomain::Empty;
+        template.exits = None;
+        template.handler_requests = crate::RequestInstantiationSummary::Available {
+            actions: BTreeSet::new(),
+            parameters: [crate::ParameterRequest {
+                target: ParameterCallTarget::Native(parameter),
+                parameter: "callback".into(),
+                span,
+                excluded: crate::EffectSet::default(),
+            }]
+            .into(),
+        };
+        insert(
+            semantics,
+            unit,
+            parameter,
+            0,
+            [LatentSource::Unit(base)].into(),
+        );
+        let summary = semantics
+            .solve_callable_summary(captured(unit, 0), span)
+            .unwrap();
+        let crate::RequestInstantiationSummary::Available {
+            actions,
+            parameters,
+        } = summary.handler_requests
+        else {
+            panic!("captured request footprint is unavailable");
+        };
+        assert!(parameters.is_empty());
+        let stdout = crate::Effect::Action(crate::ActionRef {
+            tag: crate::CONSOLE_TAG,
+            action: crate::CONSOLE_STDOUT_WRITE_ACTION,
+        });
+        assert!(actions.iter().any(|request| request.action == stdout));
+    });
+}
+
+#[test]
 fn a_recursive_capture_component_converges_and_retains_its_grounded_actions() {
     with_semantics(None, |semantics, unit, base, parameter, span| {
         insert(

@@ -132,6 +132,27 @@ impl CallableSummaryPlan {
                 _ => None,
             }));
         }
+        // A handled call can remain only in the typed request footprint.
+        // Schedule every request dependency that apply_callable_summary will
+        // instantiate, including direct and guarded default behavior.
+        let mut add_requests = |requests: &crate::RequestInstantiationSummary| {
+            if let crate::RequestInstantiationSummary::Available { parameters, .. } = requests {
+                for request in parameters {
+                    if let Some(origins) = plan.bindings.get(&request.target) {
+                        dependencies.extend(origins.iter().map(|source| {
+                            CallableSummaryKey::in_mode(*source, request.span, mode)
+                        }));
+                    }
+                }
+            }
+        };
+        add_requests(&plan.template.handler_requests);
+        if let Some(behavior) = &plan.template.default_behavior {
+            add_requests(&behavior.direct.handler_requests);
+            for footprint in behavior.guarded.values() {
+                add_requests(&footprint.handler_requests);
+            }
+        }
         for (target, span) in calls {
             match plan.bindings.get(&target) {
                 Some(origins) if !origins.is_empty() => dependencies.extend(
