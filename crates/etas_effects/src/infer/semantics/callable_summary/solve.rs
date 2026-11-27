@@ -276,10 +276,18 @@ impl EffectSemantics<'_> {
                     return Ok(ParameterCallSubstitution::Symbolic);
                 };
                 let captured = joined_origins(origins, span, summaries, mode)?;
-                summary.merge_request_footprint_without_escaping_or_trace(&captured);
-                Ok(ParameterCallSubstitution::Trace(
-                    captured.action_trace.clone(),
-                ))
+                if self.spec_method_infers_effects(target) {
+                    let mut captured = captured.into_owned();
+                    self.apply_callback_handlers(&plan.template, target, span, &mut captured)?;
+                    let trace = std::mem::take(&mut captured.action_trace);
+                    summary.seq_assign(&captured);
+                    Ok(ParameterCallSubstitution::Trace(trace))
+                } else {
+                    summary.merge_request_footprint_without_escaping_or_trace(&captured);
+                    Ok(ParameterCallSubstitution::Trace(
+                        captured.action_trace.clone(),
+                    ))
+                }
             })?;
         if let Some(exits) = &mut summary.exits {
             for exit in &mut exits.exits {

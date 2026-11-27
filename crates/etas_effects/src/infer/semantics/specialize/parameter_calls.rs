@@ -548,6 +548,7 @@ impl EffectSemantics<'_> {
             source_summary.handler_requests = crate::RequestInstantiationSummary::default();
             self.apply_callback_handlers(target, call.target, call.span, &mut source_summary)?;
             if inferred_parameters.contains(&call.target)
+                || self.spec_method_infers_effects(call.target)
                 || matches!(call.target, ParameterCallTarget::AgentTools(_))
             {
                 source_summary.action_trace = ActionTraceDomain::Empty;

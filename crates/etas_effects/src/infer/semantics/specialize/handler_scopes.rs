@@ -6,16 +6,15 @@ use crate::{
 use etas_core::Span;
 
 impl EffectSemantics<'_> {
-    pub(super) fn apply_callback_handlers(
+    pub(in crate::infer::semantics) fn apply_callback_handlers(
         &self,
-        target: &mut EffectSummary,
+        target: &EffectSummary,
         parameter: ParameterCallTarget,
         span: Span,
         callback: &mut EffectSummary,
     ) -> Result<(), EffectSpecializationError> {
         let intercepted = self.intercepted_callback_actions(target, parameter, span, callback)?;
         if !intercepted.is_empty() {
-            target.record_handled_action_row(intercepted.clone());
             let coverage = EffectCoverage {
                 registry: self.registry,
                 types: &self.types.store,
@@ -27,6 +26,7 @@ impl EffectSemantics<'_> {
                 )?;
             callback.default_actions =
                 coverage.subtract_handled(&callback.default_actions, &intercepted);
+            callback.record_handled_action_row(intercepted);
         }
         Ok(())
     }
@@ -59,6 +59,14 @@ impl EffectSemantics<'_> {
             .effects
             .iter()
             .chain(callback.default_actions.effects.iter())
+            // A typed raise has an escaping Error even when it needs no host request.
+            .chain(
+                callback
+                    .escaping_effects
+                    .effects
+                    .iter()
+                    .filter(|effect| matches!(effect, crate::Effect::Error(_))),
+            )
         {
             let mut every_path = true;
             for request in &matching {

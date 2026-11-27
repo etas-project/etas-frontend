@@ -54,7 +54,7 @@ pub(super) fn collect_inference<E>(
         ctx.state.validations.push(ValidationRequest::Diagnostic {
             code: TypeDiagnosticCode::TypeMismatch,
             span,
-            message: "perform infer requires exactly one Prompt argument".into(),
+            message: "perform infer expects a Prompt or (data, system = Trusted<string>)".into(),
         });
         return Ok(output);
     };

@@ -345,11 +345,7 @@ impl LowerCtx {
                             .iter()
                             .map(|arg| self.lower_generic_arg(arg, scope, item_id))
                             .collect(),
-                        args: infer
-                            .args
-                            .iter()
-                            .map(|arg| self.lower_arg(arg, scope, item_id))
-                            .collect(),
+                        args: self.lower_infer_arguments(infer, scope, item_id),
                         span: infer.span,
                     }
                 } else {

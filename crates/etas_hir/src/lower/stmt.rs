@@ -108,27 +108,13 @@ impl LowerCtx {
             return statement;
         }
         if let Stmt::Let(stmt) = stmt {
-            let id = self.hir.stmts.alloc(HirStmt::Error { span: stmt.span });
+            let binding = self.hir.stmts.alloc(HirStmt::Error { span });
             let value = self.lower_expr(&stmt.value, scope, item_id);
-            let type_annotation = stmt
+            let annotation = stmt
                 .ty
                 .as_ref()
                 .map(|ty| self.lower_type(ty, scope, item_id));
-            self.local_binding = Some(super::program::LocalBindingContext {
-                binding: id,
-                ty: type_annotation,
-                initializer: Some(value),
-            });
-            let pat = self.lower_pattern(&stmt.pattern, scope, item_id);
-            self.local_binding = None;
-            *self.hir.stmts.get_mut(id).unwrap() = HirStmt::Let {
-                value,
-                type_annotation,
-                pat,
-                span: stmt.span,
-            };
-            self.map_stmt(id, span);
-            return id;
+            return self.finish_let(binding, &stmt.pattern, value, annotation, scope, item_id);
         }
         if let Stmt::Var(stmt) = stmt {
             let id = self.hir.stmts.alloc(HirStmt::Error { span: stmt.span });
@@ -254,6 +240,37 @@ impl LowerCtx {
             Stmt::Error(span) => HirStmt::Error { span: *span },
         };
         let id = self.hir.stmts.alloc(hir_stmt);
+        self.map_stmt(id, span);
+        id
+    }
+
+    pub(super) fn finish_let(
+        &mut self,
+        id: HirStmtId,
+        pattern: &Pattern,
+        value: HirExprId,
+        type_annotation: Option<HirTypeId>,
+        scope: ScopeId,
+        item_id: HirItemId,
+    ) -> HirStmtId {
+        let HirStmt::Error { span } = self.hir.stmts[id] else {
+            unreachable!()
+        };
+        let previous = self
+            .local_binding
+            .replace(super::program::LocalBindingContext {
+                binding: id,
+                ty: type_annotation,
+                initializer: Some(value),
+            });
+        let pat = self.lower_pattern(pattern, scope, item_id);
+        self.local_binding = previous;
+        self.hir.stmts[id] = HirStmt::Let {
+            value,
+            type_annotation,
+            pat,
+            span,
+        };
         self.map_stmt(id, span);
         id
     }
