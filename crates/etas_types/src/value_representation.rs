@@ -114,7 +114,7 @@ pub fn sequence_element_in_store(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueLength {
     String,
     Bytes,
@@ -125,7 +125,7 @@ pub enum ValueLength {
     Set,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueProjection {
     NumericBits(P),
     NumericFamilyBits,

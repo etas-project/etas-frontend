@@ -9,6 +9,7 @@ use crate::code::{
 };
 
 /// Correspondence between checked native universes, keyed by declaration identity.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct NativeTypeCorrespondence {
     declarations: HashMap<TypeId, TypeId>,
     effect_names: HashMap<String, String>,

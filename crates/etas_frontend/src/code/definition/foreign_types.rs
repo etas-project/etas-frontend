@@ -395,3 +395,142 @@ impl ForeignTypeBindings {
         })
     }
 }
+
+// Catalogs refer to earlier checked revisions. The archive records their node
+// numbers so restored proofs keep their original owners on both sides of a link.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ForeignOrigins {
+    types: Vec<(TypeId, DefinitionKey, TypeId, usize)>,
+    specs: Vec<(DefinitionKey, CheckedSpecRef, usize)>,
+    methods: Vec<(
+        etas_code::MethodId,
+        etas_types::method::MethodSignatureFact,
+        usize,
+    )>,
+    effects: Vec<(
+        etas_effects::EffectTagId,
+        DefinitionKey,
+        etas_effects::EffectTagId,
+        usize,
+    )>,
+}
+
+impl ForeignTypeBindings {
+    pub(crate) fn origins(
+        &self,
+        mut owner: impl FnMut(&crate::CheckedProgram) -> Option<usize>,
+    ) -> Option<ForeignOrigins> {
+        Some(ForeignOrigins {
+            types: self
+                .bindings
+                .iter()
+                .map(|(id, b)| {
+                    Some((
+                        *id,
+                        b.identity.clone(),
+                        b.source,
+                        owner(b.catalog.checked_program())?,
+                    ))
+                })
+                .collect::<Option<_>>()?,
+            specs: self
+                .specs
+                .iter()
+                .map(|(id, b)| {
+                    Some((
+                        id.clone(),
+                        b.source.clone(),
+                        owner(b.catalog.checked_program())?,
+                    ))
+                })
+                .collect::<Option<_>>()?,
+            methods: self
+                .methods
+                .iter()
+                .map(|(id, b)| {
+                    Some((
+                        id.clone(),
+                        b.declaration.clone(),
+                        owner(b.catalog.checked_program())?,
+                    ))
+                })
+                .collect::<Option<_>>()?,
+            effects: self
+                .effects
+                .iter()
+                .map(|(id, b)| {
+                    Some((
+                        *id,
+                        b.identity.clone(),
+                        b.source,
+                        owner(b.catalog.checked_program())?,
+                    ))
+                })
+                .collect::<Option<_>>()?,
+        })
+    }
+}
+
+impl ForeignOrigins {
+    pub(crate) fn bind(
+        self,
+        mut owner: impl FnMut(usize) -> Option<Arc<DefinitionCatalog>>,
+    ) -> Option<ForeignTypeBindings> {
+        Some(ForeignTypeBindings {
+            bindings: self
+                .types
+                .into_iter()
+                .map(|(id, identity, source, node)| {
+                    Some((
+                        id,
+                        ForeignTypeBinding {
+                            identity,
+                            source,
+                            catalog: owner(node)?,
+                        },
+                    ))
+                })
+                .collect::<Option<_>>()?,
+            specs: self
+                .specs
+                .into_iter()
+                .map(|(id, source, node)| {
+                    Some((
+                        id,
+                        ForeignSpecBinding {
+                            source,
+                            catalog: owner(node)?,
+                        },
+                    ))
+                })
+                .collect::<Option<_>>()?,
+            methods: self
+                .methods
+                .into_iter()
+                .map(|(id, declaration, node)| {
+                    Some((
+                        id,
+                        ForeignMethodBinding {
+                            declaration,
+                            catalog: owner(node)?,
+                        },
+                    ))
+                })
+                .collect::<Option<_>>()?,
+            effects: self
+                .effects
+                .into_iter()
+                .map(|(id, identity, source, node)| {
+                    Some((
+                        id,
+                        ForeignEffectBinding {
+                            identity,
+                            source,
+                            catalog: owner(node)?,
+                        },
+                    ))
+                })
+                .collect::<Option<_>>()?,
+        })
+    }
+}

@@ -43,6 +43,13 @@ fn checkpoint(control: Option<&dyn PipelineExecutionControl>) -> Result<(), Refl
 }
 
 impl CheckedReflectionTargets {
+    pub(crate) fn with_types(&self, types: Arc<TypeFacts>) -> Arc<Self> {
+        Arc::new(Self {
+            types,
+            sites: self.sites.clone(),
+        })
+    }
+
     pub(crate) fn with_method_index(
         &self,
         methods: Arc<etas_types::method::MethodIndex>,

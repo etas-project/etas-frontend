@@ -13,7 +13,7 @@ mod contract;
 mod environment;
 mod external;
 mod foreign_types;
-pub(crate) use foreign_types::ForeignTypeBindings;
+pub(crate) use foreign_types::{ForeignOrigins, ForeignTypeBindings};
 mod headers;
 mod type_methods;
 pub(crate) use headers::{inherent_method_identities, method_identities_from_input};

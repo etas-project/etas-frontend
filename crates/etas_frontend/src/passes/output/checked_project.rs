@@ -317,10 +317,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                         .clone()
                         .unwrap_or_else(|| library.program.clone()),
                 );
-                if let Err(reason) = library.materialize_public_abis(&mut data) {
-                    return PassResult::failed(reason);
-                }
-                data.standard_library = match library.for_consumer(&mut data) {
+                data.standard_library = match library.link_for_execution(&mut data) {
                     Ok(library) => Some(library),
                     Err(reason) => return PassResult::failed(reason),
                 };
@@ -352,7 +349,15 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                         Err(error) => return PassResult::failed(error),
                     };
             }
-            context.checked = Some(std::sync::Arc::new(data));
+            let checked = std::sync::Arc::new(data);
+            if let Some(cache) = checked
+                .standard_library
+                .as_ref()
+                .and_then(|library| library.run_cache.as_ref())
+            {
+                cache.set_owner(&checked);
+            }
+            context.checked = Some(checked);
         }
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(CHECKED_PROJECT))
     }

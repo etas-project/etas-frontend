@@ -1923,6 +1923,7 @@ impl CheckedProgramData {
 
 #[derive(Clone, Debug)]
 pub struct StandardLibrary {
+    pub run_cache: Option<crate::RunPreparationCache>,
     /// Command diagnostics, excluded from retained executable memory accounting.
     pub profile: etas_utils::ProfileHandle,
     /// Rootless runtime layouts authenticated by the toolchain installation.

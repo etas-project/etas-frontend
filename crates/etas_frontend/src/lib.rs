@@ -4,6 +4,8 @@ mod incremental;
 pub mod library_hir;
 mod optimization;
 mod output;
+mod run_cache;
+pub use run_cache::RunPreparationCache;
 mod package_metadata;
 mod passes;
 mod pipeline;

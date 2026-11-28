@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 mod effects;
+mod linked_image;
 mod methods;
 mod owner;
 mod requests;

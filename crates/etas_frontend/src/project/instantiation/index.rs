@@ -5,7 +5,7 @@ use etas_types::{CallableGenericArg, EffectRowRef, TypeId};
 use super::{NativeGenericArgument, NativeInstantiation, NativeInstantiationPlan};
 
 impl NativeInstantiationPlan {
-    pub(super) fn push(&mut self, instance: NativeInstantiation) {
+    pub(crate) fn push(&mut self, instance: NativeInstantiation) {
         let hash = application_hash(
             instance.owner,
             instance.arguments.len(),
