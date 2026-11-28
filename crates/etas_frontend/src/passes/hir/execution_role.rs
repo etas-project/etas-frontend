@@ -133,6 +133,9 @@ fn canonical_execution_owner(
                         | StdExecutionRole::ReadScopeEnter
                         | StdExecutionRole::ScopeEnter
                         | StdExecutionRole::ResourceScope
+                        | StdExecutionRole::ArrayTruncate
+                        | StdExecutionRole::CachedMapIndex
+                        | StdExecutionRole::RememberMapIndex
                         | StdExecutionRole::PayloadConvert,
                     ) => {
                         matches!(&hir.types[*body], etas_hir::HirType::Record { fields, .. }

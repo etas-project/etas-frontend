@@ -668,6 +668,9 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
                     | etas_std::StdExecutionRole::MessageContextRecord
                     | etas_std::StdExecutionRole::PayloadConvert
                     | etas_std::StdExecutionRole::ComparatorCapture
+                    | etas_std::StdExecutionRole::ArrayTruncate
+                    | etas_std::StdExecutionRole::CachedMapIndex
+                    | etas_std::StdExecutionRole::RememberMapIndex
                     | etas_std::StdExecutionRole::ComparatorSame
                     | etas_std::StdExecutionRole::ReadScopeEnter => {
                         assert!(suspension.proven_non_suspending());

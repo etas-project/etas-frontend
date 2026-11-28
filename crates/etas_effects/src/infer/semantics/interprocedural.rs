@@ -299,6 +299,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         | etas_std::StdExecutionRole::CallableWithBody
                         | etas_std::StdExecutionRole::ToolReference
                         | etas_std::StdExecutionRole::ComparatorCapture
+                        | etas_std::StdExecutionRole::ArrayTruncate
+                        | etas_std::StdExecutionRole::CachedMapIndex
+                        | etas_std::StdExecutionRole::RememberMapIndex
                         | etas_std::StdExecutionRole::ComparatorSame => {
                             let etas_types::ItemSignature::Flow(signature) =
                                 &self.types.facts.item_signatures[&item]

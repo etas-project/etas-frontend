@@ -1,6 +1,49 @@
 use etas_hir::HirItemId;
 use etas_types::{CallableGenericParamKind, PrimitiveType as P, Type, TypeOutput};
 
+pub(super) fn array_storage_signature_matches(
+    types: &TypeOutput,
+    item: HirItemId,
+    role: etas_std::StdExecutionRole,
+) -> bool {
+    use etas_std::StdExecutionRole as R;
+    let Some(etas_types::ItemSignature::Flow(sig)) = types.facts.item_signatures.get(&item) else {
+        return false;
+    };
+    let [parameter] = sig.generic_params.as_slice() else {
+        return false;
+    };
+    let [slots, rest @ ..] = sig.params.as_slice() else {
+        return false;
+    };
+    if parameter.kind != CallableGenericParamKind::Type
+        || !parameter.bounds.is_empty()
+        || !matches!(types.store.get(*slots), Some(Type::Array(t)) if *t == parameter.subject)
+        || !sig
+            .effects
+            .as_ref()
+            .is_some_and(|r| r.effects.is_empty() && r.tail.is_none())
+        || sig
+            .requested_actions
+            .as_ref()
+            .is_some_and(|r| !r.effects.is_empty() || r.tail.is_some())
+    {
+        return false;
+    }
+    let primitive =
+        |ty, p| matches!(types.store.get(ty), Some(Type::Primitive(actual)) if *actual == p);
+    let index =
+        |ty| matches!(types.store.get(ty), Some(Type::Array(inner)) if primitive(*inner, P::USize));
+    match (role, rest) {
+        (R::ArrayTruncate, [length]) => primitive(*length, P::USize) && sig.output == *slots,
+        (R::CachedMapIndex, [seed]) => primitive(*seed, P::U64) && index(sig.output),
+        (R::RememberMapIndex, [seed, buckets]) => {
+            primitive(*seed, P::U64) && index(*buckets) && primitive(sig.output, P::Unit)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn comparator_signature_matches(
     types: &TypeOutput,
     item: HirItemId,

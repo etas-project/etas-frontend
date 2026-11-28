@@ -228,6 +228,9 @@ pub fn analyze(
                         | etas_std::StdExecutionRole::CallableWithBody
                         | etas_std::StdExecutionRole::ToolReference
                         | etas_std::StdExecutionRole::ComparatorCapture
+                        | etas_std::StdExecutionRole::ArrayTruncate
+                        | etas_std::StdExecutionRole::CachedMapIndex
+                        | etas_std::StdExecutionRole::RememberMapIndex
                         | etas_std::StdExecutionRole::ComparatorSame
                         | etas_std::StdExecutionRole::TaskStart
                         | etas_std::StdExecutionRole::TaskCancel,

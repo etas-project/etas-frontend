@@ -502,6 +502,18 @@ pub(super) fn execution_role_diagnostics(
             }
             continue;
         }
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::ArrayTruncate
+                | etas_std::StdExecutionRole::CachedMapIndex
+                | etas_std::StdExecutionRole::RememberMapIndex
+        ) {
+            if !execution::array_storage_signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "array storage requires the canonical generic array, index and result types and a closed empty Effect row"));
+            }
+            continue;
+        }
         if *role == etas_std::StdExecutionRole::ReadScopeEnter {
             if !execution::read_scope_signature_matches(types, item) {
                 diagnostics.push(etas_core::Diagnostic::type_check(
