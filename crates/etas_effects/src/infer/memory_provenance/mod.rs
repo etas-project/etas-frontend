@@ -36,11 +36,32 @@ impl<'a> MemoryProvenanceQuery<'a> {
     }
 
     pub(crate) fn arguments(&self, expr: HirExprId) -> Result<Vec<EffectArgRef>, String> {
-        self.origins
-            .get_or_init(|| {
-                MemoryProvenance::analyze(self.types, self.registry, &self.units, &self.context)
-            })
+        self.origins()
             .arguments(self.context.program(), self.types, expr)
+    }
+
+    fn origins(&self) -> &MemoryProvenance {
+        self.origins.get_or_init(|| {
+            MemoryProvenance::analyze(self.types, self.registry, &self.units, &self.context)
+        })
+    }
+
+    /// Distinct or unknown session origins share the conservative wildcard.
+    pub(crate) fn pty_profile(&self, expr: HirExprId) -> Option<EffectArgRef> {
+        let origins = self.origins();
+        if !origins.converged {
+            return None;
+        }
+        let place = origins.facts.expr_aliases.get(&expr)?.must.as_ref()?;
+        let AliasTarget::Symbol(symbol) = place.root else {
+            return None;
+        };
+        if !place.projections.is_empty() {
+            return None;
+        }
+        let hir = self.context.program();
+        let path = super::pty::static_profile_path(hir, self.registry, symbol)?;
+        Some(EffectArgRef::Path(path))
     }
 }
 

@@ -582,7 +582,7 @@ impl EffectSemantics<'_> {
                 residual_bindings,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 owner,
-                source_memory_place: None,
+                source_selector: None,
                 types: self
                     .type_substitution(&names)
                     .with_type_parameters(type_parameters),
@@ -591,10 +591,12 @@ impl EffectSemantics<'_> {
         )
     }
 
-    pub(super) fn specialize_summary_at_memory_place(
+    pub(super) fn specialize_summary_at_selector(
         &self,
         summary: &EffectSummary,
-        place: &EffectArgRef,
+        tag: crate::EffectTagId,
+        action: Option<crate::EffectActionId>,
+        value: &EffectArgRef,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         let empty = std::collections::HashMap::new();
         let empty_names = std::collections::HashMap::new();
@@ -608,7 +610,7 @@ impl EffectSemantics<'_> {
                 residual_bindings: None,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 owner: None,
-                source_memory_place: Some(place),
+                source_selector: Some(summary_mapper::SourceSelector { tag, action, value }),
                 types: self.type_substitution(&empty_names),
             },
             summary,

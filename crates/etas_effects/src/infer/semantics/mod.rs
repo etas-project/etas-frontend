@@ -38,6 +38,7 @@ mod parameter_inference;
 mod parameter_projection;
 mod payload_paths;
 mod projected_returns;
+mod pty;
 mod request_templates;
 mod requirements;
 mod residual_bindings;

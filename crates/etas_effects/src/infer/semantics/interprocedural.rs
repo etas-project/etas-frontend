@@ -704,6 +704,10 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 }
             };
         self.specialize_filesystem_open_call(&site, &mut summary);
+        summary = match self.specialize_pty_call(site.call, summary) {
+            Ok(summary) => summary,
+            Err(error) => return self.incomplete_at(site.span, error.to_string(), state),
+        };
         if let Err(error) =
             self.record_source_call_arguments(callee, &site, &state, None, &invoked_projections)
         {

@@ -482,6 +482,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             )) => match self
                 .latent_source_summary(source, span)
                 .and_then(|summary| self.specialize_source_memory_method(expr, summary))
+                .and_then(|summary| self.specialize_pty_call(expr, summary))
                 .and_then(|summary| {
                     if self.is_bound_agent_request(expr) {
                         self.agent_request_summary(source, span, summary)

@@ -287,7 +287,7 @@ fn generic_arg_default<E>(
         }
         (EffectActionArgKind::StaticResourcePath { .. }, HirGenericArg::Type(ty))
         | (EffectActionArgKind::StringPattern, HirGenericArg::Type(ty)) => {
-            static_path_arg_from_type(ctx, *ty)
+            static_path_arg_from_type(ctx, *ty, kind)
         }
         (_, HirGenericArg::EffectRow(_)) => None,
     }
@@ -357,10 +357,15 @@ fn static_path_selector<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: etas_hir::Hi
 fn static_path_arg_from_type<E>(
     ctx: &BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
+    kind: &EffectActionArgKind,
 ) -> Option<EffectArgRef> {
     let Some(HirType::Path { path, .. }) = ctx.ctx.hir.types.get(ty) else {
         return None;
     };
+    if crate::sandbox_profile::is_selector_kind(kind) {
+        return crate::sandbox_profile::selector_path(ctx.ctx.hir, &ctx.ctx.std_registry, path)
+            .map(EffectArgRef::Path);
+    }
     static_selector_path_segments(ctx.ctx.hir, path, |symbol| {
         ctx.ctx.symbols.canonical_symbol(ctx.ctx.hir, symbol)
     })
@@ -435,6 +440,10 @@ fn lower_selector_effect_arg<E>(
             _ => None,
         },
         EffectActionArgKind::StaticResourcePath { .. } => match arg {
+            HirEffectArg::Path(path) if crate::sandbox_profile::is_selector_kind(kind) => {
+                crate::sandbox_profile::selector_path(ctx.ctx.hir, &ctx.ctx.std_registry, path)
+                    .map(EffectArgRef::Path)
+            }
             HirEffectArg::Path(path) => static_resource_path_arg(ctx, path),
             _ => None,
         },

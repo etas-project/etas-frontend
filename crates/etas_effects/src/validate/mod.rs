@@ -787,12 +787,12 @@ fn tag_declares_unparameterized_sandbox_boundary(
 }
 
 fn selectors_require_sandbox_profile(selectors: &[EffectActionArgKind]) -> bool {
-    selectors.iter().any(|kind| {
-        matches!(
-            kind,
-            EffectActionArgKind::StaticResourcePath { ty } if ty == "SandboxProfile"
-        )
-    })
+    selectors.iter().any(is_sandbox_selector)
+}
+
+fn is_sandbox_selector(kind: &EffectActionArgKind) -> bool {
+    matches!(kind, EffectActionArgKind::StaticResourcePath { ty }
+        if matches!(ty.as_str(), "SandboxProfile" | "std.host.sandbox.SandboxProfile"))
 }
 
 fn effect_args_as_types(
@@ -903,10 +903,7 @@ impl DeclaredRowError {
     }
 
     fn invalid_action_arg(kind: &EffectActionArgKind) -> Self {
-        if matches!(
-            kind,
-            EffectActionArgKind::StaticResourcePath { ty } if ty == "SandboxProfile"
-        ) {
+        if is_sandbox_selector(kind) {
             return Self::missing_sandbox_action_arg();
         }
         Self {

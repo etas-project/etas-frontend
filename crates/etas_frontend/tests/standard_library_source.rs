@@ -992,3 +992,107 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
             .starts_with(&["std".into(), "fs".into()])
     }));
 }
+
+#[test]
+fn terminal_actions_retain_the_originating_sandbox_across_handle_aliases() {
+    use etas_effects::Effect;
+    use etas_types::EffectArgRef;
+    let package = SourcePackage::new();
+    package.copy_maintained_library();
+    fs::write(
+        package
+            .0
+            .join("library/std/host/command/session_example.es"),
+        r#"
+module std.host.command;
+import std.host.sandbox.{DefaultCommandSandbox as Local};
+
+let TopAlias = Local;
+
+flow pty_known(command: Command, size: PtySize) -> unit ![Error<PtyError>] {
+    let profile = TopAlias;
+    let original = start_pty(command, profile, size);
+    var session = original;
+    let alias = session;
+    alias.resize(size);
+    perform std.effects.Command.stop_pty(alias);
+}
+
+flow pty_handled(command: Command, size: PtySize) -> unit ![Error<PtyError>] {
+    let session = perform std.effects.Command.start_pty(command, Local, size);
+    handle { session.stop(); } with {
+        std.effects.Command.stop_pty<TopAlias>(_) => { resume; }
+    };
+}
+
+flow pty_unknown(session: PtyHandle) -> unit ![Error<PtyError>] {
+    perform std.effects.Command.stop_pty<TopAlias>(session);
+}
+"#,
+    )
+    .unwrap();
+    let mut input = package.load().input;
+    input.environment.local_source_package =
+        Some(etas_code::PackageKey::from_name_and_version("std", "0.11.0").unwrap());
+    let checked = Frontend.check_standard_library_source(input);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let checked = checked.checked.unwrap();
+    let profile = ["std", "host", "sandbox", "DefaultCommandSandbox"];
+    let concrete = EffectArgRef::Path(profile.map(String::from).to_vec());
+    for (name, expected, count, defaults) in [
+        ("pty_known", &concrete, 3, 3),
+        ("pty_handled", &concrete, 2, 1),
+        ("pty_unknown", &EffectArgRef::Wildcard, 1, 1),
+    ] {
+        let (id, _) = checked
+            .hir
+            .items
+            .iter()
+            .find(|(_, item)| {
+                item.symbol()
+                    .is_some_and(|symbol| checked.symbols.get(symbol).unwrap().name == name)
+            })
+            .unwrap();
+        if name == "pty_unknown" {
+            let (expr, _) = checked
+                .effects
+                .performed_actions
+                .iter()
+                .find(|(expr, _)| checked.hir.index().expr_item.get(expr) == Some(&id))
+                .unwrap();
+            let constraint = etas_effects::checked_pty_profile_constraint(
+                &checked.hir,
+                &checked.std_registry,
+                *expr,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(constraint, profile);
+        }
+        let summary = &checked.effects.item_effects[&id];
+        let actions = &summary.requested_actions.effects;
+        assert_eq!(actions.len(), count, "{name}: {actions:?}");
+        assert_eq!(
+            summary.default_actions.effects.len(),
+            defaults,
+            "{name}: {:?}",
+            summary.default_actions
+        );
+        assert_eq!(
+            summary
+                .requirements
+                .iter()
+                .filter(|r| matches!(r, etas_effects::RequirementFact::HostAuthority(_)))
+                .count(),
+            defaults,
+            "{name}: {:?}",
+            summary.requirements
+        );
+        for action in actions.iter() {
+            assert!(
+                matches!(action, Effect::AppliedAction(call) if call.args == [expected.clone()]),
+                "{name}: {action:?}"
+            );
+        }
+    }
+}

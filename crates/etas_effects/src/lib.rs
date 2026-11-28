@@ -38,6 +38,7 @@ pub use facts::{
     StdCallableEffectFact, TaskCallFact, TaskCallKind, TraceSpecClauseFact, TraceSpecFacts,
     TransferTarget, TryCaptureFact,
 };
+pub use infer::checked_pty_profile_constraint;
 pub use infer::{
     ActionEvent, ActionEventSource, ActionRequestInstance, ActionTraceDomain, CallableAnalysisKind,
     CallableExitSummary, CallableOutcome, CallableReferenceTarget, CallableReturnReference,

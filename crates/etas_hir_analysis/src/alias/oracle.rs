@@ -15,6 +15,11 @@ pub trait AliasOracle {
         None
     }
 
+    /// A checked operation may return a resource carrying an input's origin.
+    fn result_provenance_input(&self, _expr: HirExprId) -> Option<HirExprId> {
+        None
+    }
+
     fn symbol_target(&self, symbol: SymbolId) -> Option<AliasTarget>;
 
     fn allocation_site(&self, expr: HirExprId, kind: AllocationKind) -> Option<AliasTarget>;

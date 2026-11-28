@@ -13,6 +13,7 @@ pub mod lower;
 pub mod method;
 pub mod numeric_family;
 pub mod pipeline;
+pub mod sandbox_profile;
 pub mod solver;
 pub mod source_execution;
 pub mod source_iteration;

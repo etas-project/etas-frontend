@@ -59,9 +59,9 @@ impl EffectSemantics<'_> {
         }) {
             return Ok(summary);
         }
-        let mut alternatives = places
-            .iter()
-            .map(|place| self.specialize_summary_at_memory_place(&summary, place));
+        let mut alternatives = places.iter().map(|place| {
+            self.specialize_summary_at_selector(&summary, crate::MEMORY_TAG, None, place)
+        });
         let Some(mut specialized) = alternatives.next().transpose()? else {
             return Ok(summary);
         };

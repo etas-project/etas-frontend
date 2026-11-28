@@ -224,7 +224,7 @@ fn lower_effect_arg(
                         | EffectActionArgKind::StringPattern
                 )
             ) {
-                return match static_resource_path_from_type_ref(ctx, *ty) {
+                return match static_resource_path_from_type_ref(ctx, *ty, expected_kind) {
                     Some(segments) => Some(EffectArgRef::Path(segments)),
                     None => {
                         if let Some(span) = ctx.hir.types.get(*ty).map(|ty| ty.span()) {
@@ -267,7 +267,7 @@ fn lower_effect_arg(
             {
                 Some(EffectArgRef::Type(ty))
             } else {
-                match static_resource_path_segments(ctx, path) {
+                match static_resource_path_segments(ctx, path, expected_kind) {
                     Some(segments) => Some(EffectArgRef::Path(segments)),
                     None => {
                         invalid_static_effect_arg(
@@ -375,18 +375,23 @@ fn action_symbol_for_effect_member(
 fn static_resource_path_segments(
     ctx: &TypePipelineContext<'_>,
     path: &etas_hir::ResolvedPath,
+    expected_kind: Option<&EffectActionArgKind>,
 ) -> Option<Vec<String>> {
+    if expected_kind.is_some_and(crate::sandbox_profile::is_selector_kind) {
+        return crate::sandbox_profile::selector_path(ctx.hir, &ctx.std_registry, path);
+    }
     static_selector_path_segments(ctx.hir, path, Some)
 }
 
 fn static_resource_path_from_type_ref(
     ctx: &TypePipelineContext<'_>,
     ty: etas_hir::HirTypeId,
+    expected_kind: Option<&EffectActionArgKind>,
 ) -> Option<Vec<String>> {
     let HirType::Path { path, .. } = ctx.hir.types.get(ty)? else {
         return None;
     };
-    static_resource_path_segments(ctx, path)
+    static_resource_path_segments(ctx, path, expected_kind)
 }
 
 fn type_arg_from_path(

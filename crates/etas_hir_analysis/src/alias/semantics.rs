@@ -1161,6 +1161,12 @@ where
             self.facts.record_expr(expr, value);
             return state;
         }
+        if let Some(input) = self.oracle.result_provenance_input(expr) {
+            let value = state.expr_alias(input);
+            state.set_expr_alias(expr, value.clone());
+            self.facts.record_expr(expr, value);
+            return state;
+        }
         self.finish_expr_alias(expr, state)
     }
 

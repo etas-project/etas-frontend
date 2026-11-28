@@ -42,7 +42,7 @@ impl EffectSemantics<'_> {
                 InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
             return state;
         };
-        let Some(effect) = self.materialize_performed_action_effect(
+        let Some(mut effect) = self.materialize_performed_action_effect(
             expr,
             &effect,
             action,
@@ -55,6 +55,9 @@ impl EffectSemantics<'_> {
             return state;
         };
 
+        if let Err(reason) = self.select_performed_pty_profile(expr, &mut effect, args) {
+            return self.incomplete_at(span, reason, state);
+        }
         let mut performed = crate::EffectSummary::local();
         let request_instance = if effect.is_action() {
             let parameters = self.checked_perform_signature(expr, action);
@@ -159,10 +162,16 @@ impl EffectSemantics<'_> {
                 .into_iter()
                 .any(|name| self.registry.action_by_name(name).as_ref() == Some(action))
             });
-            let authority = match self.filesystem_open_authority(&effect, args) {
+            let mut authority = match self.filesystem_open_authority(&effect, args) {
                 Ok(authority) => authority,
                 Err(reason) => return self.incomplete_at(span, reason, state),
             };
+            if native_action.is_some_and(|action| self.pty_action(action).is_some()) {
+                authority = Some(
+                    std::iter::once(crate::RequirementFact::HostAuthority(effect.clone()))
+                        .collect(),
+                );
+            }
             if observed_default || authority.is_some() {
                 let mut native = crate::EffectSummary::local();
                 if observed_default {

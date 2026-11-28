@@ -15,6 +15,8 @@ pub use outcome::{
 };
 pub use requests::{ActionRequestInstance, ParameterRequest, RequestInstantiationSummary};
 pub(crate) mod memory_provenance;
+mod pty;
+pub use pty::checked_pty_profile_constraint;
 pub(crate) mod semantics;
 pub mod unit;
 

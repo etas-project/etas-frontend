@@ -42,6 +42,12 @@ impl EffectSemantics<'_> {
             match self.external_call_summary_from_metadata(&metadata, &site, &mut state, None) {
                 Ok(Some(mut summary)) => {
                     self.specialize_filesystem_open_call(&site, &mut summary);
+                    summary = match self.specialize_pty_call(site.call, summary) {
+                        Ok(summary) => summary,
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
                     if summary.exits.is_some() {
                         state
                             .exits

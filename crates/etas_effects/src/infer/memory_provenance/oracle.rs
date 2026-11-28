@@ -42,11 +42,23 @@ impl AliasOracle for MemoryOracle<'_> {
         Some(record.fields.into_iter().map(|field| field.name).collect())
     }
     fn expression_target(&self, expr: HirExprId) -> Option<AliasTarget> {
+        if let Some(HirExpr::Path(path)) = self.hir.exprs.get(expr)
+            && let ResolveResult::Resolved(symbol) = path.resolution
+            && let Some(ty) = self.types.facts.expression_producer_type(expr)
+            && matches!(self.types.store.get(ty), Some(etas_types::Type::Nominal(t)) if t.name == super::super::pty::PROFILE)
+            && let Some(symbol) = etas_types::sandbox_profile::origin_symbol(self.hir, symbol)
+        {
+            return Some(AliasTarget::Symbol(symbol));
+        }
         let ty = self.types.facts.expr_memory_places.get(&expr)?;
         let etas_types::Type::MemoryPlace(place) = self.types.store.get(*ty)? else {
             return None;
         };
         Some(AliasTarget::MemoryPlace(place.segments.clone()))
+    }
+
+    fn result_provenance_input(&self, expr: HirExprId) -> Option<HirExprId> {
+        super::super::pty::start_profile(self.hir, self.types, self.registry, expr)
     }
 
     fn symbol_target(&self, symbol: SymbolId) -> Option<AliasTarget> {
