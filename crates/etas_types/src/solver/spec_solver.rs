@@ -3,6 +3,7 @@ pub(crate) mod bound_evidence;
 mod inference;
 pub(super) use inference::infer_obligation_arguments;
 mod external;
+pub(crate) use external::{ActiveObligations, entails, implementation_bounds};
 pub(crate) mod implementation;
 pub use implementation::match_subject as match_implementation_subject;
 

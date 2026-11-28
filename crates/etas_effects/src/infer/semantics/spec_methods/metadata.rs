@@ -605,7 +605,7 @@ impl EffectSemantics<'_> {
             invocation,
             environment: Some(environment),
         };
-        if etas_types::data_equality::is_hash_member(&self.spec_facts, &fact.identity) {
+        if etas_types::data_equality::is_pure_collection_member(&self.spec_facts, &fact.identity) {
             super::contract_completion(&mut summary, substitution.substitute(signature.output)?);
             return Ok(super::MethodEvidence::Contract {
                 summary: Box::new(summary),

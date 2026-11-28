@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::*;
 
 impl ContractValidator<'_, '_> {
-    /// Hash is a checked behavioral contract, not a consequence of an empty
+    /// Hash and Order have checked behavioral contracts, not a consequence of an empty
     /// escaping row. Storage adapters execute inside the same pure boundary.
     pub(super) fn validate_strict_callbacks(
         &mut self,
@@ -12,14 +12,13 @@ impl ContractValidator<'_, '_> {
         let specs = etas_types::SpecFacts::from(self.types.facts.as_ref());
         let mut source = BTreeSet::new();
         let mut external = BTreeSet::new();
-        let hash_methods = self.types.facts.methods.entries().filter(|method| {
-            method
-                .spec_member
-                .as_ref()
-                .is_some_and(|member| etas_types::data_equality::is_hash_member(&specs, member))
+        let pure_methods = self.types.facts.methods.entries().filter(|method| {
+            method.spec_member.as_ref().is_some_and(|member| {
+                etas_types::data_equality::is_pure_collection_member(&specs, member)
+            })
         });
         for method in
-            hash_methods.chain(self.types.facts.storage_methods().map(|(method, _)| method))
+            pure_methods.chain(self.types.facts.storage_methods().map(|(method, _)| method))
         {
             match &method.target {
                 etas_types::method::MethodTarget::Source { callable, .. } => {
@@ -56,7 +55,7 @@ impl ContractValidator<'_, '_> {
                     item,
                     self.hir.items[item].span(),
                     EffectDiagnosticCode::IncompleteEffectFacts,
-                    "Hash implementations and storage adapters require deterministic, action-free, non-suspending execution; ![] alone is insufficient",
+                    "Hash implementations, Order comparators and storage adapters require deterministic, action-free, non-suspending execution; ![] alone is insufficient",
                 );
             }
         }
@@ -97,7 +96,7 @@ impl ContractValidator<'_, '_> {
                 self.effects.diagnostics.push(etas_core::Diagnostic::effect_check(
                     EffectDiagnosticCode::IncompleteEffectFacts,
                     method.span,
-                    "imported Hash implementations and storage adapters require checked deterministic, action-free, non-suspending behavior",
+                    "imported Hash implementations, Order comparators and storage adapters require checked deterministic, action-free, non-suspending behavior",
                 ));
             }
         }

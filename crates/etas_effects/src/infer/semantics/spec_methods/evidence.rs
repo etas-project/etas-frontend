@@ -622,8 +622,11 @@ impl EffectSemantics<'_> {
         }
         let span = self.hir.exprs[call].span(&self.hir.blocks);
         let target = ParameterCallTarget::SpecMethod { call, environment };
-        if etas_types::data_equality::is_hash_member(&self.spec_facts, &method_fact.identity) {
-            // Every implementation is checked against the standard Hash
+        if etas_types::data_equality::is_pure_collection_member(
+            &self.spec_facts,
+            &method_fact.identity,
+        ) {
+            // Every implementation is checked against the pure collection
             // execution contract. It adds no action or request obligation.
             super::contract_completion(&mut summary, substitution.substitute(declaration.output)?);
             return Ok(MethodEvidence::Contract {

@@ -127,11 +127,22 @@ impl EffectSemantics<'_> {
             );
         }
         let mut parameters = std::collections::BTreeMap::new();
-        for position in 0..signature.params.len() {
-            if let Some(origins) = snapshot
+        let names = arguments.0.iter().cloned().collect();
+        let mut substitution = self
+            .type_substitution(&names)
+            .with_type_parameters(owner_bindings);
+        for (position, ty) in signature.params.iter().enumerate() {
+            let origins = snapshot
                 .parameters
                 .get(&crate::ParameterCallTarget::Interface(position as u32))
-            {
+                .cloned()
+                .or_else(|| {
+                    // The wire representation omits empty callback graphs. Restore
+                    // a known empty payload only for a checked data-only argument.
+                    let concrete = substitution.substitute(*ty).ok()?;
+                    self.known_data_payload(concrete).then(Default::default)
+                });
+            if let Some(origins) = origins {
                 parameters.insert(
                     crate::ParameterCallTarget::Graph {
                         graph: graph.graph_key,
@@ -141,7 +152,7 @@ impl EffectSemantics<'_> {
                             position: position as u32,
                         },
                     },
-                    origins.clone(),
+                    origins,
                 );
             }
         }

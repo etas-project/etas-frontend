@@ -2,7 +2,8 @@ use super::*;
 use crate::facts::specs::ExternalSpecIdentity;
 
 #[derive(Default)]
-struct ActiveObligations {
+pub(crate) struct ActiveObligations {
+    completed: HashMap<(TypeId, CheckedSpecRef, Vec<TypeId>), bool>,
     keys: HashSet<(TypeId, CheckedSpecRef, Vec<TypeId>)>,
     schemas: std::collections::BTreeMap<
         crate::data_admission::Contract,
@@ -741,7 +742,7 @@ fn implementation_satisfies(
     )
 }
 
-fn implementation_bounds(
+pub(crate) fn implementation_bounds(
     store: &TypeStore,
     facts: &SpecFacts,
     parameters: &[crate::CallableGenericParam],
@@ -756,6 +757,18 @@ fn implementation_bounds(
             let Some(args) = super::implementation::substitute(store, bindings, &bound.args) else {
                 return false;
             };
+            // A nested query may depend on a cycle cut by the current stack.
+            // Only reuse answers proven with no such assumptions.
+            let key = active
+                .keys
+                .is_empty()
+                .then(|| (*argument, bound.spec.clone(), args.clone()));
+            if let Some(answer) = key.as_ref().and_then(|key| active.completed.get(key)) {
+                if !answer {
+                    return false;
+                }
+                continue;
+            }
             let satisfied = match &bound.spec {
                 CheckedSpecRef::Source(spec) => {
                     source_satisfies_inner(store, facts, *argument, *spec, &args, active)
@@ -770,6 +783,9 @@ fn implementation_bounds(
                     std_satisfies_inner(store, facts, *argument, spec, &args, active)
                 }
             };
+            if let Some(key) = key {
+                active.completed.insert(key, satisfied);
+            }
             if !satisfied {
                 return false;
             }
@@ -793,7 +809,7 @@ pub(super) fn checked_implementation_bounds(
     )
 }
 
-pub(super) fn entails(
+pub(crate) fn entails(
     store: &TypeStore,
     facts: &SpecFacts,
     current: CheckedSpecRef,

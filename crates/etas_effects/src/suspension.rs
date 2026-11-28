@@ -498,7 +498,10 @@ fn call(context: CallContext<'_>, call: HirExprId, callee: Option<HirExprId>, no
                             );
                         }
                     }
-                } else if !etas_types::data_equality::is_hash_member(context.specs, member) {
+                } else if !etas_types::data_equality::is_pure_collection_member(
+                    context.specs,
+                    member,
+                ) {
                     node.local.join(SuspensionSummary::UNKNOWN);
                 }
                 return;

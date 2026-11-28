@@ -221,6 +221,25 @@ fn validate_generic_bounds(
             });
         }
     }
+    // Imported method binders have no local HIR symbol. Their declared
+    // assumptions are carried by the signature itself.
+    obligations.retain(|obligation| {
+        !expected
+            .generic_params
+            .iter()
+            .filter(|parameter| parameter.subject == obligation.ty)
+            .flat_map(|parameter| &parameter.bounds)
+            .any(|bound| {
+                crate::solver::spec_solver::entails(
+                    ctx.interner.store(),
+                    evidence,
+                    bound.spec.clone(),
+                    &bound.args,
+                    &obligation.spec,
+                    &obligation.args,
+                )
+            })
+    });
     let report = crate::solver::spec_solver::solve_spec_obligations(
         ctx.interner.store(),
         evidence,

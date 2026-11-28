@@ -3,18 +3,30 @@
 use crate::{CheckedSpecRef, PrimitiveType, SpecFacts, Type, TypeFacts, TypeId, TypeStore};
 use std::collections::{BTreeSet, VecDeque};
 
-/// The checked standard Hash member, including its inherited appearances.
+/// A checked standard Hash or Order member, including its inherited appearances.
 /// A user spec with the same spelling does not establish this contract.
+pub fn is_pure_collection_member(facts: &SpecFacts, member: &crate::SpecMethodIdentity) -> bool {
+    standard_collection_member(facts, member, &["Hash", "Order"])
+}
+
 pub fn is_hash_member(facts: &SpecFacts, member: &crate::SpecMethodIdentity) -> bool {
-    let is_hash = |path: &[String]| path == ["std", "collections", "Hash"];
+    standard_collection_member(facts, member, &["Hash"])
+}
+
+fn standard_collection_member(
+    facts: &SpecFacts,
+    member: &crate::SpecMethodIdentity,
+    names: &[&str],
+) -> bool {
+    let selected = |path: &[String]| matches!(path, [std, module, name] if std == "std" && module == "collections" && names.contains(&name.as_str()));
     facts.std_spec_aliases.iter().any(|(symbol, path)| {
-        is_hash(path)
+        selected(path)
             && facts
                 .signatures
                 .get(symbol)
                 .is_some_and(|spec| spec.methods.iter().any(|method| &method.identity == member))
     }) || facts.external_std_specs.keys().any(|identity| {
-        is_hash(&identity.path)
+        selected(&identity.path)
             && facts
                 .external_signatures
                 .get(identity)

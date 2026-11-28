@@ -122,7 +122,15 @@ impl MethodIndex {
         args: &[TypeId],
         member: &crate::SpecMethodIdentity,
     ) -> Result<Option<MethodWitness<'_>>, String> {
-        self.resolve_witness_with_lookup(store, None, facts, receiver, args, member)
+        self.resolve_witness_with_lookup(
+            store,
+            None,
+            facts,
+            receiver,
+            args,
+            member,
+            &mut Default::default(),
+        )
     }
 
     fn resolve_witness_with_lookup(
@@ -133,6 +141,7 @@ impl MethodIndex {
         receiver: TypeId,
         args: &[TypeId],
         member: &crate::SpecMethodIdentity,
+        active: &mut crate::solver::spec_solver::ActiveObligations,
     ) -> Result<Option<MethodWitness<'_>>, String> {
         let Some(candidates) = self
             .witness_patterns
@@ -158,11 +167,12 @@ impl MethodIndex {
             ) else {
                 continue;
             };
-            if !crate::solver::spec_solver::implementation_bounds_satisfied(
+            if !crate::solver::spec_solver::implementation_bounds(
                 store,
                 facts,
                 &declaration.owner_params,
                 &bindings,
+                active,
             ) {
                 continue;
             }
@@ -199,7 +209,13 @@ impl MethodIndex {
         facts: &crate::SpecFacts,
         receiver: TypeId,
     ) -> Result<Vec<MethodWitness<'_>>, String> {
-        self.witnesses_for_receiver_with_lookup(store, None, facts, receiver)
+        self.witnesses_for_receiver_with_lookup(
+            store,
+            None,
+            facts,
+            receiver,
+            &mut Default::default(),
+        )
     }
 
     /// Enumerate witnesses using a shared index for the immutable checked store.
@@ -210,7 +226,30 @@ impl MethodIndex {
         facts: &crate::SpecFacts,
         receiver: TypeId,
     ) -> Result<Vec<MethodWitness<'_>>, String> {
-        self.witnesses_for_receiver_with_lookup(store, Some(lookup), facts, receiver)
+        self.indexed_witness_lookup(store, lookup, facts)(receiver)
+    }
+
+    /// Resolve a batch against one immutable store and spec environment.
+    /// Structural schemas and completed generic obligations are shared within the batch.
+    pub fn indexed_witness_lookup<'a, 'ctx>(
+        &'a self,
+        store: &'ctx TypeStore,
+        lookup: &'ctx TypeLookupIndex,
+        facts: &'ctx crate::SpecFacts,
+    ) -> impl FnMut(TypeId) -> Result<Vec<MethodWitness<'a>>, String> + 'ctx
+    where
+        'a: 'ctx,
+    {
+        let mut active = crate::solver::spec_solver::ActiveObligations::default();
+        move |receiver| {
+            self.witnesses_for_receiver_with_lookup(
+                store,
+                Some(lookup),
+                facts,
+                receiver,
+                &mut active,
+            )
+        }
     }
 
     fn witnesses_for_receiver_with_lookup(
@@ -219,6 +258,7 @@ impl MethodIndex {
         lookup: Option<&TypeLookupIndex>,
         facts: &crate::SpecFacts,
         receiver: TypeId,
+        active: &mut crate::solver::spec_solver::ActiveObligations,
     ) -> Result<Vec<MethodWitness<'_>>, String> {
         let Some(members) = self.witness_patterns.get(&receiver_head(store, receiver)) else {
             return Ok(Vec::new());
@@ -246,7 +286,7 @@ impl MethodIndex {
                 };
                 if visited.insert((member, args.clone())) {
                     if let Some(witness) = self.resolve_witness_with_lookup(
-                        store, lookup, facts, receiver, &args, member,
+                        store, lookup, facts, receiver, &args, member, active,
                     )? {
                         result.push(witness);
                     }

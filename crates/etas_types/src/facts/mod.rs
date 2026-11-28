@@ -521,14 +521,12 @@ impl TypeFacts {
             .collect::<Vec<_>>();
         let mut visited = std::collections::BTreeSet::new();
         let mut methods = std::collections::BTreeSet::new();
+        let mut lookup_witnesses = self.methods.indexed_witness_lookup(store, &lookup, &specs);
         while let Some(receiver) = pending.pop() {
             if !visited.insert(receiver) {
                 continue;
             }
-            for witness in self
-                .methods
-                .witnesses_for_receiver_indexed(store, &lookup, &specs, receiver)?
-            {
+            for witness in lookup_witnesses(receiver)? {
                 if let crate::method::MethodTarget::External { identity } =
                     &witness.declaration.target
                 {
