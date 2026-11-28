@@ -4,7 +4,7 @@ use crate::{CheckedProgramData, DiskCacheAccess, StandardLibrary};
 use std::{
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -13,11 +13,11 @@ use std::{
 
 #[derive(Clone, Debug)]
 pub struct RunPreparationCache {
-    directory: PathBuf,
-    key: String,
+    inputs: blake3::Hash,
+    slot: PathBuf,
     owner: Arc<OnceLock<std::sync::Weak<CheckedProgramData>>>,
     access: DiskCacheAccess,
-    linked: Arc<OnceLock<String>>,
+    linked: Arc<OnceLock<blake3::Hash>>,
 }
 
 impl RunPreparationCache {
@@ -45,13 +45,24 @@ impl RunPreparationCache {
                 caller.hir.program(),
                 &caller.type_store,
                 &caller.effect_registry,
+                &caller.reachability.analysis_items,
                 &library.program.reachability.analysis_items,
             ),
             &mut hash,
             config,
         )
         .ok()?;
+        // Replace a previous edit of this entry in place. Three immutable
+        // records suffice even when the source or installed toolchain changes.
+        let mut slot = blake3::Hasher::new_derive_key("etas.checked-run.slot.v1");
+        bincode::serde::encode_into_std_write(
+            (caller.entry, &caller.compile_options.optimization_level),
+            &mut slot,
+            config,
+        )
+        .ok()?;
         for file in &caller.sources.sources {
+            bincode::serde::encode_into_std_write((&file.path, file.id), &mut slot, config).ok()?;
             bincode::serde::encode_into_std_write(
                 (file.id, &file.path, file.text.as_ref()),
                 &mut hash,
@@ -60,9 +71,9 @@ impl RunPreparationCache {
             .ok()?;
         }
         Some(Self {
-            directory,
+            slot: directory.join(slot.finalize().to_hex().as_str()),
             owner: Default::default(),
-            key: hash.finalize().to_hex().to_string(),
+            inputs: hash.finalize(),
             access,
             linked: Default::default(),
         })
@@ -81,47 +92,52 @@ impl RunPreparationCache {
     }
 
     pub(crate) fn read_link(&self) -> Option<Vec<u8>> {
-        self.read(&self.directory.join(format!("{}.link", self.key)))
+        self.read("link", self.inputs)
     }
     pub(crate) fn bind_link(&self, payload: &[u8]) {
-        self.linked
-            .get_or_init(|| blake3::hash(payload).to_hex().to_string());
+        self.linked.get_or_init(|| blake3::hash(payload));
     }
     pub(crate) fn write_link(&self, payload: &[u8]) {
-        self.write(&self.directory.join(format!("{}.link", self.key)), payload);
+        self.write("link", self.inputs, payload);
     }
-    fn plan_path(&self, name: &str) -> Option<PathBuf> {
-        Some(
-            self.directory
-                .join(format!("{}.{}.{name}", self.key, self.linked.get()?)),
-        )
+    fn plan_key(&self) -> Option<blake3::Hash> {
+        Some(blake3::keyed_hash(
+            self.inputs.as_bytes(),
+            self.linked.get()?.as_bytes(),
+        ))
     }
     pub fn read_plan(&self, sdk: bool) -> Option<Vec<u8>> {
-        self.read(&self.plan_path(if sdk { "std-plan" } else { "entry-plan" })?)
+        self.read(
+            if sdk { "std-plan" } else { "entry-plan" },
+            self.plan_key()?,
+        )
     }
     pub fn write_plan(&self, sdk: bool, bytes: &[u8]) {
-        if let Some(path) = self.plan_path(if sdk { "std-plan" } else { "entry-plan" }) {
-            self.write(&path, bytes);
+        if let Some(key) = self.plan_key() {
+            self.write(if sdk { "std-plan" } else { "entry-plan" }, key, bytes);
         }
     }
-    fn read(&self, path: &Path) -> Option<Vec<u8>> {
+    fn read(&self, kind: &str, key: blake3::Hash) -> Option<Vec<u8>> {
+        use std::io::Read;
         if !self.access.can_read() {
             return None;
         }
-        let mut bytes = fs::read(path).ok()?;
-        let length = bytes.len().checked_sub(32)?;
-        if blake3::hash(&bytes[..length]).as_bytes() != &bytes[length..] {
+        let mut file = fs::File::open(self.slot.with_extension(kind)).ok()?;
+        let mut header = [0; 64];
+        file.read_exact(&mut header).ok()?;
+        if header[..32] != key.as_bytes()[..] {
             return None;
         }
-        bytes.truncate(length);
-        Some(bytes)
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        (blake3::hash(&bytes).as_bytes()[..] == header[32..]).then_some(bytes)
     }
-    fn write(&self, path: &Path, bytes: &[u8]) {
+    fn write(&self, kind: &str, key: blake3::Hash, bytes: &[u8]) {
         if !self.can_write() {
             return;
         }
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let tmp = path.with_extension(format!(
+        let tmp = self.slot.with_extension(format!(
             "{}-{}.tmp",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -130,9 +146,10 @@ impl RunPreparationCache {
             return;
         };
         let published = file
-            .write_all(bytes)
+            .write_all(key.as_bytes())
             .and_then(|_| file.write_all(blake3::hash(bytes).as_bytes()))
-            .and_then(|_| fs::rename(&tmp, path));
+            .and_then(|_| file.write_all(bytes))
+            .and_then(|_| fs::rename(&tmp, self.slot.with_extension(kind)));
         if published.is_err() {
             let _ = fs::remove_file(tmp);
         }

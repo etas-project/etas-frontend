@@ -14,9 +14,9 @@ use std::{collections::HashMap, sync::Arc};
 #[derive(Serialize, Deserialize)]
 struct Revision {
     sdk: bool,
-    store: Option<Arc<etas_types::TypeStore>>,
+    store: Option<usize>,
     instances: Option<Vec<NativeInstantiation>>,
-    types: Option<Declarations>,
+    types: Option<usize>,
     effects: Option<Arc<etas_effects::EffectRegistry>>,
     origins: ForeignOrigins,
 }
@@ -35,9 +35,18 @@ struct Declarations {
 
 #[derive(Default, Serialize, Deserialize)]
 struct LinkImage {
+    stores: Vec<Arc<etas_types::TypeStore>>,
+    declarations: Vec<Declarations>,
     nodes: Vec<Revision>,
     caller: usize,
     library: usize,
+}
+
+#[derive(Default)]
+struct Owners {
+    revisions: HashMap<*const CheckedProgramData, usize>,
+    stores: HashMap<*const etas_types::TypeStore, usize>,
+    declarations: HashMap<*const etas_types::TypeFacts, usize>,
 }
 
 impl LinkImage {
@@ -48,7 +57,7 @@ impl LinkImage {
         linked_sdk: &CheckedProgram,
     ) -> Option<Self> {
         let mut image = Self::default();
-        let mut known = HashMap::new();
+        let mut known = Owners::default();
         image.caller = image.record(&Arc::new(linked_caller.clone()), caller, sdk, &mut known)?;
         image.library = image.record(linked_sdk, caller, sdk, &mut known)?;
         Some(image)
@@ -58,10 +67,10 @@ impl LinkImage {
         program: &CheckedProgram,
         caller: &CheckedProgramData,
         sdk: &CheckedProgram,
-        known: &mut HashMap<*const CheckedProgramData, usize>,
+        known: &mut Owners,
     ) -> Option<usize> {
         let ptr = Arc::as_ptr(program);
-        if let Some(&index) = known.get(&ptr) {
+        if let Some(&index) = known.revisions.get(&ptr) {
             return Some(index);
         }
         let is_sdk = Arc::ptr_eq(program.hir.shared_program(), sdk.hir.shared_program());
@@ -73,24 +82,40 @@ impl LinkImage {
             .foreign_type_bindings
             .origins(|owner| self.record(owner, caller, sdk, known))?;
         let facts = &program.types;
-        let types = (!Arc::ptr_eq(facts, &base.types)).then(|| Declarations {
-            generics: facts.type_generics.clone(),
-            enums: facts.enum_layouts.clone(),
-            canonical: facts.canonical_specs.clone(),
-            standard: facts.std_spec_impls.clone(),
-            checked: facts.checked_spec_impls.clone(),
-            methods: facts
-                .methods
-                .entries()
-                .skip(base.types.methods.entries().count())
-                .cloned()
-                .collect(),
+        let types = (!Arc::ptr_eq(facts, &base.types)).then(|| {
+            *known
+                .declarations
+                .entry(Arc::as_ptr(facts))
+                .or_insert_with(|| {
+                    self.declarations.push(Declarations {
+                        generics: facts.type_generics.clone(),
+                        enums: facts.enum_layouts.clone(),
+                        canonical: facts.canonical_specs.clone(),
+                        standard: facts.std_spec_impls.clone(),
+                        checked: facts.checked_spec_impls.clone(),
+                        methods: facts
+                            .methods
+                            .entries()
+                            .skip(base.types.methods.entries().count())
+                            .cloned()
+                            .collect(),
+                    });
+                    self.declarations.len() - 1
+                })
+        });
+        let store = (!Arc::ptr_eq(&program.type_store, &base.type_store)).then(|| {
+            *known
+                .stores
+                .entry(Arc::as_ptr(&program.type_store))
+                .or_insert_with(|| {
+                    self.stores.push(program.type_store.clone());
+                    self.stores.len() - 1
+                })
         });
         let index = self.nodes.len();
         self.nodes.push(Revision {
             sdk: is_sdk,
-            store: (!Arc::ptr_eq(&program.type_store, &base.type_store))
-                .then(|| program.type_store.clone()),
+            store,
             instances: (!Arc::ptr_eq(&program.native_instantiations, &base.native_instantiations))
                 .then(|| program.native_instantiations.instances().to_vec()),
             types,
@@ -98,7 +123,7 @@ impl LinkImage {
                 .then(|| program.effect_registry.clone()),
             origins,
         });
-        known.insert(ptr, index);
+        known.revisions.insert(ptr, index);
         Some(index)
     }
     fn restore(
@@ -108,13 +133,17 @@ impl LinkImage {
     ) -> Option<(CheckedProgramData, CheckedProgram)> {
         let mut revisions: Vec<CheckedProgram> = Vec::with_capacity(self.nodes.len());
         let mut catalogs = HashMap::<usize, Arc<DefinitionCatalog>>::new();
+        // HIR clones used in foreign method proofs share the exact TypeFacts
+        // and TypeStore allocations with their live caller.
+        let mut declarations: Vec<_> = self.declarations.into_iter().map(Some).collect();
+        let mut restored = HashMap::<usize, Arc<etas_types::TypeFacts>>::new();
         for node in self.nodes {
             let mut program = if node.sdk { sdk.as_ref() } else { caller }.clone();
             if node.sdk {
                 program.toolchain_base = caller.toolchain_base.clone();
             }
             if let Some(store) = node.store {
-                program.type_store = store;
+                program.type_store = self.stores.get(store)?.clone();
             }
             if let Some(instances) = node.instances {
                 let mut plan = NativeInstantiationPlan::default();
@@ -123,21 +152,27 @@ impl LinkImage {
                 }
                 program.native_instantiations = Arc::new(plan);
             }
-            if let Some(data) = node.types {
-                let mut facts = program.types.as_ref().clone();
-                facts.type_generics = data.generics;
-                facts.enum_layouts = data.enums;
-                facts.canonical_specs = data.canonical;
-                facts.std_spec_impls = data.standard;
-                facts.checked_spec_impls = data.checked;
-                if !data.methods.is_empty() {
-                    facts.methods = Arc::new(
-                        facts
-                            .methods
-                            .with_additional_declarations(&program.type_store, data.methods),
-                    );
+            if let Some(id) = node.types {
+                if let Some(facts) = restored.get(&id) {
+                    program.types = facts.clone();
+                } else {
+                    let data = declarations.get_mut(id)?.take()?;
+                    let mut facts = program.types.as_ref().clone();
+                    facts.type_generics = data.generics;
+                    facts.enum_layouts = data.enums;
+                    facts.canonical_specs = data.canonical;
+                    facts.std_spec_impls = data.standard;
+                    facts.checked_spec_impls = data.checked;
+                    if !data.methods.is_empty() {
+                        facts.methods = Arc::new(
+                            facts
+                                .methods
+                                .with_additional_declarations(&program.type_store, data.methods),
+                        );
+                    }
+                    program.types = Arc::new(facts);
+                    restored.insert(id, program.types.clone());
                 }
-                program.types = Arc::new(facts);
                 program.reflection_targets =
                     program.reflection_targets.with_types(program.types.clone());
             }
