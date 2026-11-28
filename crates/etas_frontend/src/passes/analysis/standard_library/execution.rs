@@ -852,6 +852,23 @@ pub(super) fn resource_scope_signature_matches(types: &TypeOutput, item: HirItem
     };
     let valid_cleanup = match (report.name.as_str(), cleanup) {
         ("std.resource.ScopeReport", []) => row.effects.is_empty(),
+        ("std.terminal.SuspensionReport", [restore, session]) => {
+            let Some(Type::Function(callback)) = types.store.get(*restore) else {
+                return false;
+            };
+            matches!(types.store.get(*session), Some(Type::Nominal(n)) if n.name == "std.terminal.TerminalSession")
+                && matches!(callback.input.as_slice(), [modes] if matches!(types.store.get(*modes), Some(Type::Enum(e)) if e.name == "std.terminal.TerminalModes"))
+                && matches!(
+                    types.store.get(callback.output),
+                    Some(Type::Primitive(P::Unit))
+                )
+                && callback
+                    .effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.tail.is_none() && effects.effects == row.effects)
+                && matches!(row.effects.as_slice(), [e] if e.name == "Error" &&
+                    matches!(e.args.as_slice(), [etas_types::EffectArgRef::Type(ty)] if matches!(types.store.get(*ty), Some(Type::Enum(err)) if err.name=="std.terminal.TerminalError")))
+        }
         ("std.agent.session.LeaseScopeReport", [release]) => {
             let Some(Type::Function(callback)) = types.store.get(*release) else {
                 return false;

@@ -43,7 +43,19 @@ pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
                 flow.symbol,
                 ScopedCallbackFact {
                     parameters: if resource {
-                        (0..flow.params.len() as u32).collect()
+                        flow.params
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, symbol)| {
+                                let crate::SymbolTypeFact::Param { ty } =
+                                    facts.symbol_types.get(symbol)?
+                                else {
+                                    return None;
+                                };
+                                matches!(store.get(*ty), Some(crate::Type::Function(_)))
+                                    .then_some(index as u32)
+                            })
+                            .collect()
                     } else {
                         vec![1]
                     },

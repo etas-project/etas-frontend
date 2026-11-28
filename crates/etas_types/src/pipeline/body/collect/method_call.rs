@@ -151,10 +151,25 @@ pub(super) fn collect_selected<E>(
     } else {
         None
     };
+    // An unrelated associated function with the same name and arity cannot
+    // supply contextual argument types (notably an existential packing target).
+    let store = ctx.ctx.interner.store();
+    let nominal_head = |ty| match store.get(ty) {
+        Some(Type::Applied { constructor, .. }) => Some(crate::TypeId(constructor.0)),
+        Some(Type::Nominal(_) | Type::Enum(_)) => Some(ty),
+        _ => None,
+    };
+    let associated_head = associated_receiver.and_then(nominal_head);
     let entries = ctx
         .ctx
         .methods()
         .member(method)
+        .filter(|(_, entry)| {
+            !matches!(
+                (associated_head, nominal_head(entry.receiver_type)),
+                (Some(requested), Some(candidate)) if requested != candidate
+            )
+        })
         .filter(|(_, entry)| {
             matches!(
                 (&selection, entry.receiver),
