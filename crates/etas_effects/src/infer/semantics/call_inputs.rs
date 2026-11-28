@@ -38,6 +38,27 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| invalid("invocation inputs are missing"))?;
         let mut result = BTreeSet::new();
         for source in origins {
+            // A source lambda still carries lexical captures even when its
+            // value has not crossed a return boundary. Bind those creation
+            // facts before adding this invocation's own argument slots.
+            let lexical;
+            let source = if let LatentSource::Unit(unit @ crate::EffectUnit::AnonymousFlow { .. }) =
+                source
+            {
+                // This call invokes the lambda, not its enclosing factory.
+                // Its owner's generics remain lexical; the SDK call's own
+                // type arguments belong to a different parameter interface.
+                lexical = self.capture_native_callable_with_generics(
+                    *unit,
+                    recipe.call,
+                    &Default::default(),
+                    state,
+                    None,
+                )?;
+                &lexical
+            } else {
+                source
+            };
             if matches!(
                 source,
                 LatentSource::Parameter { .. } | LatentSource::Projection(_)

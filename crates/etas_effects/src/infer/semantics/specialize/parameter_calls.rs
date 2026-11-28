@@ -355,6 +355,24 @@ impl EffectSemantics<'_> {
         {
             return Ok(None);
         }
+        // A method target owns checked receiver/type evidence in its captured
+        // environment. It is not a free callback slot of the current frame.
+        let method = match target {
+            ParameterCallTarget::SpecMethod { call, environment } => {
+                Some(LatentSource::SpecMethod { call, environment })
+            }
+            ParameterCallTarget::MetadataSpecMethod {
+                invocation,
+                environment: Some(environment),
+            } => Some(LatentSource::MetadataSpecMethod {
+                invocation,
+                environment,
+            }),
+            _ => None,
+        };
+        if let Some(method) = method {
+            return Ok(Some(TraceArgumentBinding::Origins([method].into())));
+        }
         Err(EffectSpecializationError::MissingLatentEffectBinding {
             param: label.into(),
         })

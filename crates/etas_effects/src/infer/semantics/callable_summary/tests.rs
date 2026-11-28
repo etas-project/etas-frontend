@@ -389,3 +389,40 @@ fn repeated_invocation_reuses_the_callable_creation_identity() {
         assert_eq!(semantics.callable_environments.borrow().len(), count);
     });
 }
+
+#[test]
+fn callback_invocation_retains_its_lexical_parameter_capture() {
+    with_semantics(None, |semantics, unit, _, parameter, _| {
+        let call = semantics
+            .hir
+            .exprs
+            .iter()
+            .find_map(|(id, expr)| matches!(expr, etas_hir::HirExpr::Call { .. }).then_some(id))
+            .unwrap();
+        let inputs = semantics
+            .intern_call_inputs(crate::facts::NativeCallInputs {
+                call,
+                scope: Some(unit),
+                context: None,
+                joined: false,
+                arguments: vec![],
+            })
+            .unwrap();
+        let state = crate::infer::semantics::state::EffectState::for_unit(unit);
+        let applied = semantics
+            .applied_callable_origins(&[LatentSource::Unit(unit)].into(), inputs, &state)
+            .unwrap();
+        let LatentSource::Captured { environment, .. } = *applied.first().unwrap() else {
+            panic!("callback invocation must retain a capture environment");
+        };
+        let snapshot = semantics.callable_environment(environment).unwrap();
+        assert_eq!(
+            snapshot.parameters[&ParameterCallTarget::Native(parameter)],
+            [LatentSource::Parameter {
+                owner: unit.owner().unwrap(),
+                symbol: parameter
+            }]
+            .into()
+        );
+    });
+}

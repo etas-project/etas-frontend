@@ -272,3 +272,38 @@ flow run() -> bool ![Error<i32>] {
     );
     assert!(!exits.exits.is_empty(), "{exits:?}");
 }
+
+#[test]
+fn pure_handler_factory_retains_requests_allowed_by_its_produced_row() {
+    let output = check(
+        r#"
+module app;
+effect Capture<Live> { action register(process: Live) -> unit; }
+effect Process { action start() -> unit; }
+public flow bindings<Live>(process: Live) -> ![Process => Capture<Live>] ![] {
+    return handler { Process.start() => perform Capture<Live>.register(process); };
+}
+flow main() -> unit ![Capture<i32>] {
+    let process: i32 = 1;
+    handle { perform Process.start(); } with bindings(process);
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let factory = checked
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if checked.symbols.get(flow.symbol).unwrap().name == "bindings" =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let summary = &checked.effects.item_effects[&factory];
+    assert!(summary.escaping_effects.is_empty());
+    assert!(!summary.requested_actions.is_empty());
+}

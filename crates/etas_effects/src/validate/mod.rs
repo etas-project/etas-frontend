@@ -266,7 +266,49 @@ impl ContractValidator<'_, '_> {
             coverage.subtract_handled(&summary.requested_actions, &summary.handled_actions);
         let unhandled_requested =
             coverage.subtract_handled(&unhandled_requested, &summary.default_actions);
-        let uncovered_actions = coverage.row_uncovered_by(&declared, &unhandled_requested);
+        // Construction retains the returned handler's request footprint for
+        // later application. Its produced row bounds those latent requests;
+        // eager execution remains checked against `declared` above.
+        let handler_row = self
+            .types
+            .facts
+            .item_signatures
+            .get(&item)
+            .and_then(|signature| {
+                let etas_types::ItemSignature::Flow(signature) = signature else {
+                    return None;
+                };
+                let etas_types::Type::Handler(handler) = self.types.store.get(signature.output)?
+                else {
+                    return None;
+                };
+                match &handler.produced {
+                    etas_types::HandlerProducedEffects::Explicit(row) => Some(row),
+                    etas_types::HandlerProducedEffects::Infer => None,
+                }
+            });
+        let requested_bound;
+        let allowed_requests = if let Some(row) = handler_row {
+            let row = match resolve_checked_type_row(&self.types.store, self.registry, row) {
+                Ok(row) => row,
+                Err(reason) => {
+                    self.reject_item(
+                        item,
+                        span,
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        reason,
+                    );
+                    return;
+                }
+            };
+            let mut bound = declared.clone();
+            bound.union_assign(&row);
+            requested_bound = bound;
+            &requested_bound
+        } else {
+            &declared
+        };
+        let uncovered_actions = coverage.row_uncovered_by(allowed_requests, &unhandled_requested);
         if !uncovered_actions.is_empty() {
             self.reject_item(
                 item,

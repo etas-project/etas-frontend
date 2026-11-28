@@ -663,7 +663,20 @@ impl<'a> EffectSemantics<'a> {
                 }))
             };
         }
-        self.registry.tag_by_name(&effect.name).map(Effect::Tag)
+        let tag = self.registry.tag_by_name(&effect.name)?;
+        if effect.args.is_empty() {
+            Some(Effect::Tag(tag))
+        } else {
+            let args = effect
+                .args
+                .iter()
+                .map(|argument| match argument {
+                    etas_types::EffectArgRef::Type(ty) => Some(*ty),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(Effect::Applied { tag, args })
+        }
     }
 
     pub(crate) fn is_core_error_effect_name(&self, name: &str) -> bool {

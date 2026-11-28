@@ -27,6 +27,33 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         environment: Option<CallableEnvironmentId>,
     ) -> Result<LatentSource, EffectSpecializationError> {
+        if !matches!(unit, EffectUnit::AnonymousFlow { .. }) {
+            return Ok(LatentSource::Unit(unit));
+        }
+        let generics = self.native_creation_generics(
+            unit.owner()
+                .ok_or_else(|| invalid("captured lambda has no owner"))?,
+            application,
+            state,
+            environment,
+        )?;
+        self.capture_native_callable_with_generics(
+            unit,
+            application,
+            bindings,
+            state,
+            Some(generics),
+        )
+    }
+
+    pub(super) fn capture_native_callable_with_generics(
+        &self,
+        unit: EffectUnit,
+        application: HirExprId,
+        bindings: &TraceArgumentBindings,
+        state: &EffectState,
+        generics: Option<super::callable_generics::GenericValues>,
+    ) -> Result<LatentSource, EffectSpecializationError> {
         let EffectUnit::AnonymousFlow { value, .. } = unit else {
             return Ok(LatentSource::Unit(unit));
         };
@@ -225,16 +252,18 @@ impl EffectSemantics<'_> {
                 _ => {}
             }
         }
-        let generics = self.native_creation_generics(
-            unit.owner()
-                .ok_or_else(|| invalid("captured lambda has no owner"))?,
-            application,
-            state,
-            environment,
-        )?;
-        if parameters.is_empty() && generics.is_empty() {
+        // An invocation already binds its lexical generics. Only an actual
+        // free-parameter capture needs a separate creation environment here.
+        if parameters.is_empty() && generics.as_ref().is_none_or(|values| values.is_empty()) {
             return Ok(LatentSource::Unit(unit));
         }
+        let generics = match generics {
+            Some(generics) => generics,
+            None => self.lexical_generic_values(
+                unit.owner()
+                    .ok_or_else(|| invalid("captured lambda has no owner"))?,
+            )?,
+        };
         let owner = state
             .owner
             .ok_or_else(|| invalid("captured callable has no current checked owner"))?;
