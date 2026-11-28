@@ -80,6 +80,8 @@ pub enum CheckRetention {
     /// Keep the valid revision and reusable artifacts for subsequent checks.
     #[default]
     Incremental,
+    /// Persist reusable disk artifacts even when the caller releases the final revision.
+    PersistFinalRevision,
     /// Return the check result without retaining a new snapshot or cache payloads.
     OneShot,
 }

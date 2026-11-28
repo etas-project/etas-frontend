@@ -57,6 +57,13 @@ where
     pub(super) standard_library: Option<super::StandardLibraryInput>,
 }
 
+#[derive(Clone, Copy)]
+struct ArtifactWriteOptions {
+    reuse: bool,
+    disk: DiskCacheAccess,
+    retain_memory: bool,
+}
+
 struct MetadataSummaryArtifact<T> {
     key: FrontendArtifactKey,
     fingerprint: ArtifactFingerprint,
@@ -217,18 +224,23 @@ where
         };
         let changed_sources = std::mem::take(&mut self.pending_changed_sources);
         let invalidation = std::mem::take(&mut self.pending_invalidation);
-        let retain = request.retention == crate::CheckRetention::Incremental && retain(&output);
+        let retain = request.retention != crate::CheckRetention::OneShot && retain(&output);
+        let persist = request.retention == crate::CheckRetention::PersistFinalRevision
+            && disk_artifact_access.can_write();
         let snapshot = (retain || request.snapshot_detail.includes_snapshot())
             .then(|| ProjectSemanticSnapshot::from_output(self.revision, &output))
             .flatten();
 
         self.manifest = FrontendArtifactManifest::from_output(self.revision, &output)
             .map_err(FrontendSessionError::Pipeline)?;
-        let mut cache = if retain {
+        let mut cache = if retain || persist {
             self.store_project_artifacts(
                 &output,
-                memory_reuse_enabled && incremental && !project_wide_change,
-                disk_artifact_access,
+                ArtifactWriteOptions {
+                    reuse: memory_reuse_enabled && incremental && !project_wide_change,
+                    disk: disk_artifact_access,
+                    retain_memory: retain,
+                },
             )?
         } else {
             CacheReuseReport::default()
@@ -465,23 +477,20 @@ where
     fn store_project_artifacts(
         &mut self,
         output: &ProjectOutput,
-        reuse_enabled: bool,
-        disk_artifact_access: DiskCacheAccess,
+        writes: ArtifactWriteOptions,
     ) -> Result<CacheReuseReport, FrontendSessionError> {
         let mut cache = CacheReuseReport::default();
         self.put_artifact(
             FrontendArtifactKey::project(FrontendArtifactKind::ParsedSourceSet),
             output.parsed_sources.clone(),
-            reuse_enabled,
-            disk_artifact_access,
+            writes,
             &mut cache,
         )?;
         if let Some(sources) = output.sources.clone() {
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::SourceSet),
                 sources,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -489,8 +498,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ModuleIndex),
                 modules,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -498,8 +506,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::UnitTree),
                 units,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -507,8 +514,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ImportGraph),
                 import_graph,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -516,8 +522,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ModuleTopoOrder),
                 module_topo_order,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -525,8 +530,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::AffectedModuleSet),
                 affected_modules,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -534,8 +538,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::HirProgram),
                 hir,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -543,8 +546,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ResolvedImports),
                 resolved_imports,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -552,8 +554,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ResolvedPaths),
                 resolved_paths,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -561,8 +562,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::SignatureFacts),
                 signature_types,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -582,8 +582,7 @@ where
                 self.put_artifact(
                     FrontendArtifactKey::item(FrontendArtifactKind::SignatureFacts, item),
                     signature,
-                    reuse_enabled,
-                    disk_artifact_access,
+                    writes,
                     &mut cache,
                 )?;
             }
@@ -592,8 +591,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::TopLevelLetFacts),
                 top_level_lets,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -614,8 +612,7 @@ where
                         etas_utils::UnitKey::new(BODY_UNIT_KIND, unit.0 as u64),
                     ),
                     identity,
-                    reuse_enabled,
-                    disk_artifact_access,
+                    writes,
                     &mut cache,
                 )?;
             }
@@ -632,8 +629,7 @@ where
                     etas_utils::UnitKey::new(BODY_UNIT_KIND, unit.0 as u64),
                 ),
                 types,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -641,8 +637,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::TypeFacts),
                 types,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -662,8 +657,7 @@ where
                     etas_utils::UnitKey::new(BODY_UNIT_KIND, unit.0 as u64),
                 ),
                 effects,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -671,8 +665,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::EffectPipelineArtifacts),
                 artifacts,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -680,8 +673,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::EffectFacts),
                 effects,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -689,8 +681,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ProjectEntry),
                 entry,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -698,8 +689,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::ReachabilityFacts),
                 reachability,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -707,8 +697,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::project(FrontendArtifactKind::CheckedProject),
                 checked,
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -716,8 +705,7 @@ where
             self.put_artifact(
                 FrontendArtifactKey::source(FrontendArtifactKind::ParsedSource, parsed.source),
                 parsed.clone(),
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
@@ -732,19 +720,13 @@ where
                         .cloned()
                         .collect(),
                 },
-                reuse_enabled,
-                disk_artifact_access,
+                writes,
                 &mut cache,
             )?;
         }
-        self.put_body_artifact_reuse_index(
-            output,
-            reuse_enabled,
-            disk_artifact_access,
-            &mut cache,
-        )?;
-        self.put_metadata_summaries(output, reuse_enabled, disk_artifact_access, &mut cache)?;
-        self.put_frontend_artifact_manifest(reuse_enabled, disk_artifact_access, &mut cache)?;
+        self.put_body_artifact_reuse_index(output, writes.reuse, writes.disk, &mut cache)?;
+        self.put_metadata_summaries(output, writes.reuse, writes.disk, &mut cache)?;
+        self.put_frontend_artifact_manifest(writes.reuse, writes.disk, &mut cache)?;
         Ok(cache)
     }
 
@@ -752,10 +734,14 @@ where
         &mut self,
         key: FrontendArtifactKey,
         value: T,
-        reuse_enabled: bool,
-        disk_artifact_access: DiskCacheAccess,
+        writes: ArtifactWriteOptions,
         cache: &mut CacheReuseReport,
     ) -> Result<(), FrontendSessionError> {
+        let memory_only = crate::artifact::persistence_class(&key)
+            == crate::artifact::PersistenceClass::MemoryOnly;
+        if memory_only && !writes.retain_memory {
+            return Ok(());
+        }
         let cache_key = key.to_cache_key();
         let fingerprint = self
             .manifest
@@ -778,12 +764,10 @@ where
             });
         // Rebuilt memory views must point at the current shared graph. A matching
         // fingerprint does not mean the old allocation is shared with this output.
-        let refresh_memory_view = key.unit == FrontendUnitKey::Project
-            && crate::artifact::persistence_class(&key)
-                == crate::artifact::PersistenceClass::MemoryOnly;
+        let refresh_memory_view = key.unit == FrontendUnitKey::Project && memory_only;
         if !refresh_memory_view
-            && reuse_enabled
-            && self.artifact_is_reusable(&cache_key, &meta, disk_artifact_access)?
+            && writes.reuse
+            && self.artifact_is_reusable(&cache_key, &meta, writes.disk)?
         {
             cache.record_reused(cache_key);
             return Ok(());
@@ -796,7 +780,7 @@ where
                     meta,
                     value,
                 },
-                disk_artifact_access,
+                writes.disk,
             )
             .map_err(cache_error)?;
         cache.record_put(cache_key, status);
