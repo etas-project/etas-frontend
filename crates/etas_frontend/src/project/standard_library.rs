@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 mod effects;
 mod linked_image;
+pub(crate) use linked_image::LinkImage;
 mod methods;
 mod owner;
 mod requests;

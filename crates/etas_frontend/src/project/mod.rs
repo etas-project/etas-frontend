@@ -23,6 +23,7 @@ pub use checked_reachability::{
 };
 pub(crate) use dependency_namespaces::DependencyModuleNamespaces;
 pub(crate) use external_anchors::ExternalImportAnchorIndex;
+pub(crate) use standard_library::LinkImage;
 mod hir_bindings;
 mod import_graph;
 mod incremental;

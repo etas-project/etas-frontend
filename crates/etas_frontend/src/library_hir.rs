@@ -451,7 +451,7 @@ fn error(value: impl std::fmt::Display) -> LibraryHirImageError {
     LibraryHirImageError(value.to_string())
 }
 
-fn decode_prepared_value<T: serde::de::DeserializeOwned>(
+pub(crate) fn decode_prepared_value<T: serde::de::DeserializeOwned>(
     payload: &[u8],
 ) -> Result<T, LibraryHirImageError> {
     let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
@@ -466,7 +466,9 @@ fn decode_prepared_value<T: serde::de::DeserializeOwned>(
     Ok(value)
 }
 
-fn encode_prepared_value(value: &impl Serialize) -> Result<Vec<u8>, LibraryHirImageError> {
+pub(crate) fn encode_prepared_value(
+    value: &impl Serialize,
+) -> Result<Vec<u8>, LibraryHirImageError> {
     let _scope = etas_effects::infer::domain::trace_codec::TraceCodecScope::enter();
     bincode::serde::encode_to_vec(value, bincode::config::standard()).map_err(error)
 }

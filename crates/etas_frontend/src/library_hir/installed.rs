@@ -111,6 +111,7 @@ pub(super) fn load(
         }
     })?;
     let data = CheckedProgramData {
+        entry_run_cache: None,
         definition_catalog_cache: Arc::default(),
         semantic_dependencies: image.semantic_dependencies,
         reflection_targets: Arc::new(reflection_targets),

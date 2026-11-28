@@ -30,11 +30,36 @@ struct Declarations {
     canonical: etas_types::facts::CanonicalSpecFacts,
     standard: Vec<etas_types::facts::CheckedStdSpecImplFact>,
     checked: Vec<etas_types::facts::specs::CheckedSpecImplementationFact>,
-    methods: Vec<etas_types::method::MethodSignatureFact>,
+    methods: MethodTable,
+}
+
+#[derive(Serialize, Deserialize)]
+enum MethodTable {
+    Inherit,
+    Append(Vec<etas_types::method::MethodSignatureFact>),
+    Replace(Arc<etas_types::method::MethodIndex>),
+}
+
+impl MethodTable {
+    fn capture(
+        base: &Arc<etas_types::method::MethodIndex>,
+        linked: &Arc<etas_types::method::MethodIndex>,
+    ) -> Self {
+        if Arc::ptr_eq(base, linked) {
+            return Self::Inherit;
+        }
+        let mut entries = linked.entries();
+        if base.entries().all(|method| entries.next() == Some(method)) {
+            Self::Append(entries.cloned().collect())
+        } else {
+            // Foreign catalogs may refer to a revision older than the entry.
+            Self::Replace(linked.clone())
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
-struct LinkImage {
+pub(crate) struct LinkImage {
     stores: Vec<Arc<etas_types::TypeStore>>,
     declarations: Vec<Declarations>,
     nodes: Vec<Revision>,
@@ -50,7 +75,7 @@ struct Owners {
 }
 
 impl LinkImage {
-    fn capture(
+    pub(crate) fn capture(
         caller: &CheckedProgramData,
         sdk: &CheckedProgram,
         linked_caller: &CheckedProgramData,
@@ -93,12 +118,7 @@ impl LinkImage {
                         canonical: facts.canonical_specs.clone(),
                         standard: facts.std_spec_impls.clone(),
                         checked: facts.checked_spec_impls.clone(),
-                        methods: facts
-                            .methods
-                            .entries()
-                            .skip(base.types.methods.entries().count())
-                            .cloned()
-                            .collect(),
+                        methods: MethodTable::capture(&base.types.methods, &facts.methods),
                     });
                     self.declarations.len() - 1
                 })
@@ -126,7 +146,7 @@ impl LinkImage {
         known.revisions.insert(ptr, index);
         Some(index)
     }
-    fn restore(
+    pub(crate) fn restore(
         self,
         caller: &CheckedProgramData,
         sdk: &CheckedProgram,
@@ -163,12 +183,16 @@ impl LinkImage {
                     facts.canonical_specs = data.canonical;
                     facts.std_spec_impls = data.standard;
                     facts.checked_spec_impls = data.checked;
-                    if !data.methods.is_empty() {
-                        facts.methods = Arc::new(
-                            facts
-                                .methods
-                                .with_additional_declarations(&program.type_store, data.methods),
-                        );
+                    match data.methods {
+                        MethodTable::Inherit => {}
+                        MethodTable::Replace(methods) => facts.methods = methods,
+                        MethodTable::Append(methods) => {
+                            facts.methods = Arc::new(
+                                facts
+                                    .methods
+                                    .with_additional_declarations(&program.type_store, methods),
+                            )
+                        }
                     }
                     program.types = Arc::new(facts);
                     restored.insert(id, program.types.clone());
@@ -197,6 +221,26 @@ impl LinkImage {
 }
 
 impl StandardLibrary {
+    fn restore_link(
+        self: &Arc<Self>,
+        consumer: &mut CheckedProgramData,
+        bytes: &[u8],
+    ) -> Option<Arc<Self>> {
+        let (image, used) = bincode::serde::decode_from_slice::<LinkImage, _>(
+            bytes,
+            bincode::config::standard().with_limit::<536870912>(),
+        )
+        .ok()?;
+        if used != bytes.len() {
+            return None;
+        }
+        let (owner, program) = image.restore(consumer, &self.program)?;
+        *consumer = owner;
+        Some(Arc::new(Self {
+            program,
+            ..self.as_ref().clone()
+        }))
+    }
     pub(crate) fn link_for_execution(
         self: &Arc<Self>,
         consumer: &mut CheckedProgramData,
@@ -208,20 +252,11 @@ impl StandardLibrary {
         {
             let _span = self.profile.span("std.consumer.restore_link", "std");
             if let Some(bytes) = cache.read_link()
-                && let Ok((image, used)) = bincode::serde::decode_from_slice::<LinkImage, _>(
-                    &bytes,
-                    bincode::config::standard().with_limit::<536870912>(),
-                )
-                && used == bytes.len()
-                && let Some((owner, program)) = image.restore(consumer, &self.program)
+                && let Some(library) = self.restore_link(consumer, &bytes)
             {
                 cache.bind_link(&bytes);
-                *consumer = owner;
                 self.profile.counter("std.consumer.link_cache_hit", 1);
-                return Ok(Arc::new(Self {
-                    program,
-                    ..self.as_ref().clone()
-                }));
+                return Ok(library);
             }
         }
         self.profile.counter("std.consumer.link_cache_hit", 0);

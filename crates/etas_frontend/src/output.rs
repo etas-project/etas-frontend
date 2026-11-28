@@ -365,6 +365,9 @@ pub(crate) struct ValidatedExternalEnvironment {
 impl ValidatedExternalEnvironment {
     pub(crate) fn new(environment: ProjectEnvironmentInput) -> Self {
         let fingerprint = environment.canonical_environment_fingerprint();
+        Self::from_checked(environment, fingerprint)
+    }
+    pub(crate) fn from_checked(environment: ProjectEnvironmentInput, fingerprint: String) -> Self {
         Self {
             environment,
             fingerprint,
@@ -1642,6 +1645,7 @@ impl ProjectOutput {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckedProgramData {
+    pub(crate) entry_run_cache: Option<crate::RunPreparationCache>,
     pub semantic_dependencies: Arc<crate::project::CheckedSemanticDependencies>,
     pub(crate) definition_catalog_cache: Arc<crate::code::definition::DefinitionCatalogCache>,
     pub(crate) reflection_targets: Arc<crate::code::reflection::CheckedReflectionTargets>,

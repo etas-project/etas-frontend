@@ -4,7 +4,7 @@ use etas_hir::{HirBlockId, HirExprId, HirItemId};
 
 use super::module_index::{AstBodyRef, AstItemRef};
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirItemBindings {
     pub ast_to_hir: HashMap<AstItemRef, HirItemId>,
     pub hir_to_ast: HashMap<HirItemId, AstItemRef>,

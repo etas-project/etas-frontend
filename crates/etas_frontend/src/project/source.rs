@@ -7,7 +7,7 @@ use etas_syntax::{Parse, ast};
 use super::module_index::{AstImportRef, AstItemRef};
 use crate::{ExternalPackageId, ModulePath};
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct SourceInput {
     pub id: SourceId,
     pub path: Option<PathBuf>,
